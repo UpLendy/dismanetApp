@@ -67,7 +67,6 @@ const PLATAFORMAS = [
   { nombre: "Paramount+", condiciones: null, usaPerfilPin: true, capacidadPantallas: 6 },
   { nombre: "ViX", condiciones: null, usaPerfilPin: false, capacidadPantallas: 1 },
   { nombre: "Spotify", condiciones: null, usaPerfilPin: false, capacidadPantallas: 1 },
-  { nombre: "Pornhub", condiciones: null, usaPerfilPin: false, capacidadPantallas: 1 },
   { nombre: "Viki Rakuten", condiciones: null, usaPerfilPin: false, capacidadPantallas: 1 },
   { nombre: "DramaBox", condiciones: null, usaPerfilPin: false, capacidadPantallas: 1 },
 ];
@@ -95,7 +94,6 @@ const PRECIOS_INDIVIDUALES: Array<[plataforma: string, duracion: string, precioV
   ["Paramount+", "30 días", 8900],
   ["ViX", "30 días", 8900],
   ["Spotify", "3 meses", 26900],
-  ["Pornhub", "1 mes", 11900],
   ["Viki Rakuten", "1 mes", 10900],
   ["DramaBox", "30 días", 8900],
 ];
@@ -351,44 +349,8 @@ async function main() {
   }
   console.log(`✔ Precios de paquete: ${PRECIOS_PAQUETE.length} (5 excepciones Netflix → 28 días)`);
 
-  // -- Cuentas y pantallas de ejemplo ----------------------------------------
-  for (const p of PLATAFORMAS) {
-    const plataforma = plataformaPorNombre.get(p.nombre)!;
-    const base = slug(p.nombre);
-
-    for (let indiceCuenta = 1; indiceCuenta <= 4; indiceCuenta++) {
-      const correo = `${base}${indiceCuenta}@cuentas.dismanet.local`;
-
-      const cuenta = await obtenerOCrearPorNombre(
-        () => prisma.cuenta.findFirst({ where: { empresaId: empresa.id, plataformaId: plataforma.id, correo } }),
-        () =>
-          prisma.cuenta.create({
-            data: {
-              empresaId: empresa.id,
-              plataformaId: plataforma.id,
-              correo,
-              password: cifrar(`Demo#${base}${indiceCuenta}`),
-              capacidadPantallas: plataforma.capacidadPantallas,
-            },
-          }),
-      );
-
-      for (let numero = 1; numero <= plataforma.capacidadPantallas; numero++) {
-        await prisma.pantalla.upsert({
-          where: { cuentaId_numero: { cuentaId: cuenta.id, numero } },
-          update: {},
-          create: {
-            empresaId: empresa.id,
-            cuentaId: cuenta.id,
-            numero,
-            perfil: plataforma.usaPerfilPin ? letraPerfil(numero - 1) : null,
-            pin: plataforma.usaPerfilPin ? cifrar(pinAleatorio()) : null,
-          },
-        });
-      }
-    }
-  }
-  console.log(`✔ Cuentas de ejemplo: 4 por plataforma (${plataformaPorNombre.size * 4} en total)`);
+  // -- Cuentas y pantallas de ejemplo (Removidas para producción) ------------
+  console.log(`✔ Cuentas de ejemplo: Se omitió la creación para producción.`);
 
   // -- Plantillas de mensaje (Anexo B) ---------------------------------------
   await prisma.plantillaMensaje.upsert({
