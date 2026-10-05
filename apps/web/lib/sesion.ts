@@ -1,7 +1,10 @@
 import { cookies } from "next/headers";
 import { satisfaceRol, inicioParaRol, type Rol } from "./rol";
 
-const URL_API = process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+let URL_API = process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+if (!URL_API.startsWith("http://") && !URL_API.startsWith("https://")) {
+  URL_API = `https://${URL_API}`;
+}
 
 export type { Rol };
 export { satisfaceRol, inicioParaRol };

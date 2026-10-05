@@ -2,9 +2,12 @@ import { treaty } from "@elysiajs/eden";
 import type { App } from "@dismanet/api";
 
 const isServer = typeof window === "undefined";
-const URL_API = isServer 
-  ? (process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001")
-  : "/api";
+let serverApiUrl = process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+if (!serverApiUrl.startsWith("http://") && !serverApiUrl.startsWith("https://")) {
+  serverApiUrl = `https://${serverApiUrl}`;
+}
+
+const URL_API = isServer ? serverApiUrl : "/api";
 
 /**
  * Cliente de API tipado extremo a extremo con Eden Treaty: los tipos de
