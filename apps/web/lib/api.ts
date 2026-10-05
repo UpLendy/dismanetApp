@@ -7,7 +7,7 @@ if (!serverApiUrl.startsWith("http://") && !serverApiUrl.startsWith("https://"))
   serverApiUrl = `https://${serverApiUrl}`;
 }
 
-const URL_API = isServer ? serverApiUrl : "/api";
+const URL_API = isServer ? serverApiUrl : (window.location.origin + "/api");
 
 /**
  * Cliente de API tipado extremo a extremo con Eden Treaty: los tipos de
