@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dismanet
+      POSTGRES_PASSWORD: dismanet
+      POSTGRES_DB: dismanet
+    ports:
+      - "5435:5432"
+    volumes:
+      - dismanet_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  dismanet_postgres_data:

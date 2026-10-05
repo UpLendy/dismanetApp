@@ -1,0 +1,392 @@
+// Esquema de datos — Sistema Interno de Gestión, MVP módulo de ventas.
+// Ver PRD-MVP-Ventas.md sección 4 y CLAUDE.md para las reglas no negociables (R1-R5).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Rol {
+  SUPER_ADMIN
+  ADMIN
+  VENDEDOR
+}
+
+enum UnidadDuracion {
+  DIAS
+  MESES
+}
+
+enum TipoVenta {
+  UNIDAD
+  PAQUETE
+}
+
+enum TipoPlantilla {
+  UNIDAD
+  PAQUETE
+}
+
+// ---------------------------------------------------------------------------
+// Empresa y Usuario
+// ---------------------------------------------------------------------------
+
+model Empresa {
+  id                 String   @id @default(cuid())
+  nombre             String
+  nit                String?
+  prefijoCodigo      String   @db.VarChar(3)
+  activa             Boolean  @default(true)
+  creadaPorUsuarioId String?
+  createdAt          DateTime @default(now())
+
+  creadaPor Usuario? @relation("EmpresasCreadas", fields: [creadaPorUsuarioId], references: [id])
+
+  usuarios                   Usuario[]                   @relation("UsuariosDeEmpresa")
+  plataformas                Plataforma[]
+  duraciones                 Duracion[]
+  tiposCliente               TipoCliente[]
+  paquetes                   Paquete[]
+  paquetePlataformas         PaquetePlataforma[]
+  paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
+  precios                    Precio[]
+  cuentas                    Cuenta[]
+  pantallas                  Pantalla[]
+  ventas                     Venta[]
+  ventaDetalles              VentaDetalle[]
+  plantillasMensaje          PlantillaMensaje[]
+
+  @@unique([prefijoCodigo])
+}
+
+// empresaId es nulo únicamente para SUPER_ADMIN, que no pertenece a ninguna empresa.
+model Usuario {
+  id           String   @id @default(cuid())
+  empresaId    String?
+  email        String   @unique
+  passwordHash String
+  nombre       String
+  rol          Rol
+  activo       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  empresa Empresa? @relation("UsuariosDeEmpresa", fields: [empresaId], references: [id])
+
+  empresasCreadas Empresa[] @relation("EmpresasCreadas")
+
+  ventasComoVendedor Venta[] @relation("VentaVendedor")
+  ventasAnuladas     Venta[] @relation("VentaAnuladaPor")
+
+  @@index([empresaId])
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo
+// ---------------------------------------------------------------------------
+
+/// nombreMensaje: nombre decorado para el mensaje de WhatsApp, ej. "N.E.T.F.L.I.X".
+/// Si es null se usa `nombre`.
+/// condiciones: texto que se muestra al vendedor antes de vender, ej. "1 pantalla. Solo TV".
+/// usaPerfilPin: false para plataformas como Spotify, Canva, YouTube.
+model Plataforma {
+  id                 String  @id @default(cuid())
+  empresaId          String
+  nombre             String
+  nombreMensaje      String?
+  condiciones        String?
+  capacidadPantallas Int
+  usaPerfilPin       Boolean @default(false)
+  activa             Boolean @default(true)
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  paquetePlataformas         PaquetePlataforma[]
+  paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
+  precios                    Precio[]
+  cuentas                    Cuenta[]
+  ventas                     Venta[]
+  ventaDetalles              VentaDetalle[]
+
+  @@index([empresaId])
+}
+
+model Duracion {
+  id        String         @id @default(cuid())
+  empresaId String
+  nombre    String
+  cantidad  Int
+  unidad    UnidadDuracion
+  activa    Boolean        @default(true)
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  precios                Precio[]
+  paqueteDuracionVendida PaqueteDuracionPlataforma[] @relation("DuracionVendida")
+  paqueteDuracionReal    PaqueteDuracionPlataforma[] @relation("DuracionReal")
+  ventas                 Venta[]
+  ventaDetalles          VentaDetalle[]
+
+  @@index([empresaId])
+}
+
+model TipoCliente {
+  id        String  @id @default(cuid())
+  empresaId String
+  nombre    String
+  activo    Boolean @default(true)
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  precios Precio[]
+  ventas  Venta[]
+
+  @@index([empresaId])
+}
+
+model Paquete {
+  id          String  @id @default(cuid())
+  empresaId   String
+  nombre      String
+  descripcion String?
+  activo      Boolean @default(true)
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  paquetePlataformas         PaquetePlataforma[]
+  paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
+  precios                    Precio[]
+  ventas                     Venta[]
+
+  @@index([empresaId])
+}
+
+/// Composición del paquete: qué plataformas lo integran y cuántas pantallas de cada una.
+model PaquetePlataforma {
+  id                String @id @default(cuid())
+  empresaId         String
+  paqueteId         String
+  plataformaId      String
+  cantidadPantallas Int    @default(1)
+
+  empresa    Empresa    @relation(fields: [empresaId], references: [id])
+  paquete    Paquete    @relation(fields: [paqueteId], references: [id])
+  plataforma Plataforma @relation(fields: [plataformaId], references: [id])
+
+  @@unique([paqueteId, plataformaId])
+  @@index([empresaId])
+}
+
+/// Excepciones de duración por plataforma dentro de un paquete.
+/// Solo lleva filas donde la duración real DIFIERE de la duración vendida.
+/// Ej.: paquete "Básico 1" vendido a "30 días" (duracionVendidaId) con
+/// Netflix (plataformaId) resolviendo a "28 días" (duracionRealId).
+model PaqueteDuracionPlataforma {
+  id                String @id @default(cuid())
+  empresaId         String
+  paqueteId         String
+  duracionVendidaId String
+  plataformaId      String
+  duracionRealId    String
+
+  empresa         Empresa    @relation(fields: [empresaId], references: [id])
+  paquete         Paquete    @relation(fields: [paqueteId], references: [id])
+  duracionVendida Duracion   @relation("DuracionVendida", fields: [duracionVendidaId], references: [id])
+  plataforma      Plataforma @relation(fields: [plataformaId], references: [id])
+  duracionReal    Duracion   @relation("DuracionReal", fields: [duracionRealId], references: [id])
+
+  @@unique([paqueteId, duracionVendidaId, plataformaId])
+  @@index([empresaId])
+}
+
+/// Precio sirve tanto para plataformas individuales como para paquetes.
+/// plataformaId y paqueteId son ambos nullable: exactamente uno debe estar
+/// presente. Esa restricción se aplica con un CHECK de Postgres agregado en
+/// una migración SQL manual (Prisma no expresa CHECK arbitrarios en el
+/// esquema) — ver prisma/migrations/*_check_precio_plataforma_xor_paquete.
+model Precio {
+  id            String  @id @default(cuid())
+  empresaId     String
+  plataformaId  String?
+  paqueteId     String?
+  duracionId    String
+  tipoClienteId String
+  precioVenta   Decimal @db.Decimal(14, 2)
+  costo         Decimal @db.Decimal(14, 2)
+  activo        Boolean @default(true)
+
+  empresa     Empresa     @relation(fields: [empresaId], references: [id])
+  plataforma  Plataforma? @relation(fields: [plataformaId], references: [id])
+  paquete     Paquete?    @relation(fields: [paqueteId], references: [id])
+  duracion    Duracion    @relation(fields: [duracionId], references: [id])
+  tipoCliente TipoCliente @relation(fields: [tipoClienteId], references: [id])
+
+  @@unique([empresaId, plataformaId, duracionId, tipoClienteId])
+  @@unique([empresaId, paqueteId, duracionId, tipoClienteId])
+  @@index([empresaId])
+}
+
+// ---------------------------------------------------------------------------
+// Inventario
+// ---------------------------------------------------------------------------
+
+model Cuenta {
+  id                 String   @id @default(cuid())
+  empresaId          String
+  plataformaId       String
+  correo             String
+  /// Cifrado reversible (AES-256-GCM), no hash — ver src/lib/cifrado.ts.
+  password           String
+  capacidadPantallas Int
+  notas              String?
+  activa             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+
+  empresa    Empresa    @relation(fields: [empresaId], references: [id])
+  plataforma Plataforma @relation(fields: [plataformaId], references: [id])
+
+  pantallas     Pantalla[]
+  ventaDetalles VentaDetalle[]
+
+  @@index([empresaId])
+}
+
+/// Unidad de inventario. Perfil y PIN son null cuando la plataforma no usa
+/// perfiles (Plataforma.usaPerfilPin = false).
+model Pantalla {
+  id        String  @id @default(cuid())
+  empresaId String
+  cuentaId  String
+  numero    Int
+  perfil    String?
+  /// Cifrado reversible (AES-256-GCM), no hash.
+  pin       String?
+  activa    Boolean @default(true)
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+  cuenta  Cuenta  @relation(fields: [cuentaId], references: [id])
+
+  ventaDetalles VentaDetalle[]
+
+  @@unique([cuentaId, numero])
+  @@index([empresaId])
+}
+
+// ---------------------------------------------------------------------------
+// Ventas
+// ---------------------------------------------------------------------------
+
+/// Guarda copia de precioVenta, costo, utilidad, cantidadDuracion,
+/// unidadDuracion, nombreItem, nombreDuracion y nombreTipoCliente al momento
+/// de la venta (R3): esos campos nunca se actualizan después de creados.
+///
+/// fechaVencimientoMax = mayor vencimiento de sus VentaDetalle. Es un valor
+/// derivado que se escribe una sola vez al crear la venta, solo para filtrar
+/// y ordenar listados. La disponibilidad de una pantalla NUNCA se calcula con
+/// este campo — usar siempre VentaDetalle.fechaVencimiento (R5).
+model Venta {
+  id            String    @id @default(cuid())
+  empresaId     String
+  vendedorId    String
+  codigoCompra  String
+  tipoVenta     TipoVenta
+  plataformaId  String?
+  paqueteId     String?
+  duracionId    String
+  tipoClienteId String
+
+  // Copias inmutables al momento de la venta (R3).
+  nombreItem        String
+  nombreDuracion    String
+  cantidadDuracion  Int
+  unidadDuracion    UnidadDuracion
+  nombreTipoCliente String
+  precioVenta       Decimal        @db.Decimal(14, 2)
+  costo             Decimal        @db.Decimal(14, 2)
+  utilidad          Decimal        @db.Decimal(14, 2)
+
+  fechaVenta          DateTime @default(now())
+  /// Derivado, solo para filtrar/ordenar. NUNCA usar para disponibilidad (R5).
+  fechaVencimientoMax DateTime
+
+  mensajeGenerado String @db.Text
+
+  anulada      Boolean   @default(false)
+  anuladaPorId String?
+  anuladaEn    DateTime?
+  createdAt    DateTime  @default(now())
+
+  empresa     Empresa     @relation(fields: [empresaId], references: [id])
+  vendedor    Usuario     @relation("VentaVendedor", fields: [vendedorId], references: [id])
+  anuladaPor  Usuario?    @relation("VentaAnuladaPor", fields: [anuladaPorId], references: [id])
+  plataforma  Plataforma? @relation(fields: [plataformaId], references: [id])
+  paquete     Paquete?    @relation(fields: [paqueteId], references: [id])
+  duracion    Duracion    @relation(fields: [duracionId], references: [id])
+  tipoCliente TipoCliente @relation(fields: [tipoClienteId], references: [id])
+
+  detalles VentaDetalle[]
+
+  @@unique([empresaId, codigoCompra])
+  @@index([empresaId])
+}
+
+/// Una fila por pantalla asignada. Cada renglón lleva SU PROPIA duración y
+/// fecha de vencimiento (R5/D14): un combo puede tener Netflix a 28 días y
+/// Disney+ a 30 días en la misma venta. Guarda copia de nombrePlataforma,
+/// correoCuenta, passwordCuenta, perfil y pin — inmutables (R3).
+model VentaDetalle {
+  id           String @id @default(cuid())
+  empresaId    String
+  ventaId      String
+  pantallaId   String
+  cuentaId     String
+  plataformaId String
+
+  // Copias inmutables al momento de la venta (R3).
+  nombrePlataforma String
+  correoCuenta     String
+  /// Cifrado reversible (AES-256-GCM), copiado de Cuenta.password al vender.
+  passwordCuenta   String
+  perfil           String?
+  /// Cifrado reversible (AES-256-GCM), copiado de Pantalla.pin al vender.
+  pin              String?
+
+  duracionId       String
+  cantidadDuracion Int
+  unidadDuracion   UnidadDuracion
+  /// Fuente de verdad de disponibilidad (R5): ocupada si venta no anulada y
+  /// fechaVencimiento > now().
+  fechaVencimiento DateTime
+
+  empresa    Empresa    @relation(fields: [empresaId], references: [id])
+  venta      Venta      @relation(fields: [ventaId], references: [id])
+  pantalla   Pantalla   @relation(fields: [pantallaId], references: [id])
+  cuenta     Cuenta     @relation(fields: [cuentaId], references: [id])
+  plataforma Plataforma @relation(fields: [plataformaId], references: [id])
+  duracion   Duracion   @relation(fields: [duracionId], references: [id])
+
+  @@index([empresaId])
+  @@index([pantallaId, fechaVencimiento])
+}
+
+/// Texto exacto por tipo de venta, con placeholders {{...}}. Editar la
+/// plantilla no cambia Venta.mensajeGenerado de ventas ya registradas (R3).
+model PlantillaMensaje {
+  id            String        @id @default(cuid())
+  empresaId     String
+  tipo          TipoPlantilla
+  contenido     String        @db.Text
+  actualizadaEn DateTime      @updatedAt
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  @@unique([empresaId, tipo])
+  @@index([empresaId])
+}

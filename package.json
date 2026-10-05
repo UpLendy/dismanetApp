@@ -1,0 +1,14 @@
+{
+  "name": "dismanet-app",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "bun run --cwd apps/api dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "seed": "bun run --cwd apps/api seed",
+    "test": "bun test"
+  }
+}

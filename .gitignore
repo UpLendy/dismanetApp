@@ -1,0 +1,52 @@
+# Dependencias
+node_modules/
+.pnp/
+.pnp.js
+
+# Variables de entorno — NUNCA se versionan
+.env
+.env.*
+!.env.example
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Carpetas de skills que genera `prisma init` (documentación propia de
+# Prisma, no de Claude Code). No forman parte del entregable.
+apps/api/.agents/
+apps/api/.windsurf/
+apps/api/.claude/
+apps/api/skills-lock.json
+
+# Bun
+bun.lockb.bak
+
+# Pruebas y cobertura
+coverage/
+.nyc_output/
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# Registros
+*.log
+npm-debug.log*
+yarn-debug.log*
