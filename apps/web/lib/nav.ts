@@ -47,10 +47,9 @@ const GRUPOS: GrupoNav[] = [
     titulo: "ADMINISTRACIÓN",
     items: [
       { etiqueta: "Usuarios", href: "/panel/usuarios", icono: UserCog, rolMinimo: "ADMIN" },
-      // Empresas: SUPER_ADMIN ve el listado completo; ADMIN solo puede crear
-      // una nueva sin quedarse con acceso (PRD D2) — empresas/page.tsx ya
-      // maneja esa diferencia por rol, aquí solo se decide la visibilidad.
-      { etiqueta: "Empresas", href: "/panel/empresas", icono: Building2, rolMinimo: "ADMIN" },
+      // Empresas: SUPER_ADMIN ve el listado completo y puede crear.
+      // Ocultamos la ruta completamente para ADMIN.
+      { etiqueta: "Empresas", href: "/panel/empresas", icono: Building2, rolMinimo: "SUPER_ADMIN" },
     ],
   },
 ];
