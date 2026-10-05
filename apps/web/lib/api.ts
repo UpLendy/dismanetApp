@@ -1,7 +1,10 @@
 import { treaty } from "@elysiajs/eden";
 import type { App } from "@dismanet/api";
 
-const URL_API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const isServer = typeof window === "undefined";
+const URL_API = isServer 
+  ? (process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001")
+  : "/api";
 
 /**
  * Cliente de API tipado extremo a extremo con Eden Treaty: los tipos de
@@ -11,6 +14,6 @@ const URL_API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
  * `credentials: "include"` es obligatorio: la sesión vive en una cookie
  * httpOnly, no en un header que este cliente pueda fijar.
  */
-export const api = treaty<App>(URL_API, {
+export const api = treaty<App>(URL_API as string, {
   fetch: { credentials: "include" },
 });
