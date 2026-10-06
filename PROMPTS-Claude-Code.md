@@ -1646,6 +1646,100 @@ mensaje. Sin tocar la base de datos a mano en ningún paso. Reporta dónde se
 rompe, si se rompe.
 ```
 
+---
+
+## Prompt 13 — Cierre de seguridad post-producción
+
+> **Estado:** el sistema ya está en producción con un cliente real adentro.
+> **Verificable al terminar:** la cookie es `SameSite=Lax`, el cliente puede cambiar su propia contraseña, y las cuatro verificaciones pendientes están reportadas.
+
+```
+Lee CLAUDE.md y CIERRE-PRE-PRODUCCION.md antes de empezar.
+
+El sistema está desplegado: API y Postgres en Railway, web en Vercel, con un
+proxy de Next.js en next.config.ts que hace que el navegador hable solo con el
+dominio de Vercel. Hay un cliente real usándolo.
+
+## 1. Devolver la cookie a SameSite=Lax
+
+Con el proxy, todo el tráfico del navegador es del mismo origen, así que
+SameSite=None dejó de ser necesario. Mientras siga puesto, cualquier sitio web
+puede disparar peticiones autenticadas contra el API: una página que un empleado
+abra con sesión activa puede provocar ventas o anulaciones a su nombre.
+
+a) Verifica que TODAS las llamadas del navegador pasan por el proxy. Busca en
+   apps/web cualquier fetch que apunte directamente al dominio de Railway en vez
+   de a una ruta relativa. Las llamadas de servidor a servidor desde el layout
+   de Next.js sí van directas y eso está bien: no las gobierna el navegador.
+
+b) Cambia el valor por defecto de SAME_SITE_COOKIE_SESION a Lax y documenta en
+   DEPLOYMENT.md que el proxy es la razón por la que puede ser Lax. Si alguien
+   quita el proxy en el futuro, tiene que saber que esto se rompe.
+
+c) Agrega validación del encabezado Origin en toda petición que cambie estado,
+   contra una lista blanca de orígenes permitidos por variable de entorno. Es
+   defensa en profundidad: no depende de la configuración de la cookie.
+   Prueba: un POST con Origin ajeno recibe 403.
+
+## 2. Perfil propio
+
+Hoy la gestión de usuarios la hace un ADMIN sobre otros usuarios. El único ADMIN
+del cliente no puede cambiar su propia contraseña, que además fue fijada por el
+proveedor y viajó por mensajería.
+
+Crea, para cualquier rol autenticado:
+- `GET /perfil` y `PUT /perfil` para nombre y correo.
+- `PUT /perfil/contrasena`, exigiendo la contraseña actual. Si no coincide,
+  rechaza. Al cambiarla, invalida las sesiones existentes salvo la actual.
+- Pantalla bajo (protegido)/perfil, accesible desde el menú de usuario de la
+  barra superior.
+
+Reglas:
+- El correo sigue siendo único global; maneja el P2002 con restriccionViolada().
+- Nadie puede cambiarse el rol a sí mismo desde aquí. Esa regla ya existe y no
+  se toca.
+- Un usuario no puede dejar sin ADMIN activo a su empresa cambiándose el correo
+  o la contraseña — no aplica, pero verifica que no abriste un camino nuevo.
+
+Pruebas: cambiar contraseña con la actual correcta funciona; con la incorrecta
+devuelve error; el correo duplicado da error de negocio y no 500; un VENDEDOR
+puede usar su propio perfil pero no el de otro.
+
+## 3. Las cuatro verificaciones pendientes
+
+Se pidieron en los prompts 8 y 9 y nunca se reportaron. Ahora corren en
+producción. Revisa el código, confirma cada una y repórtala explícitamente,
+aunque ya esté hecha:
+
+a) El `tx` que entrega la transacción viene extendido con el empresaId correcto,
+   y la prueba de cobertura ejerce operaciones DENTRO de una transacción.
+b) La consulta cruda con FOR UPDATE SKIP LOCKED filtra por empresaId de forma
+   explícita, y hay prueba de que nunca toma una pantalla de otra empresa. La
+   lista blanca vigila $queryRaw y $executeRaw, y las variantes Unsafe están
+   prohibidas.
+c) **El reintento del código de compra, probado forzando la colisión.** Sustituye
+   el generador de dígitos para que devuelva el mismo valor dos veces, con una
+   venta previa que ya use ese código, y verifica que la segunda reintenta y se
+   completa. Agrega el caso de agotar los 5 intentos: error claro, nunca un
+   código repetido. Esta rama depende de detectar el P2002 con
+   restriccionViolada() y casi con certeza nunca se ha ejecutado.
+d) Al día 29, la pantalla de Netflix de un combo de 30 días está disponible y la
+   de Disney+ no. Manipula la fecha de la venta hacia atrás, no esperes.
+
+## 4. Estado de la empresa de producción
+
+Confirma, sin modificar datos, que la empresa de producción tiene sus dos
+PlantillaMensaje. Si falta alguna, aplica la corrección del prompt 12: crearlas
+en el alta de empresa, plantilla de respaldo en la venta, y la pantalla de
+edición.
+
+## 5. Entregable
+
+Reporta una por una: el valor efectivo de SameSite en producción, el resultado
+de las cuatro verificaciones, y si la empresa de producción tiene sus
+plantillas. Nada de "todo correcto": cada punto con su evidencia.
+```
+
 ### Pendientes menores arrastrados
 
 | Tema | Entrega |
