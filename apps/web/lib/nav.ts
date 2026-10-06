@@ -40,7 +40,7 @@ const GRUPOS: GrupoNav[] = [
       { etiqueta: "Tipos de cliente", href: "/panel/catalogo/tipos-cliente", icono: Users2, rolMinimo: "ADMIN" },
       { etiqueta: "Paquetes", href: "/panel/catalogo/paquetes", icono: Package, rolMinimo: "ADMIN" },
       { etiqueta: "Precios", href: "/panel/precios", icono: CircleDollarSign, rolMinimo: "ADMIN" },
-      { etiqueta: "Plantillas", href: "/panel/plantillas", icono: MessageSquareText, rolMinimo: "ADMIN" },
+      { etiqueta: "Plantillas", href: "/panel/mensajes", icono: MessageSquareText, rolMinimo: "ADMIN" },
     ],
   },
   {
