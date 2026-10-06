@@ -13,7 +13,9 @@ import { cuentas } from "./routes/cuentas.ts";
 import { disponibilidad } from "./routes/disponibilidad.ts";
 import { ventas } from "./routes/ventas.ts";
 import { plantillas } from "./routes/plantillas.ts";
+import { perfil } from "./routes/perfil.ts";
 import { manejadorErrores } from "./plugins/errores.ts";
+import { validarOrigen } from "./plugins/origen.ts";
 
 verificarEntorno();
 
@@ -27,6 +29,10 @@ const app = new Elysia()
   // Red de seguridad para errores no manejados: el cuerpo que llega al
   // cliente nunca trae ids ni detalles internos (ver plugins/errores.ts).
   .use(manejadorErrores)
+  // Defensa en profundidad contra CSRF (ver plugins/origen.ts): independiente
+  // de SAME_SITE_COOKIE_SESION, así que sigue protegiendo aunque la cookie se
+  // reconfigure mal en el futuro.
+  .use(validarOrigen)
   .get("/salud", () => ({ ok: true }))
   .use(auth)
   .use(empresas)
@@ -39,7 +45,8 @@ const app = new Elysia()
   .use(cuentas)
   .use(disponibilidad)
   .use(ventas)
-  .use(plantillas);
+  .use(plantillas)
+  .use(perfil);
 
 export type App = typeof app;
 
