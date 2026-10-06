@@ -170,3 +170,68 @@ describe("e) La creación de empresa es atómica", () => {
     expect(empresaHuerfana).toBeNull();
   });
 });
+
+describe("f) GET /empresas/:id/diagnostico — exclusivo de SUPER_ADMIN (R4)", () => {
+  let empresaId: string;
+  let superAdminEmail: string;
+  let adminEmail: string;
+  const idsEmpresas: string[] = [];
+  const emailsUsuarios: string[] = [];
+
+  beforeAll(async () => {
+    const hash = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
+
+    const empresa = await prismaRaw.empresa.create({
+      data: { nombre: "Empresa a diagnosticar (empresas.test)", prefijoCodigo: "DGE" },
+    });
+    empresaId = empresa.id;
+    idsEmpresas.push(empresaId);
+
+    // SUPER_ADMIN: empresaId null, mismo patrón que el seed real.
+    superAdminEmail = `super-admin-${randomUUID()}@test.local`;
+    emailsUsuarios.push(superAdminEmail);
+    await prismaRaw.usuario.create({
+      data: { empresaId: null, email: superAdminEmail, passwordHash: hash, nombre: "Super admin", rol: "SUPER_ADMIN" },
+    });
+
+    adminEmail = `admin-dge-${randomUUID()}@test.local`;
+    emailsUsuarios.push(adminEmail);
+    await prismaRaw.usuario.create({
+      data: { empresaId, email: adminEmail, passwordHash: hash, nombre: "Admin de la empresa", rol: "ADMIN" },
+    });
+  });
+
+  afterAll(async () => {
+    await prismaRaw.usuario.deleteMany({ where: { email: { in: emailsUsuarios } } });
+    await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
+    await prismaRaw.tipoCliente.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
+    await prismaRaw.empresa.deleteMany({ where: { id: { in: idsEmpresas } } });
+  });
+
+  it("SUPER_ADMIN obtiene el diagnóstico (200)", async () => {
+    const cookieSuperAdmin = await iniciarSesion(superAdminEmail);
+    const { status, cuerpo } = await peticion("GET", `/empresas/${empresaId}/diagnostico`, cookieSuperAdmin);
+
+    expect(status).toBe(200);
+    expect(cuerpo.diagnostico.puedeVender).toBe(false);
+    // La empresa fue creada por el flujo real (POST /empresas en otra
+    // prueba) solo lleva TipoCliente por defecto, no vía este fixture — aquí
+    // se crea directo con prismaRaw, así que no hay plantillas todavía.
+    expect(cuerpo.diagnostico.plantillas).toEqual({ existeUnidad: false, existePaquete: false });
+  });
+
+  it("ADMIN recibe 403 — el diagnóstico no es de su alcance (R4)", async () => {
+    const cookieAdmin = await iniciarSesion(adminEmail);
+    const { status } = await peticion("GET", `/empresas/${empresaId}/diagnostico`, cookieAdmin);
+
+    expect(status).toBe(403);
+  });
+
+  it("empresa inexistente: 404", async () => {
+    const cookieSuperAdmin = await iniciarSesion(superAdminEmail);
+    const { status, cuerpo } = await peticion("GET", `/empresas/${randomUUID()}/diagnostico`, cookieSuperAdmin);
+
+    expect(status).toBe(404);
+    expect(cuerpo.error.codigo).toBe("EMPRESA_NO_ENCONTRADA");
+  });
+});
