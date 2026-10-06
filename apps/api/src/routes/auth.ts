@@ -76,7 +76,12 @@ export const auth = new Elysia({ prefix: "/auth" })
         };
       }
 
-      const payload: PayloadJwt = { usuarioId: usuario.id, rol: usuario.rol, empresaId: usuario.empresaId };
+      const payload: PayloadJwt = {
+        usuarioId: usuario.id,
+        rol: usuario.rol,
+        empresaId: usuario.empresaId,
+        versionSesion: usuario.versionSesion,
+      };
       const token = await jwt.sign(payload as unknown as Record<string, string | number | boolean | null>);
 
       cookie[NOMBRE_COOKIE_SESION].set({

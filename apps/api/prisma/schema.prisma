@@ -78,6 +78,12 @@ model Usuario {
   activo       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
+  /// Se incrementa al cambiar la propia contraseña (PUT /perfil/contrasena).
+  /// El JWT lleva el valor vigente al firmarse; si no coincide con este
+  /// campo, la sesión quedó invalidada (ver plugins/contexto.ts). Es lo que
+  /// permite "cerrar las demás sesiones" sin un almacén de sesiones aparte.
+  versionSesion Int @default(1)
+
   empresa Empresa? @relation("UsuariosDeEmpresa", fields: [empresaId], references: [id])
 
   empresasCreadas Empresa[] @relation("EmpresasCreadas")

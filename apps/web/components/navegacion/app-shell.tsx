@@ -9,6 +9,7 @@ import { inicioParaRol, type Rol } from "@/lib/rol";
 import { CerrarSesionBoton } from "@/components/cerrar-sesion-boton";
 import { SelectorEmpresaProvider } from "@/components/navegacion/selector-empresa-contexto";
 import { SelectorEmpresa } from "@/components/navegacion/selector-empresa";
+import { MenuUsuario } from "@/components/navegacion/menu-usuario";
 import { cn } from "@/lib/utils";
 
 function itemActivo(pathname: string, href: string): boolean {
@@ -121,10 +122,7 @@ export function AppShell({
 
           <div className="flex items-center gap-3">
             {usuario.rol === "SUPER_ADMIN" ? <SelectorEmpresa empresaActiva={empresaActiva} /> : null}
-            <div className="hidden text-right text-xs text-ink-muted sm:block">
-              <p>{usuario.email}</p>
-              <p>{usuario.rol}</p>
-            </div>
+            <MenuUsuario usuario={usuario} />
           </div>
         </header>
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
