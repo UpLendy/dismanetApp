@@ -12,6 +12,21 @@ import {
 import { requiereRol } from "../plugins/guardas.ts";
 import { PLANTILLA_PAQUETE_POR_DEFECTO, PLANTILLA_UNIDAD_POR_DEFECTO } from "../lib/plantillas-default.ts";
 import { TIPOS_CLIENTE_POR_DEFECTO } from "../lib/tipos-cliente-default.ts";
+import { diagnosticoDeEmpresa } from "../lib/diagnostico-empresa.ts";
+
+const esquemaDiagnostico = t.Object({
+  plantillas: t.Object({ existeUnidad: t.Boolean(), existePaquete: t.Boolean() }),
+  tiposClienteActivos: t.Number(),
+  duracionesActivas: t.Number(),
+  plataformasActivas: t.Number(),
+  paquetesActivos: t.Number(),
+  preciosActivos: t.Number(),
+  preciosConCostoCero: t.Number(),
+  cuentasActivas: t.Number(),
+  pantallasActivas: t.Number(),
+  pantallasLibres: t.Number(),
+  puedeVender: t.Boolean(),
+});
 
 const esquemaError = t.Object({
   error: t.Object({ codigo: t.String(), mensaje: t.String() }),
@@ -177,6 +192,24 @@ export const empresas = new Elysia({ prefix: "/empresas" })
           ),
         }),
       },
+    },
+  )
+  .get(
+    "/:id/diagnostico",
+    async ({ params, set }) => {
+      // prismaRaw: excepción explícita de R1 — Empresa no tiene empresaId.
+      const empresa = await prismaRaw.empresa.findUnique({ where: { id: params.id } });
+      if (!empresa) {
+        set.status = 404;
+        return { error: { codigo: "EMPRESA_NO_ENCONTRADA", mensaje: "La empresa no existe." } };
+      }
+
+      const diagnostico = await diagnosticoDeEmpresa(prismaParaEmpresa(empresa.id));
+      return { diagnostico };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      response: { 200: t.Object({ diagnostico: esquemaDiagnostico }), 404: esquemaError },
     },
   )
   .patch(

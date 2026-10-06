@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Plus, Ban, CheckCircle2, LogIn, Building2 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -156,7 +157,11 @@ export default function PaginaEmpresas() {
             <TablaCuerpo>
               {empresas.map((empresa) => (
                 <TablaFila key={empresa.id}>
-                  <TablaCelda className="font-medium text-ink">{empresa.nombre}</TablaCelda>
+                  <TablaCelda className="font-medium text-ink">
+                    <Link href={`/panel/empresas/${empresa.id}`} className="hover:underline">
+                      {empresa.nombre}
+                    </Link>
+                  </TablaCelda>
                   <TablaCelda className="tabular-nums">{empresa.prefijoCodigo}</TablaCelda>
                   <TablaCelda className="text-right tabular-nums">{empresa.usuariosActivos}</TablaCelda>
                   <TablaCelda>
