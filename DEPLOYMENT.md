@@ -20,8 +20,9 @@ Docker, contra el Postgres de `docker-compose.yml`:
 - El contenedor arranca, corre `prisma migrate deploy` (lo deja sin
   pendientes), y responde `GET /salud` con `{"ok":true}`.
 - Con `NODE_ENV=production`, el login real devuelve la cookie de sesión con
-  `Secure; SameSite=None` (necesario porque Vercel y Railway quedan en
-  dominios distintos — ver sección 5).
+  `Secure; SameSite=Lax` — el proxy de Next.js hace que el navegador nunca
+  vea el dominio de Railway, así que no hace falta `SameSite=None` (ver
+  sección 5).
 
 Lo que **no** se pudo verificar porque requiere crear/acceder a cuentas en
 Railway y Vercel que no están disponibles en este entorno: la creación real
@@ -53,7 +54,7 @@ confirmar el resultado.
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | Referencia al plugin, no un valor fijo |
 | `JWT_SECRET` | `openssl rand -hex 32` | Firma las sesiones. Rotarla cierra la sesión de todos los usuarios |
 | `CLAVE_CIFRADO` | `openssl rand -hex 32` | Cifra contraseñas/pines de cuentas. **Si se pierde, esos datos son irrecuperables** (ver `src/lib/cifrado.ts`). Generarla una sola vez y guardarla también fuera de Railway (gestor de secretos del equipo) |
-| `NODE_ENV` | `production` | Activa `secure`/`SameSite=None` en las cookies y el chequeo estricto del seed |
+| `NODE_ENV` | `production` | Activa `secure` en las cookies y el chequeo estricto del seed. `SameSite` sale de `SAME_SITE_COOKIE_SESION` (ver sección 5), no de `NODE_ENV` |
 | `WEB_URL` | `https://<tu-app>.vercel.app` | Origen exacto para CORS (sin barra final). Se actualiza después de desplegar el web (ver 1.4) |
 | `PORT` | (dejar que Railway lo inyecte) | Elysia ya lee `process.env.PORT` |
 
@@ -190,16 +191,38 @@ Luego de restaurar, correr `npx prisma migrate deploy` contra esa base
 antes de apuntar el servicio a ella, por si el dump es más viejo que el
 código que se va a correr contra él.
 
-## 5. Cookies entre dominios
+## 5. Cookies entre dominios — resuelto con un proxy, no con SameSite=None
 
-`apps/web` y `apps/api` quedan en dominios distintos (`*.vercel.app` /
-`*.up.railway.app`), así que el navegador trata las llamadas del Eden
-Treaty del frontend al API como cross-site. Por eso las cookies de sesión
-(`src/plugins/contexto.ts`, `SAME_SITE_COOKIE_SESION`) usan
-`sameSite: "none"` cuando `NODE_ENV=production` — verificado en la sección
-0 con un login real contra el contenedor. `sameSite: "none"` exige
-`secure: true` (ya condicional a `NODE_ENV=production` en el código), que a
-su vez exige HTTPS — ambas plataformas lo dan por defecto en sus dominios.
+`apps/web` y `apps/api` viven en dominios distintos (`*.vercel.app` /
+`*.up.railway.app`), pero el navegador **nunca ve el dominio de Railway**:
+`apps/web/next.config.ts` define un rewrite (`/api/:path*` →
+`${API_INTERNAL_URL}/:path*`) y el cliente de Eden Treaty (`lib/api.ts`)
+llama a `window.location.origin + "/api"` desde el navegador. Es Vercel
+quien retransmite esa petición al API servidor-a-servidor — una llamada que
+el navegador no gobierna y que por lo tanto no es cross-site.
+
+Con esto, para el navegador **todo el tráfico es del mismo origen**: la
+cookie de sesión (`src/plugins/contexto.ts`, `SAME_SITE_COOKIE_SESION`) usa
+`sameSite: "lax"` en producción igual que en desarrollo. Ya no hace falta
+`"none"` — que exigía `secure: true` + HTTPS y, sobre todo, dejaba que
+cualquier sitio de terceros disparara peticiones autenticadas contra el API
+mientras el navegador conservara la cookie (CSRF).
+
+**Si en el futuro se quita el proxy** (el frontend vuelve a apuntar directo
+al dominio de Railway vía `NEXT_PUBLIC_API_URL` desde el navegador), esto se
+rompe: el navegador deja de reenviar la cookie en esas llamadas cross-site y
+el login "funciona" pero se cae de inmediato. Hay que volver a
+`sameSite: "none"` — posible sin tocar código, fijando la variable de
+entorno `SAME_SITE_COOKIE_SESION=none` en el servicio del API — y asumir que
+eso reabre la superficie de CSRF hasta donde la alcanza a mitigar la lista
+blanca de `Origin` (`src/plugins/origen.ts`, variable `ORIGENES_PERMITIDOS`).
+
+Variables de entorno relevantes:
+
+| Variable | Valor en producción | Qué hace |
+|---|---|---|
+| `SAME_SITE_COOKIE_SESION` | sin definir → cae a `"lax"` | Atributo `SameSite` de la cookie de sesión |
+| `ORIGENES_PERMITIDOS` | sin definir → cae a `WEB_URL` | Lista blanca (separada por coma) de `Origin` aceptados en POST/PUT/PATCH/DELETE |
 
 ## 6. Health check
 
