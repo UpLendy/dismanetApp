@@ -119,7 +119,7 @@ async function limpiarCelda(
 
 export const precios = new Elysia({ prefix: "/precios" })
   .use(requiereRol(Rol.ADMIN))
-  .onBeforeHandle({ as: "scoped" }, ({ contexto, set }) => {
+  .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;
       return {

@@ -40,6 +40,16 @@ const LISTA_BLANCA = new Set<string>([
   // operación de negocio dentro del loop usa prismaParaEmpresa, nunca
   // prismaRaw directamente.
   "prisma/backfill-catalogo-base.ts",
+  // Resuelve la identidad del usuario a partir del JWT: todavía no hay
+  // empresaId de sesión fiable en ese punto (es justamente lo que esta
+  // consulta ayuda a derivar), y para SUPER_ADMIN nunca hay una empresa
+  // propia que inyectar. Solo lee versionSesion por id, nunca escribe.
+  "src/plugins/contexto.ts",
+  // Perfil propio: la fila que se lee/actualiza es siempre la del propio
+  // usuario autenticado (contexto.usuarioId), nunca una fila ajena. Para
+  // SUPER_ADMIN (empresaId nulo en su propio registro, igual que en
+  // /auth/yo) no hay cliente extendido posible.
+  "src/routes/perfil.ts",
 ]);
 
 // Archivos que son el MECANISMO de aislamiento en sí, no un handler que lo

@@ -156,7 +156,7 @@ async function totalesDesde(cliente: Prisma.TransactionClient, desde: Date) {
 // que necesita para vender, nunca la administración del catálogo.
 export const ventas = new Elysia({ prefix: "/ventas" })
   .use(requiereRol(Rol.VENDEDOR))
-  .onBeforeHandle({ as: "scoped" }, ({ contexto, set }) => {
+  .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;
       return {

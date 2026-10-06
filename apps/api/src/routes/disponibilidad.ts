@@ -17,7 +17,7 @@ const esquemaConteo = t.Object({
 // (D6: la base de correos/contraseñas es exclusiva de ADMIN).
 export const disponibilidad = new Elysia({ prefix: "/disponibilidad" })
   .use(requiereRol(Rol.VENDEDOR))
-  .onBeforeHandle({ as: "scoped" }, ({ contexto, set }) => {
+  .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;
       return {
