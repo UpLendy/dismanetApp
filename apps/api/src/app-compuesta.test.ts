@@ -16,6 +16,7 @@ import { cuentas } from "./routes/cuentas.ts";
 import { disponibilidad } from "./routes/disponibilidad.ts";
 import { ventas } from "./routes/ventas.ts";
 import { plantillas } from "./routes/plantillas.ts";
+import { perfil } from "./routes/perfil.ts";
 
 // Regresión: `empresas.ts` aplica requiereRol(ADMIN) para crear y
 // requiereRol(SUPER_ADMIN) para el resto, dentro de la MISMA app compuesta
@@ -39,7 +40,8 @@ const app = new Elysia()
   .use(cuentas)
   .use(disponibilidad)
   .use(ventas)
-  .use(plantillas);
+  .use(plantillas)
+  .use(perfil);
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -211,5 +213,30 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuestaTotalesAdmin.status).toBe(200);
     const respuestaAnularAdmin = await patch(`/ventas/${ventaId}/anular`, cookieAdmin);
     expect(respuestaAnularAdmin.status).toBe(200);
+  });
+
+  // Regresión: paquetes.ts, precios.ts, cuentas.ts, disponibilidad.ts y
+  // ventas.ts declaraban su propio onBeforeHandle de SIN_EMPRESA_ACTIVA con
+  // { as: "scoped" } directamente sobre la instancia exportada que index.ts
+  // monta sobre app. "scoped" sube exactamente un nivel — y como esa
+  // instancia se monta directo sobre app, ese nivel ES app, así que el hook
+  // se aplicaba a TODA la app compuesta. Para cualquier request sin empresa
+  // activa (sin cookie o con versionSesion vencida), paquetes.ts respondía
+  // primero (es el primero de los cinco en montarse) y tapaba el 401/403
+  // real de /cuentas, /disponibilidad, /plantillas y /perfil con un 400
+  // SIN_EMPRESA_ACTIVA ajeno. Las pruebas por router nunca lo detectan
+  // porque cada router se prueba con sesión válida o aislado con .handle().
+  it("una petición sin cookie recibe el 401/403 propio de cada router, no un SIN_EMPRESA_ACTIVA filtrado desde paquetes/precios/cuentas/disponibilidad/ventas", async () => {
+    const sinCookie = async (ruta: string) => app.handle(new Request(`http://local${ruta}`));
+
+    const respuestaPerfil = await sinCookie("/perfil");
+    expect(respuestaPerfil.status).toBe(401);
+    expect((await respuestaPerfil.json()).error.codigo).toBe("NO_AUTENTICADO");
+
+    for (const ruta of ["/cuentas", "/disponibilidad", "/plantillas", "/paquetes"]) {
+      const respuesta = await sinCookie(ruta);
+      expect(respuesta.status).toBe(403);
+      expect((await respuesta.json()).error.codigo).toBe("PERMISO_DENEGADO");
+    }
   });
 });

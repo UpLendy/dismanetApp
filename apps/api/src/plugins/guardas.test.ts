@@ -34,7 +34,7 @@ describe("R4 — guardas de rol", () => {
   let empresaId: string;
   let vendedorId: string;
   let adminId: string;
-  const superAdminId = "super-admin-de-prueba";
+  let superAdminId: string;
 
   beforeAll(async () => {
     const empresa = await prismaRaw.empresa.create({ data: { nombre: "Empresa guardas", prefijoCodigo: "GRD" } });
@@ -49,10 +49,26 @@ describe("R4 — guardas de rol", () => {
       data: { empresaId, email: `admin-guardas-${Date.now()}@test.local`, passwordHash: "x", nombre: "A", rol: "ADMIN" },
     });
     adminId = admin.id;
+
+    // empresaId nulo: así es el registro real de un SUPER_ADMIN (ver
+    // schema.prisma). contexto.ts ahora busca el usuario por id en cada
+    // petición (para comparar versionSesion), así que el id del token debe
+    // existir de verdad en la base — un id inventado ya no basta.
+    const superAdmin = await prismaRaw.usuario.create({
+      data: {
+        empresaId: null,
+        email: `super-admin-guardas-${Date.now()}@test.local`,
+        passwordHash: "x",
+        nombre: "S",
+        rol: "SUPER_ADMIN",
+      },
+    });
+    superAdminId = superAdmin.id;
   });
 
   afterAll(async () => {
     await prismaRaw.usuario.deleteMany({ where: { empresaId } });
+    await prismaRaw.usuario.delete({ where: { id: superAdminId } });
     await prismaRaw.empresa.delete({ where: { id: empresaId } });
   });
 
@@ -62,37 +78,37 @@ describe("R4 — guardas de rol", () => {
   });
 
   it("con sesión válida: 200 en una ruta que solo exige autenticación", async () => {
-    const tok = await token({ usuarioId: vendedorId, rol: Rol.VENDEDOR, empresaId });
+    const tok = await token({ usuarioId: vendedorId, rol: Rol.VENDEDOR, empresaId, versionSesion: 1 });
     const respuesta = await appAutenticado.handle(peticionCon(tok));
     expect(respuesta.status).toBe(200);
   });
 
   it("VENDEDOR: 403 en una ruta que exige ADMIN", async () => {
-    const tok = await token({ usuarioId: vendedorId, rol: Rol.VENDEDOR, empresaId });
+    const tok = await token({ usuarioId: vendedorId, rol: Rol.VENDEDOR, empresaId, versionSesion: 1 });
     const respuesta = await appAdmin.handle(peticionCon(tok));
     expect(respuesta.status).toBe(403);
   });
 
   it("VENDEDOR: 403 en una ruta que exige SUPER_ADMIN", async () => {
-    const tok = await token({ usuarioId: vendedorId, rol: Rol.VENDEDOR, empresaId });
+    const tok = await token({ usuarioId: vendedorId, rol: Rol.VENDEDOR, empresaId, versionSesion: 1 });
     const respuesta = await appSuperAdmin.handle(peticionCon(tok));
     expect(respuesta.status).toBe(403);
   });
 
   it("ADMIN: 403 en una ruta que exige SUPER_ADMIN", async () => {
-    const tok = await token({ usuarioId: adminId, rol: Rol.ADMIN, empresaId });
+    const tok = await token({ usuarioId: adminId, rol: Rol.ADMIN, empresaId, versionSesion: 1 });
     const respuesta = await appSuperAdmin.handle(peticionCon(tok));
     expect(respuesta.status).toBe(403);
   });
 
   it("ADMIN: 200 en una ruta que exige ADMIN (no bloquea al rol que sí califica)", async () => {
-    const tok = await token({ usuarioId: adminId, rol: Rol.ADMIN, empresaId });
+    const tok = await token({ usuarioId: adminId, rol: Rol.ADMIN, empresaId, versionSesion: 1 });
     const respuesta = await appAdmin.handle(peticionCon(tok));
     expect(respuesta.status).toBe(200);
   });
 
   it("SUPER_ADMIN: 200 en rutas que exigen ADMIN o SUPER_ADMIN (jerarquía, no lista cerrada)", async () => {
-    const tok = await token({ usuarioId: superAdminId, rol: Rol.SUPER_ADMIN, empresaId: null });
+    const tok = await token({ usuarioId: superAdminId, rol: Rol.SUPER_ADMIN, empresaId: null, versionSesion: 1 });
 
     const comoAdmin = await appAdmin.handle(peticionCon(tok));
     expect(comoAdmin.status).toBe(200);

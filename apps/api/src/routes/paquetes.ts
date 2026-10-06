@@ -76,7 +76,7 @@ function diasAproximados(duracion: { cantidad: number; unidad: UnidadDuracion })
 // histórico — la venta copia lo que necesita al momento de vender (R3).
 export const paquetes = new Elysia({ prefix: "/paquetes" })
   .use(requiereRol(Rol.ADMIN))
-  .onBeforeHandle({ as: "scoped" }, ({ contexto, set }) => {
+  .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;
       return {

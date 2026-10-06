@@ -113,7 +113,7 @@ function contarPorCuenta(estados: { cuentaId: string; activa: boolean; libre: bo
 // (R3/CLAUDE.md), una cuenta o pantalla nunca se borra: se desactiva.
 export const cuentas = new Elysia({ prefix: "/cuentas" })
   .use(requiereRol(Rol.ADMIN))
-  .onBeforeHandle({ as: "scoped" }, ({ contexto, set }) => {
+  .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;
       return {
