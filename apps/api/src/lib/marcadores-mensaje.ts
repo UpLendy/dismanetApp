@@ -10,6 +10,7 @@ const MARCADORES_COMUNES = [
   "duracion",
   "fechaVencimiento",
   "precio",
+  "celular",
 ] as const;
 
 const MARCADORES_UNIDAD = [...MARCADORES_COMUNES, "plataforma", "perfil", "pin", "correo", "clave"] as const;

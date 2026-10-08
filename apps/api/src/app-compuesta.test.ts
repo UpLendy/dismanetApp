@@ -18,6 +18,9 @@ import { ventas } from "./routes/ventas.ts";
 import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
 
+/** Forma de error del API: `{ error: { codigo, mensaje } }` (CLAUDE.md). */
+type RespuestaError = { error: { codigo: string; mensaje: string } };
+
 // Regresión: `empresas.ts` aplica requiereRol(ADMIN) para crear y
 // requiereRol(SUPER_ADMIN) para el resto, dentro de la MISMA app compuesta
 // que usuarios/plataformas/duraciones/tipos-cliente. Si las guardas de
@@ -215,6 +218,31 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuestaAnularAdmin.status).toBe(200);
   });
 
+  // Entrega 10: /ventas/codigos se montó después de la guarda de ADMIN de la
+  // línea de /listado. Esta prueba existe porque el endpoint devuelve los
+  // códigos de TODA la empresa sin paginar: si la guarda se moviera de nivel,
+  // un VENDEDOR se llevaría las compras de sus compañeros en una sola llamada.
+  it("Entrega 10: /ventas/codigos es solo de ADMIN, trae el conjunto filtrado completo y deja fuera las anuladas", async () => {
+    const respuestaVenta = await post("/ventas", { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    expect(respuestaVenta.status).toBe(201);
+    const { venta } = (await respuestaVenta.json()) as { venta: { id: string; codigoCompra: string } };
+
+    const respuestaVendedor = await get("/ventas/codigos", cookieVendedor);
+    expect(respuestaVendedor.status).toBe(403);
+
+    const respuestaAdmin = await get("/ventas/codigos", cookieAdmin);
+    expect(respuestaAdmin.status).toBe(200);
+    const { codigos } = (await respuestaAdmin.json()) as { codigos: string[] };
+    expect(codigos).toContain(venta.codigoCompra);
+
+    const respuestaAnular = await patch(`/ventas/${venta.id}/anular`, cookieAdmin);
+    expect(respuestaAnular.status).toBe(200);
+
+    const despues = await get("/ventas/codigos", cookieAdmin);
+    const { codigos: codigosDespues } = (await despues.json()) as { codigos: string[] };
+    expect(codigosDespues).not.toContain(venta.codigoCompra);
+  });
+
   // Regresión: paquetes.ts, precios.ts, cuentas.ts, disponibilidad.ts y
   // ventas.ts declaraban su propio onBeforeHandle de SIN_EMPRESA_ACTIVA con
   // { as: "scoped" } directamente sobre la instancia exportada que index.ts
@@ -231,12 +259,12 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
 
     const respuestaPerfil = await sinCookie("/perfil");
     expect(respuestaPerfil.status).toBe(401);
-    expect((await respuestaPerfil.json()).error.codigo).toBe("NO_AUTENTICADO");
+    expect(((await respuestaPerfil.json()) as RespuestaError).error.codigo).toBe("NO_AUTENTICADO");
 
     for (const ruta of ["/cuentas", "/disponibilidad", "/plantillas", "/paquetes"]) {
       const respuesta = await sinCookie(ruta);
       expect(respuesta.status).toBe(403);
-      expect((await respuesta.json()).error.codigo).toBe("PERMISO_DENEGADO");
+      expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("PERMISO_DENEGADO");
     }
   });
 });

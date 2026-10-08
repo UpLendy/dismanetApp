@@ -264,6 +264,35 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     expect(reventa.status).toBe(201);
   });
 
+  it("(f) /codigos: solo el conjunto filtrado, sin anuladas, sin paginar, y exclusivo de ADMIN", async () => {
+    // En este punto empresa A tiene 3 ventas en total: la de vendedor2 (activa),
+    // codigoVenta1 (anulada en la prueba anterior) y la reventa que la
+    // sustituyó (activa). codigoVenta1 debe quedar fuera sin importar el filtro.
+    const sinFiltro = await get("/ventas/codigos", cookieAdminA);
+    expect(sinFiltro.status).toBe(200);
+    const cuerpoSinFiltro = (await sinFiltro.json()) as { codigos: string[] };
+    expect(cuerpoSinFiltro.codigos).toHaveLength(2);
+    expect(cuerpoSinFiltro.codigos).not.toContain(codigoVenta1);
+
+    // Filtrado por vendedor1: solo le queda una venta activa (la reventa),
+    // la anulada no entra aunque el filtro no excluya explícitamente a codigoVenta1.
+    const porVendedor = await get(`/ventas/codigos?vendedorId=${vendedor1Id}`, cookieAdminA);
+    const cuerpoPorVendedor = (await porVendedor.json()) as { codigos: string[] };
+    expect(cuerpoPorVendedor.codigos).toHaveLength(1);
+    expect(cuerpoPorVendedor.codigos[0]).not.toBe(codigoVenta1);
+
+    // Un filtro que no devuelve ninguna venta responde con lista vacía, no error.
+    const sinResultados = await get("/ventas/codigos?plataformaId=no-existe", cookieAdminA);
+    expect(sinResultados.status).toBe(200);
+    expect(((await sinResultados.json()) as { codigos: string[] }).codigos).toHaveLength(0);
+
+    // No cruza empresas: el código de la venta de empresa B nunca aparece.
+    expect(cuerpoSinFiltro.codigos).not.toContain(codigoVentaB);
+
+    const comoVendedor = await get("/ventas/codigos", cookieVendedor1);
+    expect(comoVendedor.status).toBe(403);
+  });
+
   it("anular responde 404 para una venta inexistente y 409 si ya estaba anulada", async () => {
     const inexistente = await patch("/ventas/no-existe/anular", cookieAdminA);
     expect(inexistente.status).toBe(404);

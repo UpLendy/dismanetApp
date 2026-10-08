@@ -83,6 +83,8 @@ export interface DatosMensajeComunes {
   nombreDuracion: string;
   fechaVencimientoMax: Date;
   precioVenta: Prisma.Decimal | number | string;
+  /** Celular del comprador final, opcional (R3: copia histórica). */
+  celularCliente?: string | null;
 }
 
 function sustituirMarcadoresComunes(plantilla: string, datos: DatosMensajeComunes): string {
@@ -93,7 +95,8 @@ function sustituirMarcadoresComunes(plantilla: string, datos: DatosMensajeComune
     .replaceAll("{{tipoCliente}}", datos.nombreTipoCliente)
     .replaceAll("{{duracion}}", datos.nombreDuracion)
     .replaceAll("{{fechaVencimiento}}", formatearFechaNumerica(datos.fechaVencimientoMax))
-    .replaceAll("{{precio}}", formatearPesos(datos.precioVenta));
+    .replaceAll("{{precio}}", formatearPesos(datos.precioVenta))
+    .replaceAll("{{celular}}", datos.celularCliente ?? "");
 }
 
 export interface DatosMensajeUnidad extends DatosMensajeComunes {

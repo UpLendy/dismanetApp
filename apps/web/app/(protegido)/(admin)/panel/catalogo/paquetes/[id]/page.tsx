@@ -3,13 +3,13 @@
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, Plus, Trash2, Ban, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Ban, CheckCircle2, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Boton } from "@/components/ui/boton";
 import { Campo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
 import { Aviso } from "@/components/ui/aviso";
-import { PastillaEstado } from "@/components/ui/pastilla";
+import { Pastilla, PastillaEstado } from "@/components/ui/pastilla";
 import { Dialogo } from "@/components/ui/dialogo";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { CargandoTarjeta } from "@/components/ui/cargando";
@@ -20,6 +20,7 @@ interface Paquete {
   nombre: string;
   descripcion: string | null;
   activo: boolean;
+  esPromocion: boolean;
 }
 
 interface Componente {
@@ -231,6 +232,11 @@ export default function PaginaDetallePaquete() {
           <div className="mt-1 flex items-center gap-2">
             <h1 className="titulo-pagina text-ink">{paquete.nombre}</h1>
             <PastillaEstado estado={paquete.activo ? "activo" : "inactivo"} />
+            {paquete.esPromocion ? (
+              <Pastilla tono="secundario" icono={Sparkles}>
+                Promoción
+              </Pastilla>
+            ) : null}
           </div>
           {paquete.descripcion ? <p className="cuerpo text-ink-muted">{paquete.descripcion}</p> : null}
         </div>

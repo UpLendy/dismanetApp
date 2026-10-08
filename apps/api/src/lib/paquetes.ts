@@ -75,6 +75,7 @@ export async function resolverComposicionDePaquete(
 export interface PaqueteDisponible {
   id: string;
   nombre: string;
+  esPromocion: boolean;
 }
 
 /**
@@ -96,6 +97,7 @@ export async function paquetesDisponibles(
     select: {
       id: true,
       nombre: true,
+      esPromocion: true,
       paquetePlataformas: { select: { plataformaId: true, cantidadPantallas: true } },
     },
   });
@@ -130,7 +132,7 @@ export async function paquetesDisponibles(
         (componente) => (libresPorPlataforma.get(componente.plataformaId) ?? 0) >= componente.cantidadPantallas,
       ),
     )
-    .map((paquete) => ({ id: paquete.id, nombre: paquete.nombre }));
+    .map((paquete) => ({ id: paquete.id, nombre: paquete.nombre, esPromocion: paquete.esPromocion }));
 }
 
 export interface CostoComponentes {

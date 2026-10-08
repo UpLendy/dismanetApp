@@ -2,13 +2,13 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { Plus, Pencil, Ban, CheckCircle2, Package, ChevronRight } from "lucide-react";
+import { Plus, Pencil, Ban, CheckCircle2, Package, ChevronRight, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Boton } from "@/components/ui/boton";
 import { Campo, EntradaCampo, AreaCampo } from "@/components/ui/campo";
 import { Aviso } from "@/components/ui/aviso";
-import { PastillaEstado } from "@/components/ui/pastilla";
+import { Pastilla, PastillaEstado } from "@/components/ui/pastilla";
 import { PanelLateral } from "@/components/ui/panel-lateral";
 import { Dialogo } from "@/components/ui/dialogo";
 import { EstadoVacio } from "@/components/ui/estado-vacio";
@@ -35,6 +35,7 @@ interface Paquete {
   nombre: string;
   descripcion: string | null;
   activo: boolean;
+  esPromocion: boolean;
   composicion: Componente[];
   excepciones: Excepcion[];
 }
@@ -45,6 +46,7 @@ interface Impacto {
 }
 
 type Filtro = "todos" | "activos" | "inactivos";
+type FiltroPromocion = "todos" | "paquetes" | "promociones";
 
 function mensajeDeError(errorRespuesta: unknown): string {
   const valor = (errorRespuesta as { value?: { error?: { mensaje?: string } } } | undefined)?.value;
@@ -94,16 +96,24 @@ const FILTROS: { valor: Filtro; etiqueta: string }[] = [
   { valor: "inactivos", etiqueta: "Inactivos" },
 ];
 
+const FILTROS_PROMOCION: { valor: FiltroPromocion; etiqueta: string }[] = [
+  { valor: "todos", etiqueta: "Todos" },
+  { valor: "paquetes", etiqueta: "Paquetes" },
+  { valor: "promociones", etiqueta: "Promociones" },
+];
+
 export default function PaginaPaquetes() {
   const [paquetes, setPaquetes] = useState<Paquete[]>([]);
   const [cargandoLista, setCargandoLista] = useState(true);
   const [errorLista, setErrorLista] = useState<string | null>(null);
   const [filtro, setFiltro] = useState<Filtro>("todos");
+  const [filtroPromocion, setFiltroPromocion] = useState<FiltroPromocion>("todos");
 
   const [panelAbierto, setPanelAbierto] = useState(false);
   const [editandoId, setEditandoId] = useState<string | null>(null);
   const [nombre, setNombre] = useState("");
   const [descripcion, setDescripcion] = useState("");
+  const [esPromocion, setEsPromocion] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [errorFila, setErrorFila] = useState<string | null>(null);
@@ -131,6 +141,7 @@ export default function PaginaPaquetes() {
     setEditandoId(null);
     setNombre("");
     setDescripcion("");
+    setEsPromocion(false);
     setError(null);
     setPanelAbierto(true);
   }
@@ -139,6 +150,7 @@ export default function PaginaPaquetes() {
     setEditandoId(paquete.id);
     setNombre(paquete.nombre);
     setDescripcion(paquete.descripcion ?? "");
+    setEsPromocion(paquete.esPromocion);
     setError(null);
     setPanelAbierto(true);
   }
@@ -148,7 +160,7 @@ export default function PaginaPaquetes() {
     setError(null);
     setGuardando(true);
 
-    const cuerpo = { nombre, ...(descripcion ? { descripcion } : {}) };
+    const cuerpo = { nombre, ...(descripcion ? { descripcion } : {}), esPromocion };
 
     const { data, error: errorRespuesta } = editandoId
       ? await api.paquetes({ id: editandoId }).patch(cuerpo)
@@ -196,8 +208,10 @@ export default function PaginaPaquetes() {
   }
 
   const paquetesFiltrados = paquetes.filter((p) => {
-    if (filtro === "activos") return p.activo;
-    if (filtro === "inactivos") return !p.activo;
+    if (filtro === "activos" && !p.activo) return false;
+    if (filtro === "inactivos" && p.activo) return false;
+    if (filtroPromocion === "paquetes" && p.esPromocion) return false;
+    if (filtroPromocion === "promociones" && !p.esPromocion) return false;
     return true;
   });
 
@@ -217,22 +231,42 @@ export default function PaginaPaquetes() {
         </Boton>
       </div>
 
-      <div className="flex gap-1.5">
-        {FILTROS.map((opcion) => (
-          <button
-            key={opcion.valor}
-            type="button"
-            onClick={() => setFiltro(opcion.valor)}
-            className={cn(
-              "rounded-control border px-3 py-1.5 text-xs font-medium transition-colors",
-              filtro === opcion.valor
-                ? "border-primario-suave bg-primario-suave text-primario-texto"
-                : "border-borde text-ink-2 hover:bg-black/4 dark:hover:bg-white/5",
-            )}
-          >
-            {opcion.etiqueta}
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-3">
+        <div className="flex gap-1.5">
+          {FILTROS.map((opcion) => (
+            <button
+              key={opcion.valor}
+              type="button"
+              onClick={() => setFiltro(opcion.valor)}
+              className={cn(
+                "rounded-control border px-3 py-1.5 text-xs font-medium transition-colors",
+                filtro === opcion.valor
+                  ? "border-primario-suave bg-primario-suave text-primario-texto"
+                  : "border-borde text-ink-2 hover:bg-black/4 dark:hover:bg-white/5",
+              )}
+            >
+              {opcion.etiqueta}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-1.5">
+          {FILTROS_PROMOCION.map((opcion) => (
+            <button
+              key={opcion.valor}
+              type="button"
+              onClick={() => setFiltroPromocion(opcion.valor)}
+              className={cn(
+                "rounded-control border px-3 py-1.5 text-xs font-medium transition-colors",
+                filtroPromocion === opcion.valor
+                  ? "border-secundario bg-secundario-suave text-secundario"
+                  : "border-borde text-ink-2 hover:bg-black/4 dark:hover:bg-white/5",
+              )}
+            >
+              {opcion.etiqueta}
+            </button>
+          ))}
+        </div>
       </div>
 
       {errorFila ? <Aviso variante="critico">{errorFila}</Aviso> : null}
@@ -273,7 +307,14 @@ export default function PaginaPaquetes() {
                 <TablaCelda className="font-medium text-ink align-top">{paquete.nombre}</TablaCelda>
                 <TablaCelda className="max-w-md align-top text-ink-muted">{lineaComposicion(paquete)}</TablaCelda>
                 <TablaCelda className="align-top">
-                  <PastillaEstado estado={paquete.activo ? "activo" : "inactivo"} />
+                  <div className="flex flex-wrap gap-1.5">
+                    <PastillaEstado estado={paquete.activo ? "activo" : "inactivo"} />
+                    {paquete.esPromocion ? (
+                      <Pastilla tono="secundario" icono={Sparkles}>
+                        Promoción
+                      </Pastilla>
+                    ) : null}
+                  </div>
                 </TablaCelda>
                 <TablaCelda className="align-top">
                   <div className="flex justify-end gap-2">
@@ -331,6 +372,16 @@ export default function PaginaPaquetes() {
               <AreaCampo {...props} rows={2} value={descripcion} onChange={(e) => setDescripcion(e.target.value)} />
             )}
           </Campo>
+
+          <label className="flex items-center gap-2 cuerpo text-ink">
+            <input
+              type="checkbox"
+              checked={esPromocion}
+              onChange={(e) => setEsPromocion(e.target.checked)}
+              className="size-4 rounded accent-secundario"
+            />
+            Es promoción
+          </label>
 
           {!editandoId ? (
             <p className="text-xs text-ink-muted">

@@ -16,6 +16,7 @@ export const DATOS_EJEMPLO: Record<"UNIDAD" | "PAQUETE", EntradaMensajeVenta> = 
       nombreDuracion: "30 días",
       fechaVencimientoMax: FECHA_VENCIMIENTO_EJEMPLO,
       precioVenta: "11400",
+      celularCliente: "3001234567",
       nombrePlataformaMensaje: "N.E.T.F.L.I.X",
       perfil: "E",
       pin: "5010",
@@ -32,6 +33,7 @@ export const DATOS_EJEMPLO: Record<"UNIDAD" | "PAQUETE", EntradaMensajeVenta> = 
       nombreDuracion: "30 días",
       fechaVencimientoMax: FECHA_VENCIMIENTO_EJEMPLO,
       precioVenta: "19900",
+      celularCliente: "3001234567",
       nombrePaquete: "Básico 1",
       componentes: [
         {

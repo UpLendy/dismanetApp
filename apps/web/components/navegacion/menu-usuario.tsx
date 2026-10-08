@@ -1,20 +1,42 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Popover } from "radix-ui";
-import { ChevronDown, LogOut, User } from "lucide-react";
+import { ChevronDown, LogOut, Moon, Sun, User } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Rol } from "@/lib/rol";
+import { cn } from "@/lib/utils";
 
-// MenuUsuario — punto de entrada único a /perfil y a cerrar sesión, agrupados
-// bajo la identidad del usuario en la barra superior (mismo patrón Popover
-// que SelectorEmpresa).
+type Tema = "light" | "dark";
+
+function aplicarTema(tema: Tema) {
+  try {
+    document.documentElement.setAttribute("data-theme", tema);
+    localStorage.setItem("tema", tema);
+  } catch {
+    // localStorage puede fallar en ventana privada: el atributo ya quedó puesto arriba.
+  }
+}
+
+// MenuUsuario — punto de entrada único a /perfil, al selector de tema y a
+// cerrar sesión, agrupados bajo la identidad del usuario en la barra
+// superior (mismo patrón Popover que SelectorEmpresa).
 export function MenuUsuario({ usuario }: { usuario: { nombre: string; email: string; rol: Rol } }) {
   const router = useRouter();
   const [abierto, setAbierto] = useState(false);
   const [cerrandoSesion, setCerrandoSesion] = useState(false);
+  const [tema, setTema] = useState<Tema>("light");
+
+  useEffect(() => {
+    setTema(document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light");
+  }, []);
+
+  function elegirTema(siguiente: Tema) {
+    setTema(siguiente);
+    aplicarTema(siguiente);
+  }
 
   async function cerrarSesion() {
     setCerrandoSesion(true);
@@ -49,6 +71,33 @@ export function MenuUsuario({ usuario }: { usuario: { nombre: string; email: str
           <div className="px-2 py-1.5">
             <p className="truncate text-sm font-medium text-ink">{usuario.nombre}</p>
             <p className="truncate text-xs text-ink-muted">{usuario.email}</p>
+          </div>
+          <div className="my-1 border-t border-borde" />
+          <div className="flex items-center gap-1 px-2 py-1.5">
+            <button
+              type="button"
+              onClick={() => elegirTema("light")}
+              aria-pressed={tema === "light"}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded-control py-1.5 text-xs font-medium transition-colors",
+                tema === "light" ? "bg-primario-suave text-primario-texto" : "text-ink-muted hover:bg-black/4",
+              )}
+            >
+              <Sun className="size-3.5" />
+              Claro
+            </button>
+            <button
+              type="button"
+              onClick={() => elegirTema("dark")}
+              aria-pressed={tema === "dark"}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded-control py-1.5 text-xs font-medium transition-colors",
+                tema === "dark" ? "bg-primario-suave text-primario-texto" : "text-ink-muted hover:bg-black/4",
+              )}
+            >
+              <Moon className="size-3.5" />
+              Oscuro
+            </button>
           </div>
           <div className="my-1 border-t border-borde" />
           <Link

@@ -73,19 +73,9 @@
 }
 
 /* Modo oscuro: conjunto de valores elegido, no una inversión automática
-   (DISENO.md §7). Se declara en dos ámbitos para que un data-theme manual
-   gane en ambos sentidos sobre la preferencia del sistema. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --plano: #0d0d0d;
-    --superficie: #1a1a19;
-    --borde: rgba(255, 255, 255, 0.1);
-    --ink: #ffffff;
-    --ink-2: #c3c2b7;
-    --ink-muted: #898781;
-  }
-}
-
+   (DISENO.md §7). Claro es el default de :root sin condición: la preferencia
+   del sistema operativo no interviene. El script en línea de layout.tsx pone
+   siempre data-theme="light" o "dark" antes de pintar. */
 :root[data-theme="dark"] {
   --plano: #0d0d0d;
   --superficie: #1a1a19;

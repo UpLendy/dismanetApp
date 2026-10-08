@@ -734,3 +734,162 @@ describe("realizarVenta (0c, prueba forzada) — colisión real de código de co
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Promoción (esPromocion) — una promoción es un Paquete con esPromocion=true;
+// no hay una segunda ruta de venta. R3: Venta.esPromocion es copia inmutable
+// del paquete al momento de vender. R2: una promoción de varios componentes
+// sigue siendo todo o nada.
+// ---------------------------------------------------------------------------
+
+describe("realizarVenta — Promoción", () => {
+  let empresaId: string;
+  let vendedorId: string;
+  let plataformaNetflixId: string;
+  let plataformaDisneyId: string;
+  let duracion30Id: string;
+  let tipoClienteId: string;
+  let paquetePromoId: string;
+
+  beforeAll(async () => {
+    const empresa = await prismaRaw.empresa.create({
+      data: { nombre: "Empresa promoción (ventas.test)", prefijoCodigo: "PRM" },
+    });
+    empresaId = empresa.id;
+
+    const vendedor = await prismaRaw.usuario.create({
+      data: {
+        empresaId,
+        email: `vendedor-promo-${randomUUID()}@test.local`,
+        passwordHash: "hash",
+        nombre: "Vendedor",
+        rol: "VENDEDOR",
+      },
+    });
+    vendedorId = vendedor.id;
+
+    const netflix = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "Netflix (promo.test)", capacidadPantallas: 1, usaPerfilPin: true },
+    });
+    plataformaNetflixId = netflix.id;
+    const cuentaNetflix = await prismaRaw.cuenta.create({
+      data: { empresaId, plataformaId: plataformaNetflixId, correo: "netflix@promo.test", password: cifrar("clave"), capacidadPantallas: 1 },
+    });
+    // Una pantalla libre: suficiente para una venta UNIDAD de Netflix, pero
+    // el paquete promocional exige 1 de Netflix Y 1 de Disney+ a la vez.
+    await prismaRaw.pantalla.create({
+      data: { empresaId, cuentaId: cuentaNetflix.id, numero: 1, perfil: "Perfil 1", pin: cifrar("1234") },
+    });
+
+    const disney = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "Disney+ (promo.test)", capacidadPantallas: 1, usaPerfilPin: false },
+    });
+    plataformaDisneyId = disney.id;
+    // Cuenta sin ninguna pantalla: 0 cupo libre siempre, de forma
+    // determinista (no depende de agotar inventario con una venta previa).
+    await prismaRaw.cuenta.create({
+      data: { empresaId, plataformaId: plataformaDisneyId, correo: "disney@promo.test", password: cifrar("clave"), capacidadPantallas: 1 },
+    });
+
+    const duracion30 = await prismaRaw.duracion.create({
+      data: { empresaId, nombre: "30 días (promo.test)", cantidad: 30, unidad: "DIAS" },
+    });
+    duracion30Id = duracion30.id;
+
+    const tipoCliente = await prismaRaw.tipoCliente.create({ data: { empresaId, nombre: "Nuevo (promo.test)" } });
+    tipoClienteId = tipoCliente.id;
+
+    const paquetePromo = await prismaRaw.paquete.create({
+      data: { empresaId, nombre: "Promo 2x1 (promo.test)", esPromocion: true },
+    });
+    paquetePromoId = paquetePromo.id;
+    await prismaRaw.paquetePlataforma.create({
+      data: { empresaId, paqueteId: paquetePromoId, plataformaId: plataformaNetflixId, cantidadPantallas: 1 },
+    });
+    await prismaRaw.paquetePlataforma.create({
+      data: { empresaId, paqueteId: paquetePromoId, plataformaId: plataformaDisneyId, cantidadPantallas: 1 },
+    });
+    await prismaRaw.precio.create({
+      data: { empresaId, paqueteId: paquetePromoId, duracionId: duracion30Id, tipoClienteId, precioVenta: "20000", costo: "10000" },
+    });
+
+    await prismaRaw.plantillaMensaje.create({
+      data: {
+        empresaId,
+        tipo: "PAQUETE",
+        contenido: "Código: {{codigoCompra}} | {{paquete}}\n{{listaCuentas}}\nVence: {{fechaVencimiento}} | {{precio}}",
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
+    await prismaRaw.venta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+    await prismaRaw.precio.deleteMany({ where: { empresaId } });
+    await prismaRaw.paquetePlataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.paquete.deleteMany({ where: { empresaId } });
+    await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
+    await prismaRaw.duracion.deleteMany({ where: { empresaId } });
+    await prismaRaw.pantalla.deleteMany({ where: { empresaId } });
+    await prismaRaw.cuenta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.usuario.deleteMany({ where: { empresaId } });
+    await prismaRaw.empresa.delete({ where: { id: empresaId } });
+  });
+
+  it("R2: promoción de dos componentes es todo o nada si a uno le falta cupo", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "PAQUETE",
+        paqueteId: paquetePromoId,
+        duracionId: duracion30Id,
+        tipoClienteId,
+      }),
+    );
+
+    // Disney+ no tiene ninguna pantalla: la promoción debe fallar entera.
+    expect(resultado.tipo).toBe("inventario_insuficiente");
+    if (resultado.tipo === "inventario_insuficiente") {
+      expect(resultado.nombrePlataforma).toBe("Disney+ (promo.test)");
+    }
+
+    // Netflix sí tenía cupo: si quedó algo tomado ahí, no fue todo o nada.
+    const detallesNetflix = await prismaRaw.ventaDetalle.findMany({
+      where: { empresaId, plataformaId: plataformaNetflixId },
+    });
+    expect(detallesNetflix).toHaveLength(0);
+
+    const ventas = await prismaRaw.venta.findMany({ where: { empresaId, paqueteId: paquetePromoId } });
+    expect(ventas).toHaveLength(0);
+  });
+
+  it("R3: Venta.esPromocion es copia inmutable — desmarcar el paquete después no cambia ventas ya hechas", async () => {
+    // Darle a Disney+ su propia pantalla para que esta venta sí se complete.
+    const cuentaDisney = await prismaRaw.cuenta.findFirstOrThrow({ where: { empresaId, plataformaId: plataformaDisneyId } });
+    await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuentaDisney.id, numero: 1 } });
+
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "PAQUETE",
+        paqueteId: paquetePromoId,
+        duracionId: duracion30Id,
+        tipoClienteId,
+      }),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+    expect(resultado.venta.esPromocion).toBe(true);
+
+    // El admin desmarca la promoción el mes entrante...
+    await prismaRaw.paquete.update({ where: { id: paquetePromoId }, data: { esPromocion: false } });
+
+    // ...la venta de este mes sigue contando como promoción (R3): es copia,
+    // no una lectura en vivo de Paquete.esPromocion.
+    const ventaRecargada = await prismaRaw.venta.findUniqueOrThrow({ where: { id: resultado.venta.id } });
+    expect(ventaRecargada.esPromocion).toBe(true);
+  });
+});

@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
-import { Ban, Check, ChevronDown, ChevronUp, Copy, Receipt, Search } from "lucide-react";
+import { Ban, Check, ChevronDown, ChevronUp, Copy, Receipt, Search, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
@@ -32,10 +32,12 @@ interface VentaVendedor {
   nombreDuracion: string;
   nombreTipoCliente: string;
   precioVenta: string;
+  celularCliente: string | null;
   fechaVenta: string;
   fechaVencimientoMax: string;
   mensajeGenerado: string;
   anulada: boolean;
+  esPromocion: boolean;
   detalles: DetalleVenta[];
 }
 
@@ -98,8 +100,26 @@ const FILTROS_VACIOS = {
   tipoVenta: "" as TipoVenta | "",
   plataformaId: "",
   paqueteId: "",
+  esPromocion: "" as "true" | "false" | "",
   codigoCompra: "",
+  celularCliente: "",
 };
+
+function construirQuery(filtrosActuales: typeof FILTROS_VACIOS): Record<string, string> {
+  const query: Record<string, string> = {};
+  if (filtrosActuales.desde) query.desde = filtrosActuales.desde;
+  if (filtrosActuales.hasta) query.hasta = filtrosActuales.hasta;
+  if (filtrosActuales.vendedorId) query.vendedorId = filtrosActuales.vendedorId;
+  if (filtrosActuales.tipoVenta) query.tipoVenta = filtrosActuales.tipoVenta;
+  if (filtrosActuales.plataformaId) query.plataformaId = filtrosActuales.plataformaId;
+  if (filtrosActuales.paqueteId) query.paqueteId = filtrosActuales.paqueteId;
+  // Venta.esPromocion directamente (R3): filtra por lo que la venta era al
+  // vender, no por lo que el paquete relacionado es hoy.
+  if (filtrosActuales.esPromocion) query.esPromocion = filtrosActuales.esPromocion;
+  if (filtrosActuales.codigoCompra) query.codigoCompra = filtrosActuales.codigoCompra;
+  if (filtrosActuales.celularCliente) query.celularCliente = filtrosActuales.celularCliente;
+  return query;
+}
 
 function DetalleCuentas({ detalles }: { detalles: DetalleVenta[] }) {
   return (
@@ -180,6 +200,7 @@ function VentasVendedor() {
               <TablaCeldaCabecera>Ítem</TablaCeldaCabecera>
               <TablaCeldaCabecera>Duración</TablaCeldaCabecera>
               <TablaCeldaCabecera className="text-right">Precio</TablaCeldaCabecera>
+              <TablaCeldaCabecera>Celular</TablaCeldaCabecera>
               <TablaCeldaCabecera>Estado</TablaCeldaCabecera>
               <TablaCeldaCabecera></TablaCeldaCabecera>
             </tr>
@@ -197,8 +218,16 @@ function VentasVendedor() {
                     </TablaCelda>
                     <TablaCelda>{venta.nombreDuracion}</TablaCelda>
                     <TablaCelda className="text-right tabular-nums">{formatearPesos(venta.precioVenta)}</TablaCelda>
+                    <TablaCelda className="text-ink-muted">{venta.celularCliente ?? "—"}</TablaCelda>
                     <TablaCelda>
-                      <PastillaEstado estado={venta.anulada ? "anulada" : "activo"} />
+                      <div className="flex flex-wrap gap-1.5">
+                        <PastillaEstado estado={venta.anulada ? "anulada" : "activo"} />
+                        {venta.esPromocion ? (
+                          <Pastilla tono="secundario" icono={Sparkles}>
+                            Promoción
+                          </Pastilla>
+                        ) : null}
+                      </div>
                     </TablaCelda>
                     <TablaCelda>
                       <div className="flex justify-end gap-2">
@@ -224,7 +253,7 @@ function VentasVendedor() {
                   </TablaFila>
                   {expandido ? (
                     <TablaFila>
-                      <TablaCelda colSpan={6} className="bg-plano">
+                      <TablaCelda colSpan={7} className="bg-plano">
                         <DetalleCuentas detalles={venta.detalles} />
                       </TablaCelda>
                     </TablaFila>
@@ -258,18 +287,13 @@ function VentasAdmin() {
   const [confirmandoAnular, setConfirmandoAnular] = useState<VentaAdmin | null>(null);
   const [anulando, setAnulando] = useState(false);
 
+  const [copiandoCodigos, setCopiandoCodigos] = useState(false);
+  const [codigosCopiados, setCodigosCopiados] = useState<number | null>(null);
+  const [errorCodigos, setErrorCodigos] = useState<string | null>(null);
+
   const cargarVentas = useCallback(async (filtrosActuales: typeof FILTROS_VACIOS) => {
     setCargandoLista(true);
-    const query: Record<string, string> = {};
-    if (filtrosActuales.desde) query.desde = filtrosActuales.desde;
-    if (filtrosActuales.hasta) query.hasta = filtrosActuales.hasta;
-    if (filtrosActuales.vendedorId) query.vendedorId = filtrosActuales.vendedorId;
-    if (filtrosActuales.tipoVenta) query.tipoVenta = filtrosActuales.tipoVenta;
-    if (filtrosActuales.plataformaId) query.plataformaId = filtrosActuales.plataformaId;
-    if (filtrosActuales.paqueteId) query.paqueteId = filtrosActuales.paqueteId;
-    if (filtrosActuales.codigoCompra) query.codigoCompra = filtrosActuales.codigoCompra;
-
-    const { data, error: errorRespuesta } = await api.ventas.listado.get({ query });
+    const { data, error: errorRespuesta } = await api.ventas.listado.get({ query: construirQuery(filtrosActuales) });
     setCargandoLista(false);
     if (errorRespuesta || !data) {
       setErrorLista(mensajeDeError(errorRespuesta));
@@ -308,12 +332,32 @@ function VentasAdmin() {
 
   function buscar(evento: FormEvent<HTMLFormElement>) {
     evento.preventDefault();
+    setCodigosCopiados(null);
+    setErrorCodigos(null);
     cargarVentas(filtros);
   }
 
   function limpiarFiltros() {
     setFiltros(FILTROS_VACIOS);
+    setCodigosCopiados(null);
+    setErrorCodigos(null);
     cargarVentas(FILTROS_VACIOS);
+  }
+
+  // Entrega 10 — copia los códigos del conjunto FILTRADO completo (no solo la
+  // página visible): el endpoint /ventas/codigos vuelve a aplicar los mismos
+  // filtros contra toda la tabla, sin paginar y sin anuladas.
+  async function copiarCodigos() {
+    setCopiandoCodigos(true);
+    setErrorCodigos(null);
+    const { data, error: errorRespuesta } = await api.ventas.codigos.get({ query: construirQuery(filtros) });
+    setCopiandoCodigos(false);
+    if (errorRespuesta || !data) {
+      setErrorCodigos(mensajeDeError(errorRespuesta));
+      return;
+    }
+    await navigator.clipboard.writeText(data.codigos.join("\n"));
+    setCodigosCopiados(data.codigos.length);
   }
 
   async function confirmarAnular() {
@@ -433,6 +477,19 @@ function VentasAdmin() {
               </SelectCampo>
             )}
           </Campo>
+          <Campo etiqueta="Promoción">
+            {(p) => (
+              <SelectCampo
+                {...p}
+                value={filtros.esPromocion}
+                onChange={(e) => actualizarFiltro("esPromocion", e.target.value as "true" | "false" | "")}
+              >
+                <option value="">Todos</option>
+                <option value="true">Promoción</option>
+                <option value="false">No promoción</option>
+              </SelectCampo>
+            )}
+          </Campo>
           <Campo etiqueta="Código de compra" ayuda="Busca por fragmento, sin distinguir mayúsculas.">
             {(p) => (
               <EntradaCampo
@@ -443,7 +500,17 @@ function VentasAdmin() {
               />
             )}
           </Campo>
-          <div className="flex items-end gap-2">
+          <Campo etiqueta="Celular del cliente" ayuda="Busca por fragmento, sin distinguir mayúsculas.">
+            {(p) => (
+              <EntradaCampo
+                {...p}
+                placeholder="3001234567"
+                value={filtros.celularCliente}
+                onChange={(e) => actualizarFiltro("celularCliente", e.target.value)}
+              />
+            )}
+          </Campo>
+          <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-4">
             <Boton type="submit" variante="principal" className="flex-1">
               <Search />
               Buscar
@@ -451,9 +518,24 @@ function VentasAdmin() {
             <Boton type="button" variante="contorno" onClick={limpiarFiltros}>
               Limpiar
             </Boton>
+            <Boton
+              type="button"
+              variante="contorno"
+              disabled={ventas.length === 0 || copiandoCodigos}
+              onClick={copiarCodigos}
+            >
+              <Copy />
+              {copiandoCodigos ? "Copiando…" : "Copiar códigos"}
+            </Boton>
           </div>
         </form>
       </Tarjeta>
+
+      {codigosCopiados !== null ? (
+        <Aviso variante="info">{`${codigosCopiados} ${codigosCopiados === 1 ? "código" : "códigos"} copiados`}</Aviso>
+      ) : null}
+
+      {errorCodigos ? <Aviso variante="critico">{errorCodigos}</Aviso> : null}
 
       {errorFila ? <Aviso variante="critico">{errorFila}</Aviso> : null}
 
@@ -492,6 +574,7 @@ function VentasAdmin() {
               <TablaCeldaCabecera className="text-right">Precio</TablaCeldaCabecera>
               <TablaCeldaCabecera className="text-right">Costo</TablaCeldaCabecera>
               <TablaCeldaCabecera className="text-right">Utilidad</TablaCeldaCabecera>
+              <TablaCeldaCabecera>Celular</TablaCeldaCabecera>
               <TablaCeldaCabecera>Estado</TablaCeldaCabecera>
               <TablaCeldaCabecera></TablaCeldaCabecera>
             </tr>
@@ -513,8 +596,16 @@ function VentasAdmin() {
                     <TablaCelda className="text-right tabular-nums">{formatearPesos(venta.precioVenta)}</TablaCelda>
                     <TablaCelda className="text-right tabular-nums text-ink-muted">{formatearPesos(venta.costo)}</TablaCelda>
                     <TablaCelda className="text-right tabular-nums text-bien">{formatearPesos(venta.utilidad)}</TablaCelda>
+                    <TablaCelda className="text-ink-muted">{venta.celularCliente ?? "—"}</TablaCelda>
                     <TablaCelda>
-                      <PastillaEstado estado={venta.anulada ? "anulada" : "activo"} />
+                      <div className="flex flex-wrap gap-1.5">
+                        <PastillaEstado estado={venta.anulada ? "anulada" : "activo"} />
+                        {venta.esPromocion ? (
+                          <Pastilla tono="secundario" icono={Sparkles}>
+                            Promoción
+                          </Pastilla>
+                        ) : null}
+                      </div>
                     </TablaCelda>
                     <TablaCelda>
                       <div className="flex justify-end gap-2">
@@ -537,7 +628,7 @@ function VentasAdmin() {
                   </TablaFila>
                   {expandido ? (
                     <TablaFila>
-                      <TablaCelda colSpan={8} className="bg-plano">
+                      <TablaCelda colSpan={9} className="bg-plano">
                         <DetalleCuentas detalles={venta.detalles} />
                         {venta.anulada && venta.anuladaPor ? (
                           <p className="mt-2 text-xs text-ink-muted">
