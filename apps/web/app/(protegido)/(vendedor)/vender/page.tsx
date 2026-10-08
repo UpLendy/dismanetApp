@@ -105,7 +105,11 @@ function PestanaModo({
 }
 
 export default function PaginaVender() {
-  const [modo, setModo] = useState<Modo | null>(null);
+  // Arranca en UNIDAD: es la pantalla de más prisa del sistema y abrir sin
+  // modo deja al vendedor viendo tres pestañas, ningún formulario y un botón
+  // muerto. Con dos pestañas venía seleccionado; se perdió al entrar la
+  // tercera. El tipo sigue admitiendo null porque elegirModo lo usa.
+  const [modo, setModo] = useState<Modo | null>("UNIDAD");
   const [tiposCliente, setTiposCliente] = useState<Opcion[]>([]);
   const [duraciones, setDuraciones] = useState<Opcion[]>([]);
   const [tipoClienteId, setTipoClienteId] = useState("");
