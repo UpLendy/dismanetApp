@@ -5,8 +5,11 @@ import { AlertDialog } from "radix-ui";
 import { cn } from "@/lib/utils";
 import { Boton } from "@/components/ui/boton";
 
-// Dialogo — DISENO.md §4. Confirmación de acciones destructivas. El título
-// nombra exactamente lo que se va a hacer (nunca "¿Estás seguro?" suelto).
+// Dialogo — DISENO.md §4. Confirmación de una acción que no admite deshacer.
+// El título nombra exactamente lo que se va a hacer (nunca "¿Estás seguro?"
+// suelto). `varianteConfirmar` es "destructivo" (contorno + texto primario)
+// para desactivar/anular/eliminar, o "principal" (sólido) para una acción
+// irreversible que no es destructiva, como cargar saldo.
 function Dialogo({
   abierto,
   onCambiarAbierto,
@@ -14,6 +17,7 @@ function Dialogo({
   descripcion,
   textoConfirmar = "Confirmar",
   textoCancelar = "Cancelar",
+  varianteConfirmar = "destructivo",
   confirmando = false,
   onConfirmar,
 }: {
@@ -23,6 +27,7 @@ function Dialogo({
   descripcion?: React.ReactNode;
   textoConfirmar?: string;
   textoCancelar?: string;
+  varianteConfirmar?: "destructivo" | "principal";
   confirmando?: boolean;
   onConfirmar: () => void;
 }) {
@@ -45,7 +50,7 @@ function Dialogo({
                 {textoCancelar}
               </Boton>
             </AlertDialog.Cancel>
-            <Boton variante="destructivo" type="button" disabled={confirmando} onClick={onConfirmar}>
+            <Boton variante={varianteConfirmar} type="button" disabled={confirmando} onClick={onConfirmar}>
               {confirmando ? "Procesando…" : textoConfirmar}
             </Boton>
           </div>

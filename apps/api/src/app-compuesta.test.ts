@@ -4,6 +4,7 @@ import argon2 from "argon2";
 import { Elysia } from "elysia";
 import { prismaRaw } from "./lib/prisma.ts";
 import { cifrar } from "./lib/cifrado.ts";
+import { Prisma } from "./generated/prisma/client.ts";
 import { auth } from "./routes/auth.ts";
 import { empresas } from "./routes/empresas.ts";
 import { usuarios } from "./routes/usuarios.ts";
@@ -65,6 +66,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   let empresaId: string;
   let cookieAdmin: string;
   let cookieVendedor: string;
+  let vendedorId: string;
   let plataformaId: string;
   let duracionId: string;
   let tipoClienteId: string;
@@ -90,9 +92,10 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
 
     const vendedorEmail = `vendedor-app-compuesta-${randomUUID()}@test.local`;
     emailsUsuarios.push(vendedorEmail);
-    await prismaRaw.usuario.create({
+    const vendedor = await prismaRaw.usuario.create({
       data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Vendedor", rol: "VENDEDOR" },
     });
+    vendedorId = vendedor.id;
     cookieVendedor = await iniciarSesion(vendedorEmail);
 
     const plataforma = await prismaRaw.plataforma.create({
@@ -120,6 +123,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   });
 
   afterAll(async () => {
+    await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
     await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
@@ -149,6 +153,16 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
 
   async function patch(ruta: string, cookie: string = cookieAdmin) {
     return app.handle(new Request(`http://local${ruta}`, { method: "PATCH", headers: { cookie } }));
+  }
+
+  async function patchBody(ruta: string, body: unknown, cookie: string = cookieAdmin) {
+    return app.handle(
+      new Request(`http://local${ruta}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      }),
+    );
   }
 
   it("un ADMIN puede usar /usuarios, /plataformas, /duraciones, /tipos-cliente y /paquetes aunque /empresas también esté montado", async () => {
@@ -243,6 +257,73 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(codigosDespues).not.toContain(venta.codigoCompra);
   });
 
+  // Saldo: un VENDEDOR normal (usaSaldo=false) no ve nada de esto; un ADMIN
+  // lo activa como revendedor, le carga saldo, y desde ese momento sus
+  // ventas lo consumen. Cubre además R4 (los endpoints de administración de
+  // saldo son solo de ADMIN) montado junto al resto de la app compuesta.
+  it("Saldo: un VENDEDOR sin usaSaldo no ve saldo propio; ADMIN lo activa, carga saldo, y la venta del VENDEDOR lo consume", async () => {
+    const propioAntes = await get("/perfil/saldo", cookieVendedor);
+    expect(propioAntes.status).toBe(200);
+    expect(await propioAntes.json()).toEqual({ usaSaldo: false, saldo: null });
+
+    const historialAntes = await get("/perfil/saldo/movimientos", cookieVendedor);
+    expect(historialAntes.status).toBe(200);
+    expect(await historialAntes.json()).toEqual({ movimientos: [] });
+
+    // Un VENDEDOR no puede administrar saldo, ni el propio ni el de otros.
+    const usarSaldoDesdeVendedor = await patchBody(`/usuarios/${vendedorId}/usar-saldo`, { usaSaldo: true }, cookieVendedor);
+    expect(usarSaldoDesdeVendedor.status).toBe(403);
+    const cargarDesdeVendedor = await post(`/usuarios/${vendedorId}/saldo/cargar`, { monto: "50000" }, cookieVendedor);
+    expect(cargarDesdeVendedor.status).toBe(403);
+
+    const activar = await patchBody(`/usuarios/${vendedorId}/usar-saldo`, { usaSaldo: true }, cookieAdmin);
+    expect(activar.status).toBe(200);
+    const { usuario: usuarioActivado } = (await activar.json()) as { usuario: { usaSaldo: boolean; saldo: string } };
+    expect(usuarioActivado.usaSaldo).toBe(true);
+    expect(new Prisma.Decimal(usuarioActivado.saldo).equals(0)).toBe(true);
+
+    const carga = await post(`/usuarios/${vendedorId}/saldo/cargar`, { monto: "50000" }, cookieAdmin);
+    expect(carga.status).toBe(200);
+    const { usuario: usuarioCargado } = (await carga.json()) as { usuario: { saldo: string } };
+    expect(new Prisma.Decimal(usuarioCargado.saldo).equals(50000)).toBe(true);
+
+    const propioDespuesDeCargar = await get("/perfil/saldo", cookieVendedor);
+    const { usaSaldo: usaSaldoDespuesDeCargar, saldo: saldoDespuesDeCargar } = (await propioDespuesDeCargar.json()) as {
+      usaSaldo: boolean;
+      saldo: string;
+    };
+    expect(usaSaldoDespuesDeCargar).toBe(true);
+    expect(new Prisma.Decimal(saldoDespuesDeCargar).equals(50000)).toBe(true);
+
+    const respuestaVenta = await post(
+      "/ventas",
+      { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId },
+      cookieVendedor,
+    );
+    expect(respuestaVenta.status).toBe(201);
+    const { venta } = (await respuestaVenta.json()) as { venta: { id: string; precioVenta: string } };
+
+    const propioDespuesDeVender = await get("/perfil/saldo", cookieVendedor);
+    const { saldo: saldoDespuesDeVender } = (await propioDespuesDeVender.json()) as { saldo: string };
+    expect(new Prisma.Decimal(saldoDespuesDeVender).equals(new Prisma.Decimal("50000").minus(venta.precioVenta))).toBe(
+      true,
+    );
+
+    // El VENDEDOR ve su propio historial; un ADMIN ve el historial de
+    // cualquiera de su empresa desde /usuarios.
+    const historialPropio = await get("/perfil/saldo/movimientos", cookieVendedor);
+    const { movimientos: movimientosPropios } = (await historialPropio.json()) as { movimientos: unknown[] };
+    expect(movimientosPropios.length).toBe(2); // CARGA + CONSUMO
+
+    const historialDesdeAdmin = await get(`/usuarios/${vendedorId}/saldo/movimientos`, cookieAdmin);
+    expect(historialDesdeAdmin.status).toBe(200);
+    const { movimientos: movimientosDesdeAdmin } = (await historialDesdeAdmin.json()) as { movimientos: unknown[] };
+    expect(movimientosDesdeAdmin.length).toBe(2);
+
+    const historialDesdeVendedorSobreSiMismo = await get(`/usuarios/${vendedorId}/saldo/movimientos`, cookieVendedor);
+    expect(historialDesdeVendedorSobreSiMismo.status).toBe(403);
+  });
+
   // Regresión: paquetes.ts, precios.ts, cuentas.ts, disponibilidad.ts y
   // ventas.ts declaraban su propio onBeforeHandle de SIN_EMPRESA_ACTIVA con
   // { as: "scoped" } directamente sobre la instancia exportada que index.ts
@@ -261,8 +342,39 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuestaPerfil.status).toBe(401);
     expect(((await respuestaPerfil.json()) as RespuestaError).error.codigo).toBe("NO_AUTENTICADO");
 
+    for (const ruta of ["/perfil/saldo", "/perfil/saldo/movimientos"]) {
+      const respuesta = await sinCookie(ruta);
+      expect(respuesta.status).toBe(401);
+      expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("NO_AUTENTICADO");
+    }
+
     for (const ruta of ["/cuentas", "/disponibilidad", "/plantillas", "/paquetes"]) {
       const respuesta = await sinCookie(ruta);
+      expect(respuesta.status).toBe(403);
+      expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("PERMISO_DENEGADO");
+    }
+
+    // Cuerpo válido en cada caso: la validación del esquema corre antes que
+    // la guarda de autenticación, así que un cuerpo vacío daría 422 por la
+    // razón equivocada, no 401 por falta de sesión.
+    const sinCookieConMetodo = async (metodo: string, ruta: string, cuerpo?: unknown) =>
+      app.handle(
+        new Request(`http://local${ruta}`, {
+          method: metodo,
+          headers: cuerpo !== undefined ? { "content-type": "application/json" } : {},
+          body: cuerpo !== undefined ? JSON.stringify(cuerpo) : undefined,
+        }),
+      );
+
+    // Mismo comportamiento que /cuentas, /disponibilidad, etc. en esta app
+    // compuesta: 403 PERMISO_DENEGADO, no 401 (ver el bloque anterior).
+    for (const [metodo, ruta, cuerpo] of [
+      ["PATCH", `/usuarios/${vendedorId}/usar-saldo`, { usaSaldo: true }],
+      ["POST", `/usuarios/${vendedorId}/saldo/cargar`, { monto: "1000" }],
+      ["POST", `/usuarios/${vendedorId}/saldo/ajuste`, { monto: "1000", nota: "x" }],
+      ["GET", `/usuarios/${vendedorId}/saldo/movimientos`, undefined],
+    ] as const) {
+      const respuesta = await sinCookieConMetodo(metodo, ruta, cuerpo);
       expect(respuesta.status).toBe(403);
       expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("PERMISO_DENEGADO");
     }

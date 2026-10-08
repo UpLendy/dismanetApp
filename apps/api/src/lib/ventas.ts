@@ -1,6 +1,7 @@
 import { Prisma, type Venta } from "../generated/prisma/client.ts";
 import type { UnidadDuracion } from "../generated/prisma/enums.ts";
 import { tomarPantallasDisponibles, type PantallaBloqueada } from "./bloqueo-pantallas.ts";
+import { bloquearUsuarioParaVenta } from "./bloqueo-usuario.ts";
 import { datosSinEmpresa } from "./prisma-empresa.ts";
 import { descifrar } from "./cifrado.ts";
 import { generarCodigoCompra } from "./codigo-compra.ts";
@@ -64,7 +65,12 @@ export type ResultadoVenta =
   | { tipo: "no_disponible"; mensaje: string }
   // R2 regla 2 — todo o nada: ninguna plataforma del paquete quedó tocada,
   // se nombra la que no alcanzó a cubrir su cupo completo.
-  | { tipo: "inventario_insuficiente"; nombrePlataforma: string };
+  | { tipo: "inventario_insuficiente"; nombrePlataforma: string }
+  // Saldo: solo para usuarios con usaSaldo = true. Se devuelve ANTES de
+  // tocar inventario (sección 2 del bloque de saldo) — nada quedó bloqueado
+  // ni escrito. Lleva los tres números para que el mensaje al revendedor
+  // sirva de verdad: cuánto cuesta, cuánto tiene, cuánto le falta.
+  | { tipo: "saldo_insuficiente"; precioVenta: Prisma.Decimal; saldo: Prisma.Decimal; falta: Prisma.Decimal };
 
 interface Bloqueo {
   componente: ComponentePaquete;
@@ -194,6 +200,33 @@ async function realizarVentaConComposicion(
   datos: DatosComunesVenta,
 ): Promise<ResultadoVenta> {
   const { empresa, tipoCliente, duracionVendida, nombreItem, composicion, precioVenta, costo, esPromocion } = datos;
+
+  // Saldo, orden global de bloqueos (ver CLAUDE.md / lib/bloqueo-usuario.ts):
+  // PRIMERO la fila del usuario, FOR UPDATE sin SKIP LOCKED — la más
+  // específica (una por vendedor), así que dos ventas simultáneas del mismo
+  // revendedor se serializan aquí. DESPUÉS las pantallas (más abajo), con
+  // SKIP LOCKED y en orden de plataformaId. Invertir este orden entre dos
+  // ventas que toman ambos tipos de bloqueo es un deadlock esperando a
+  // pasar.
+  //
+  // usuarioBloqueado es null cuando no hay una fila de Usuario con ese id Y
+  // ese empresaId (el caso del SUPER_ADMIN vendiendo en una empresa que no
+  // es la suya) — se trata igual que usaSaldo = false: sin verificación, sin
+  // movimiento. Un usuario con usaSaldo = false no pasa por nada de esto: ni
+  // se bloquea su fila con intención de cobrar, ni se verifica saldo, ni se
+  // registra movimiento — su camino de venta queda byte por byte igual al
+  // de antes de este bloque.
+  const usuarioBloqueado = await bloquearUsuarioParaVenta(tx, empresaId, vendedorId);
+  if (usuarioBloqueado?.usaSaldo) {
+    if (usuarioBloqueado.saldo.lessThan(precioVenta)) {
+      return {
+        tipo: "saldo_insuficiente",
+        precioVenta,
+        saldo: usuarioBloqueado.saldo,
+        falta: precioVenta.minus(usuarioBloqueado.saldo),
+      };
+    }
+  }
 
   const plataformasInfo = await tx.plataforma.findMany({
     where: { id: { in: composicion.map((c) => c.plataformaId) } },
@@ -375,6 +408,27 @@ async function realizarVentaConComposicion(
     // No lleva empresaId ni ningún identificador interno: este mensaje
     // puede llegar sin más tratamiento hasta la respuesta HTTP.
     throw new Error(`No se pudo generar un código de compra único tras ${MAX_INTENTOS_CODIGO} intentos. Intenta de nuevo.`);
+  }
+
+  // Saldo: el consumo se registra dentro de la MISMA transacción que creó la
+  // venta, con la fila del usuario ya bloqueada (lock tomado al inicio de
+  // esta función, antes de las pantallas). `monto` negativo (resta, ver
+  // schema.prisma); `saldoResultante` es el saldo que queda, no el que había.
+  // La restricción única (empresaId, ventaId, tipo) hace estructuralmente
+  // imposible cobrar dos veces esta venta.
+  if (usuarioBloqueado?.usaSaldo) {
+    const saldoResultante = usuarioBloqueado.saldo.minus(precioVenta);
+    await tx.movimientoSaldo.create({
+      data: datosSinEmpresa<Prisma.MovimientoSaldoUncheckedCreateInput>({
+        usuarioId: vendedorId,
+        tipo: "CONSUMO",
+        monto: precioVenta.negated(),
+        saldoResultante,
+        ventaId: ventaCreada.id,
+        creadoPorId: vendedorId,
+      }),
+    });
+    await tx.usuario.update({ where: { id: vendedorId }, data: { saldo: saldoResultante } });
   }
 
   for (const { componente, pantallas, fechaVencimiento } of bloqueos) {

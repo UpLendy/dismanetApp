@@ -35,6 +35,13 @@ enum TipoPlantilla {
   PAQUETE
 }
 
+enum TipoMovimientoSaldo {
+  CARGA
+  CONSUMO
+  DEVOLUCION
+  AJUSTE
+}
+
 // ---------------------------------------------------------------------------
 // Empresa y Usuario
 // ---------------------------------------------------------------------------
@@ -63,6 +70,7 @@ model Empresa {
   ventas                     Venta[]
   ventaDetalles              VentaDetalle[]
   plantillasMensaje          PlantillaMensaje[]
+  movimientoSaldos           MovimientoSaldo[]
 
   @@unique([prefijoCodigo])
 }
@@ -84,12 +92,24 @@ model Usuario {
   /// permite "cerrar las demás sesiones" sin un almacén de sesiones aparte.
   versionSesion Int @default(1)
 
+  /// Distingue un revendedor (vende contra saldo) de un empleado (sin tope).
+  /// No es un rol (ver CLAUDE.md): un empleado y un revendedor pueden ser
+  /// ambos VENDEDOR. Default false para no cambiar el comportamiento de
+  /// ningún usuario existente al desplegar esta bandera.
+  usaSaldo Boolean @default(false)
+  /// Saldo vigente, en pesos. Los movimientos (MovimientoSaldo) son la
+  /// historia; este campo es el valor actual, redundante a propósito para
+  /// poder auditar sin recalcular (ver MovimientoSaldo.saldoResultante).
+  saldo    Decimal @default(0) @db.Decimal(14, 2)
+
   empresa Empresa? @relation("UsuariosDeEmpresa", fields: [empresaId], references: [id])
 
   empresasCreadas Empresa[] @relation("EmpresasCreadas")
 
-  ventasComoVendedor Venta[] @relation("VentaVendedor")
-  ventasAnuladas     Venta[] @relation("VentaAnuladaPor")
+  ventasComoVendedor      Venta[]           @relation("VentaVendedor")
+  ventasAnuladas          Venta[]           @relation("VentaAnuladaPor")
+  movimientosSaldo        MovimientoSaldo[] @relation("MovimientoSaldoUsuario")
+  movimientosSaldoCreados MovimientoSaldo[] @relation("MovimientoSaldoCreadoPor")
 
   @@index([empresaId])
 }
@@ -349,7 +369,8 @@ model Venta {
   duracion    Duracion    @relation(fields: [duracionId], references: [id])
   tipoCliente TipoCliente @relation(fields: [tipoClienteId], references: [id])
 
-  detalles VentaDetalle[]
+  detalles         VentaDetalle[]
+  movimientosSaldo MovimientoSaldo[]
 
   @@unique([empresaId, codigoCompra])
   @@index([empresaId])
@@ -407,4 +428,42 @@ model PlantillaMensaje {
 
   @@unique([empresaId, tipo])
   @@index([empresaId])
+}
+
+/// Saldo del "Saldo" (crédito prepago de revendedores). `Usuario.saldo` es el
+/// valor vigente; esta tabla es la historia inmutable: un movimiento pasado
+/// NUNCA se edita ni se borra, un error se corrige con un AJUSTE nuevo.
+///
+/// `saldoResultante` es redundante a propósito: es lo que permite auditar el
+/// ledger sin recalcular toda la historia (ver prueba de cuadre de ledger).
+///
+/// No se copia nada de esto a Venta (R3 no aplica aquí): `ventaId` ya
+/// responde "qué venta generó este movimiento", y Venta es inmutable por
+/// construcción. `ventaId` está presente en CONSUMO y DEVOLUCION, nulo en
+/// CARGA y AJUSTE. `nota` es obligatoria en AJUSTE (se exige en la capa de
+/// aplicación: Prisma no expresa nulabilidad condicional).
+///
+/// La restricción única (empresaId, ventaId, tipo) hace estructuralmente
+/// imposible cobrar dos veces la misma venta o devolverle el saldo dos
+/// veces, incluso bajo una carrera — ver restriccionViolada() en errores.ts.
+model MovimientoSaldo {
+  id              String              @id @default(cuid())
+  empresaId       String
+  usuarioId       String
+  tipo            TipoMovimientoSaldo
+  monto           Decimal             @db.Decimal(14, 2)
+  saldoResultante Decimal             @db.Decimal(14, 2)
+  ventaId         String?
+  nota            String?
+  creadoPorId     String
+  createdAt       DateTime            @default(now())
+
+  empresa   Empresa @relation(fields: [empresaId], references: [id])
+  usuario   Usuario @relation("MovimientoSaldoUsuario", fields: [usuarioId], references: [id])
+  venta     Venta?  @relation(fields: [ventaId], references: [id])
+  creadoPor Usuario @relation("MovimientoSaldoCreadoPor", fields: [creadoPorId], references: [id])
+
+  @@unique([empresaId, ventaId, tipo])
+  @@index([empresaId])
+  @@index([usuarioId])
 }
