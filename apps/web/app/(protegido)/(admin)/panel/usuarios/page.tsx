@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
-import { Plus, Ban, RotateCcw, UserRound } from "lucide-react";
+import Link from "next/link";
+import { Plus, Ban, RotateCcw, UserRound, Wallet, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { Boton } from "@/components/ui/boton";
 import { Campo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
@@ -9,6 +10,7 @@ import { Aviso } from "@/components/ui/aviso";
 import { PastillaEstado, Pastilla } from "@/components/ui/pastilla";
 import { PanelLateral } from "@/components/ui/panel-lateral";
 import { Dialogo } from "@/components/ui/dialogo";
+import { Interruptor } from "@/components/ui/interruptor";
 import { EstadoVacio } from "@/components/ui/estado-vacio";
 import { CargandoTabla } from "@/components/ui/cargando";
 import { Tabla, TablaCabecera, TablaCuerpo, TablaFila, TablaCeldaCabecera, TablaCelda } from "@/components/ui/tabla";
@@ -21,6 +23,8 @@ interface Usuario {
   email: string;
   rol: Rol;
   activo: boolean;
+  usaSaldo: boolean;
+  saldo: string;
 }
 
 function mensajeDeError(errorRespuesta: unknown): string {
@@ -28,32 +32,51 @@ function mensajeDeError(errorRespuesta: unknown): string {
   return valor?.error?.mensaje ?? "No se pudo completar la operación.";
 }
 
+// Solo manipulación de texto, nunca aritmética con number (CLAUDE.md).
+function formatearPesos(valor: string): string {
+  const [entero, decimal] = valor.split(".");
+  const conPuntos = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return decimal ? `$${conPuntos},${decimal}` : `$${conPuntos}`;
+}
+
 export default function PaginaUsuarios() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [cargandoLista, setCargandoLista] = useState(true);
   const [errorLista, setErrorLista] = useState<string | null>(null);
+  const [errorFila, setErrorFila] = useState<string | null>(null);
 
   const [panelAbierto, setPanelAbierto] = useState(false);
   const [nombre, setNombre] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rol, setRol] = useState<Rol>("VENDEDOR");
-  const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
-  const [errorFila, setErrorFila] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const [confirmandoDesactivar, setConfirmandoDesactivar] = useState<Usuario | null>(null);
   const [desactivando, setDesactivando] = useState(false);
 
+  // Cargar saldo: el panel recoge monto + nota, y solo al confirmar en el
+  // Dialogo (que nombra exactamente el monto y el destinatario) se llama al
+  // API. Dos pasos a propósito — es dinero, no admite deshacer.
+  const [cargandoSaldoPara, setCargandoSaldoPara] = useState<Usuario | null>(null);
+  const [montoCarga, setMontoCarga] = useState("");
+  const [notaCarga, setNotaCarga] = useState("");
+  const [errorCarga, setErrorCarga] = useState<string | null>(null);
+  const [confirmandoCarga, setConfirmandoCarga] = useState<{ usuario: Usuario; monto: string; nota: string } | null>(
+    null,
+  );
+  const [cargandoCarga, setCargandoCarga] = useState(false);
+
   async function cargarUsuarios() {
     setCargandoLista(true);
+    setErrorLista(null);
     const { data, error: errorRespuesta } = await api.usuarios.get();
     setCargandoLista(false);
     if (errorRespuesta || !data) {
       setErrorLista(mensajeDeError(errorRespuesta));
       return;
     }
-    setErrorLista(null);
     setUsuarios(data.usuarios);
   }
 
@@ -72,11 +95,9 @@ export default function PaginaUsuarios() {
 
   async function crearUsuario(evento: FormEvent<HTMLFormElement>) {
     evento.preventDefault();
-    setError(null);
     setGuardando(true);
-
+    setError(null);
     const { data, error: errorRespuesta } = await api.usuarios.post({ nombre, email, password, rol });
-
     setGuardando(false);
 
     if (errorRespuesta || !data || !("usuario" in data) || !data.usuario) {
@@ -121,15 +142,54 @@ export default function PaginaUsuarios() {
     cargarUsuarios();
   }
 
+  async function cambiarUsaSaldo(usuario: Usuario, usaSaldo: boolean) {
+    setErrorFila(null);
+    const { error: errorRespuesta } = await api.usuarios({ id: usuario.id })["usar-saldo"].patch({ usaSaldo });
+    if (errorRespuesta) {
+      setErrorFila(mensajeDeError(errorRespuesta));
+      return;
+    }
+    cargarUsuarios();
+  }
+
+  function abrirCargarSaldo(usuario: Usuario) {
+    setCargandoSaldoPara(usuario);
+    setMontoCarga("");
+    setNotaCarga("");
+    setErrorCarga(null);
+  }
+
+  function pedirConfirmacionCarga(evento: FormEvent<HTMLFormElement>) {
+    evento.preventDefault();
+    if (!cargandoSaldoPara) return;
+    setConfirmandoCarga({ usuario: cargandoSaldoPara, monto: montoCarga, nota: notaCarga });
+  }
+
+  async function confirmarCarga() {
+    if (!confirmandoCarga) return;
+    setCargandoCarga(true);
+    const { error: errorRespuesta } = await api
+      .usuarios({ id: confirmandoCarga.usuario.id })
+      .saldo.cargar.post({ monto: confirmandoCarga.monto, nota: confirmandoCarga.nota || undefined });
+    setCargandoCarga(false);
+
+    if (errorRespuesta) {
+      setConfirmandoCarga(null);
+      setErrorCarga(mensajeDeError(errorRespuesta));
+      return;
+    }
+
+    setConfirmandoCarga(null);
+    setCargandoSaldoPara(null);
+    cargarUsuarios();
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="titulo-pagina text-ink">Usuarios</h1>
-          <p className="cuerpo text-ink-muted">
-            Gestión de los usuarios de tu empresa. Un ADMIN no puede desactivarse ni cambiar su propio rol, ni dejar
-            la empresa sin ningún ADMIN activo.
-          </p>
+          <p className="cuerpo text-ink-muted">Gestión de los ADMIN y VENDEDOR de la empresa.</p>
         </div>
         <Boton variante="principal" onClick={abrirCrear}>
           <Plus />
@@ -140,16 +200,24 @@ export default function PaginaUsuarios() {
       {errorFila ? <Aviso variante="critico">{errorFila}</Aviso> : null}
 
       {errorLista ? (
-        <Aviso variante="critico" titulo="No se pudo cargar los usuarios" accion={<Boton variante="contorno" onClick={cargarUsuarios}>Reintentar</Boton>}>
+        <Aviso
+          variante="critico"
+          titulo="No se pudo cargar los usuarios"
+          accion={
+            <Boton variante="contorno" onClick={cargarUsuarios}>
+              Reintentar
+            </Boton>
+          }
+        >
           {errorLista}
         </Aviso>
       ) : cargandoLista ? (
-        <CargandoTabla filas={5} columnas={5} />
+        <CargandoTabla filas={5} columnas={6} />
       ) : usuarios.length === 0 ? (
         <EstadoVacio
           icono={UserRound}
-          titulo="No hay usuarios"
-          descripcion="Crea el primer usuario de tu empresa."
+          titulo="Todavía no hay usuarios"
+          descripcion="Crea el primer ADMIN o VENDEDOR de la empresa."
           accion={
             <Boton variante="principal" onClick={abrirCrear}>
               <Plus />
@@ -165,6 +233,7 @@ export default function PaginaUsuarios() {
               <TablaCeldaCabecera>Correo</TablaCeldaCabecera>
               <TablaCeldaCabecera>Rol</TablaCeldaCabecera>
               <TablaCeldaCabecera>Estado</TablaCeldaCabecera>
+              <TablaCeldaCabecera>Vende contra saldo</TablaCeldaCabecera>
               <TablaCeldaCabecera></TablaCeldaCabecera>
             </tr>
           </TablaCabecera>
@@ -191,7 +260,35 @@ export default function PaginaUsuarios() {
                   <PastillaEstado estado={usuario.activo ? "activo" : "inactivo"} />
                 </TablaCelda>
                 <TablaCelda>
+                  <div className="flex items-center gap-3">
+                    <Interruptor
+                      checked={usuario.usaSaldo}
+                      onCheckedChange={(valor) => cambiarUsaSaldo(usuario, valor)}
+                      aria-label={`Vende contra saldo — ${usuario.nombre}`}
+                    />
+                    {usuario.usaSaldo ? (
+                      <span className="tabular-nums text-ink">{formatearPesos(usuario.saldo)}</span>
+                    ) : (
+                      <span className="text-ink-muted">—</span>
+                    )}
+                  </div>
+                </TablaCelda>
+                <TablaCelda>
                   <div className="flex justify-end gap-2">
+                    {usuario.usaSaldo ? (
+                      <>
+                        <Boton variante="contorno" tamano="sm" onClick={() => abrirCargarSaldo(usuario)}>
+                          <Wallet />
+                          Cargar saldo
+                        </Boton>
+                        <Boton variante="contorno" tamano="sm" asChild>
+                          <Link href={`/panel/usuarios/${usuario.id}`}>
+                            Historial
+                            <ChevronRight />
+                          </Link>
+                        </Boton>
+                      </>
+                    ) : null}
                     {usuario.activo ? (
                       <Boton variante="destructivo" tamano="sm" onClick={() => setConfirmandoDesactivar(usuario)}>
                         <Ban />
@@ -248,11 +345,64 @@ export default function PaginaUsuarios() {
         </form>
       </PanelLateral>
 
+      <PanelLateral
+        abierto={!!cargandoSaldoPara}
+        onCambiarAbierto={(abierto) => !abierto && setCargandoSaldoPara(null)}
+        titulo="Cargar saldo"
+        descripcion={cargandoSaldoPara ? `Saldo actual de ${cargandoSaldoPara.nombre}: ${formatearPesos(cargandoSaldoPara.saldo)}` : undefined}
+      >
+        <form onSubmit={pedirConfirmacionCarga} className="space-y-4">
+          {errorCarga ? <Aviso variante="critico">{errorCarga}</Aviso> : null}
+
+          <Campo etiqueta="Monto a cargar" required ayuda="Se suma al saldo actual.">
+            {(props) => (
+              <EntradaCampo
+                {...props}
+                required
+                inputMode="decimal"
+                placeholder="50000"
+                value={montoCarga}
+                onChange={(e) => setMontoCarga(e.target.value)}
+              />
+            )}
+          </Campo>
+
+          <Campo etiqueta="Nota" ayuda="Opcional: de dónde viene este dinero.">
+            {(props) => <EntradaCampo {...props} value={notaCarga} onChange={(e) => setNotaCarga(e.target.value)} />}
+          </Campo>
+
+          <div className="flex gap-2 pt-2">
+            <Boton type="submit" variante="principal" className="flex-1">
+              Continuar
+            </Boton>
+          </div>
+        </form>
+      </PanelLateral>
+
       <Dialogo
-        abierto={confirmandoDesactivar !== null}
+        abierto={!!confirmandoCarga}
+        onCambiarAbierto={(abierto) => !abierto && setConfirmandoCarga(null)}
+        titulo={
+          confirmandoCarga
+            ? `Cargar ${formatearPesos(confirmandoCarga.monto)} al saldo de ${confirmandoCarga.usuario.nombre}`
+            : ""
+        }
+        descripcion={
+          confirmandoCarga
+            ? `Saldo actual: ${formatearPesos(confirmandoCarga.usuario.saldo)}.${confirmandoCarga.nota ? ` Nota: ${confirmandoCarga.nota}.` : ""} Esta operación queda registrada y no se puede deshacer.`
+            : undefined
+        }
+        textoConfirmar="Cargar saldo"
+        varianteConfirmar="principal"
+        confirmando={cargandoCarga}
+        onConfirmar={confirmarCarga}
+      />
+
+      <Dialogo
+        abierto={!!confirmandoDesactivar}
         onCambiarAbierto={(abierto) => !abierto && setConfirmandoDesactivar(null)}
-        titulo={`Desactivar a "${confirmandoDesactivar?.nombre}"`}
-        descripcion="Pierde acceso a la plataforma hasta que se reactive."
+        titulo={confirmandoDesactivar ? `Desactivar a ${confirmandoDesactivar.nombre}` : ""}
+        descripcion="El usuario no podrá iniciar sesión hasta que lo reactives."
         textoConfirmar="Desactivar"
         confirmando={desactivando}
         onConfirmar={confirmarDesactivar}

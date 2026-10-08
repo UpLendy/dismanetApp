@@ -160,8 +160,9 @@ Todos en `apps/web/components/ui/`, construidos sobre shadcn/ui, que ya está in
 | `Pastilla` | Para estados: Activo, Inactivo, Libre, Ocupada, Anulada. Icono + texto, fondo suave. |
 | `Aviso` | Alerta en línea con icono, para las advertencias del sistema (costos en cero, costo que no coincide, precios que quedan inservibles). Variantes info / aviso / serio / crítico. |
 | `EstadoVacio` | Icono, frase de qué falta y botón de la acción que lo resuelve. Nunca una tabla vacía sin explicación. |
-| `Dialogo` | Confirmación de acciones destructivas. El título nombra lo que se va a hacer. |
+| `Dialogo` | Confirmación de una acción irreversible. El título nombra lo que se va a hacer. Botón de confirmar en variante `destructivo` (desactivar, anular, eliminar) o `principal` (irreversible pero no destructiva, p. ej. cargar saldo). |
 | `Cargando` | Esqueletos con la forma del contenido, no un spinner centrado. |
+| `Interruptor` | Switch binario con efecto inmediato (p. ej. "Vende contra saldo"), sin botón de guardar aparte. |
 
 ---
 

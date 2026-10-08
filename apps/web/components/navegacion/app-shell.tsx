@@ -10,6 +10,7 @@ import { CerrarSesionBoton } from "@/components/cerrar-sesion-boton";
 import { SelectorEmpresaProvider } from "@/components/navegacion/selector-empresa-contexto";
 import { SelectorEmpresa } from "@/components/navegacion/selector-empresa";
 import { MenuUsuario } from "@/components/navegacion/menu-usuario";
+import { SaldoBarraSuperior } from "@/components/navegacion/saldo-barra";
 import { cn } from "@/lib/utils";
 
 function itemActivo(pathname: string, href: string): boolean {
@@ -122,6 +123,7 @@ export function AppShell({
 
           <div className="flex items-center gap-3">
             {usuario.rol === "SUPER_ADMIN" ? <SelectorEmpresa empresaActiva={empresaActiva} /> : null}
+            <SaldoBarraSuperior />
             <MenuUsuario usuario={usuario} />
           </div>
         </header>

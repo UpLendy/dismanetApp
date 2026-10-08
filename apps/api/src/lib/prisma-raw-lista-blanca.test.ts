@@ -65,6 +65,13 @@ const LISTA_BLANCA_RAW_SQL = new Set<string>([
   // de consultas de Prisma. empresaId va escrito a mano en el WHERE,
   // parametrizado — ver el comentario al inicio de ese archivo.
   "src/lib/bloqueo-pantallas.ts",
+  // Saldo: SELECT ... FOR UPDATE (sin SKIP LOCKED, a propósito) sobre la
+  // fila de Usuario antes de verificar/cobrar saldo. Mismo motivo que
+  // bloqueo-pantallas.ts — la API de Prisma no expresa FOR UPDATE — y mismo
+  // cuidado: Usuario es el único modelo con empresaId nullable, así que el
+  // WHERE filtra por id Y empresaId a mano. Ver el comentario al inicio de
+  // ese archivo.
+  "src/lib/bloqueo-usuario.ts",
   // Entrega 9, 0c: SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO SAVEPOINT
   // alrededor del create() del reintento de código de compra. Postgres
   // aborta toda la transacción tras un P2002 (Prisma no pone savepoints

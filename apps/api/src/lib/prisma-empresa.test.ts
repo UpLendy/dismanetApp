@@ -33,6 +33,7 @@ interface FixtureEmpresa {
   ventaId: string;
   ventaDetalleId: string;
   plantillaMensajeId: string;
+  movimientoSaldoId: string;
 }
 
 // Nombre de la propiedad del cliente de Prisma para un modelo del esquema:
@@ -164,6 +165,18 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     data: { empresaId: empresa.id, tipo: "UNIDAD", contenido: "Plantilla de prueba" },
   });
 
+  const movimientoSaldo = await prismaRaw.movimientoSaldo.create({
+    data: {
+      empresaId: empresa.id,
+      usuarioId: usuario.id,
+      tipo: "CONSUMO",
+      monto: "-10000",
+      saldoResultante: "0",
+      ventaId: venta.id,
+      creadoPorId: usuario.id,
+    },
+  });
+
   return {
     empresaId: empresa.id,
     usuarioId: usuario.id,
@@ -180,12 +193,16 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     ventaId: venta.id,
     ventaDetalleId: ventaDetalle.id,
     plantillaMensajeId: plantillaMensaje.id,
+    movimientoSaldoId: movimientoSaldo.id,
   };
 }
 
 async function borrarEmpresaCompleta(empresaId: string) {
   // Orden que respeta las FK (hijos antes que padres); ver comentario en R1
   // del CLAUDE.md — nada se borra en producción, pero aquí es fixture propia.
+  // MovimientoSaldo primero: referencia a Usuario con RESTRICT (no SET NULL
+  // como su referencia a Venta), así que debe irse antes que el usuario.
+  await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
   await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
   await prismaRaw.venta.deleteMany({ where: { empresaId } });
   await prismaRaw.precio.deleteMany({ where: { empresaId } });
@@ -216,8 +233,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 13 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(13);
+  it("cubre los 14 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(14);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -233,6 +250,7 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         "Venta",
         "VentaDetalle",
         "PlantillaMensaje",
+        "MovimientoSaldo",
       ].sort(),
     );
   });

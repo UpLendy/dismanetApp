@@ -1,10 +1,12 @@
 import { Elysia, t } from "elysia";
-import { prismaParaEmpresa } from "../lib/prisma-empresa.ts";
+import { prismaParaEmpresa, datosSinEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol } from "../generated/prisma/client.ts";
 import { requiereRol } from "../plugins/guardas.ts";
 import { plataformasDisponibles } from "../lib/pantallas.ts";
 import { paquetesDisponibles } from "../lib/paquetes.ts";
 import { realizarVenta, type EntradaVenta } from "../lib/ventas.ts";
+import { bloquearUsuarioParaVenta } from "../lib/bloqueo-usuario.ts";
+import { restriccionViolada } from "../lib/errores.ts";
 import { inicioDiaBogota, inicioMesBogota, inicioSemanaBogota } from "../lib/periodos.ts";
 
 const esquemaError = t.Object({
@@ -334,6 +336,17 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           },
         };
       }
+      if (resultado.tipo === "saldo_insuficiente") {
+        set.status = 409;
+        return {
+          error: {
+            codigo: "SALDO_INSUFICIENTE",
+            mensaje:
+              `Esta venta cuesta $${resultado.precioVenta.toString()}. Tu saldo es $${resultado.saldo.toString()}, ` +
+              `te faltan $${resultado.falta.toString()}.`,
+          },
+        };
+      }
 
       const venta = resultado.venta;
       const esAdmin = contexto.rol === Rol.ADMIN || contexto.rol === Rol.SUPER_ADMIN;
@@ -544,25 +557,81 @@ export const ventas = new Elysia({ prefix: "/ventas" })
   // marca; R5 libera las pantallas de inmediato como consecuencia de que
   // la disponibilidad siempre filtra por `venta.anulada: false` (pantallas.ts),
   // no como un paso adicional que haya que ejecutar aquí.
+  //
+  // Saldo: si la venta consumió saldo (existe un MovimientoSaldo CONSUMO
+  // para ella), anular la devuelve — dentro de la MISMA transacción que
+  // marca `anulada`, con la fila del usuario bloqueada primero (mismo
+  // orden que realizarVenta, ver lib/ventas.ts). El monto que se devuelve
+  // sale del movimiento de CONSUMO original, nunca del precio actual de
+  // nada. Doble anulación no puede devolver dos veces: el bloqueo de la
+  // fila del usuario serializa con cualquier otra anulación concurrente de
+  // la misma venta (la segunda ve `anulada: true` al releer tras esperar el
+  // lock), y la restricción única (empresaId, ventaId, tipo) es el respaldo
+  // en la base si de todos modos coincidieran.
   .patch(
     "/:id/anular",
     async ({ params, contexto, set }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-      const venta = await cliente.venta.findUnique({ where: { id: params.id } });
-      if (!venta) {
+
+      const resultado = await cliente.$transaction(async (tx) => {
+        const venta = await tx.venta.findUnique({ where: { id: params.id } });
+        if (!venta) return { tipo: "no_encontrada" as const };
+        if (venta.anulada) return { tipo: "ya_anulada" as const };
+
+        const usuarioBloqueado = await bloquearUsuarioParaVenta(tx, contexto.empresaId!, venta.vendedorId);
+
+        // Releer tras el bloqueo: si otra anulación concurrente de esta
+        // misma venta ya terminó mientras esta esperaba la fila del
+        // usuario, debe verse reflejado aquí antes de devolver dos veces.
+        const ventaFresca = await tx.venta.findUniqueOrThrow({ where: { id: params.id } });
+        if (ventaFresca.anulada) return { tipo: "ya_anulada" as const };
+
+        if (usuarioBloqueado) {
+          const consumo = await tx.movimientoSaldo.findFirst({ where: { ventaId: venta.id, tipo: "CONSUMO" } });
+          if (consumo) {
+            const montoDevolucion = consumo.monto.negated();
+            const saldoResultante = usuarioBloqueado.saldo.plus(montoDevolucion);
+            try {
+              await tx.movimientoSaldo.create({
+                data: datosSinEmpresa<Prisma.MovimientoSaldoUncheckedCreateInput>({
+                  usuarioId: venta.vendedorId,
+                  tipo: "DEVOLUCION",
+                  monto: montoDevolucion,
+                  saldoResultante,
+                  ventaId: venta.id,
+                  creadoPorId: contexto.usuarioId!,
+                }),
+              });
+              await tx.usuario.update({ where: { id: venta.vendedorId }, data: { saldo: saldoResultante } });
+            } catch (error) {
+              const esDevolucionDuplicada =
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === "P2002" &&
+                restriccionViolada(error).includes("ventaId");
+              if (!esDevolucionDuplicada) throw error;
+              // Una anulación concurrente ya registró la devolución: no-op,
+              // nunca se devuelve el saldo dos veces.
+            }
+          }
+        }
+
+        const actualizada = await tx.venta.update({
+          where: { id: params.id },
+          data: { anulada: true, anuladaPorId: contexto.usuarioId!, anuladaEn: new Date() },
+        });
+        return { tipo: "ok" as const, venta: actualizada };
+      });
+
+      if (resultado.tipo === "no_encontrada") {
         set.status = 404;
         return { error: { codigo: "VENTA_NO_ENCONTRADA", mensaje: "La venta no existe." } };
       }
-      if (venta.anulada) {
+      if (resultado.tipo === "ya_anulada") {
         set.status = 409;
         return { error: { codigo: "VENTA_YA_ANULADA", mensaje: "Esta venta ya fue anulada." } };
       }
 
-      const actualizada = await cliente.venta.update({
-        where: { id: params.id },
-        data: { anulada: true, anuladaPorId: contexto.usuarioId!, anuladaEn: new Date() },
-      });
-
+      const actualizada = resultado.venta;
       return {
         venta: {
           id: actualizada.id,

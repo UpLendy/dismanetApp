@@ -6,7 +6,7 @@ import argon2 from "argon2";
 // puede alcanzarlo. Para ADMIN/VENDEDOR sí se usa el cliente extendido.
 import { prismaRaw } from "../lib/prisma.ts";
 import { prismaParaEmpresa } from "../lib/prisma-empresa.ts";
-import { Prisma, Rol } from "../generated/prisma/client.ts";
+import { Prisma, Rol, TipoMovimientoSaldo } from "../generated/prisma/client.ts";
 import { restriccionViolada } from "../lib/errores.ts";
 import {
   jwtSesion,
@@ -33,6 +33,37 @@ const respuestaUsuario = (usuario: { id: string; nombre: string; email: string; 
   nombre: usuario.nombre,
   email: usuario.email,
   rol: usuario.rol,
+});
+
+const esquemaMovimientoSaldo = t.Object({
+  id: t.String(),
+  tipo: t.Enum(TipoMovimientoSaldo),
+  monto: t.String(),
+  saldoResultante: t.String(),
+  ventaId: t.Union([t.String(), t.Null()]),
+  nota: t.Union([t.String(), t.Null()]),
+  creadoPorId: t.String(),
+  createdAt: t.String(),
+});
+
+const respuestaMovimientoSaldo = (movimiento: {
+  id: string;
+  tipo: TipoMovimientoSaldo;
+  monto: Prisma.Decimal;
+  saldoResultante: Prisma.Decimal;
+  ventaId: string | null;
+  nota: string | null;
+  creadoPorId: string;
+  createdAt: Date;
+}) => ({
+  id: movimiento.id,
+  tipo: movimiento.tipo,
+  monto: movimiento.monto.toString(),
+  saldoResultante: movimiento.saldoResultante.toString(),
+  ventaId: movimiento.ventaId,
+  nota: movimiento.nota,
+  creadoPorId: movimiento.creadoPorId,
+  createdAt: movimiento.createdAt.toISOString(),
 });
 
 /**
@@ -146,4 +177,40 @@ export const perfil = new Elysia({ prefix: "/perfil" })
         401: esquemaError,
       },
     },
+  )
+  // Saldo propio del revendedor — visible en la barra superior y antes de
+  // confirmar una venta en /vender. `saldo: null` cuando usaSaldo es false:
+  // un empleado nunca ve ni un saldo en cero ni un saldo deshabilitado,
+  // simplemente no hay dato que mostrar y el frontend no renderiza nada.
+  .get(
+    "/saldo",
+    async ({ contexto }) => {
+      const usuario = await clientePropio(contexto).usuario.findUniqueOrThrow({
+        where: { id: contexto.usuarioId! },
+      });
+      return {
+        usaSaldo: usuario.usaSaldo,
+        saldo: usuario.usaSaldo ? usuario.saldo.toString() : null,
+      };
+    },
+    { response: { 200: t.Object({ usaSaldo: t.Boolean(), saldo: t.Union([t.String(), t.Null()]) }) } },
+  )
+  // Historial propio, nunca el de otro usuario (R4): siempre filtrado por
+  // contexto.usuarioId, nunca por un :id de la URL.
+  .get(
+    "/saldo/movimientos",
+    async ({ contexto }) => {
+      const cliente = clientePropio(contexto);
+      const usuario = await cliente.usuario.findUniqueOrThrow({ where: { id: contexto.usuarioId! } });
+      // Un empleado (usaSaldo=false) nunca tuvo movimientos: la lista queda
+      // vacía de forma natural, sin necesidad de un caso especial.
+      const movimientos = usuario.usaSaldo
+        ? await cliente.movimientoSaldo.findMany({
+            where: { usuarioId: contexto.usuarioId! },
+            orderBy: { createdAt: "desc" },
+          })
+        : [];
+      return { movimientos: movimientos.map(respuestaMovimientoSaldo) };
+    },
+    { response: { 200: t.Object({ movimientos: t.Array(esquemaMovimientoSaldo) }) } },
   );
