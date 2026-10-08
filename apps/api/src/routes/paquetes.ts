@@ -14,6 +14,7 @@ const esquemaPaquete = t.Object({
   nombre: t.String(),
   descripcion: t.Union([t.String(), t.Null()]),
   activo: t.Boolean(),
+  esPromocion: t.Boolean(),
 });
 
 const esquemaComponente = t.Object({
@@ -46,6 +47,7 @@ interface FilaPaquete {
   nombre: string;
   descripcion: string | null;
   activo: boolean;
+  esPromocion: boolean;
 }
 
 const respuestaPaquete = (fila: FilaPaquete) => ({
@@ -53,11 +55,13 @@ const respuestaPaquete = (fila: FilaPaquete) => ({
   nombre: fila.nombre,
   descripcion: fila.descripcion,
   activo: fila.activo,
+  esPromocion: fila.esPromocion,
 });
 
 const cuerpoPaquete = t.Object({
   nombre: t.String({ minLength: 1 }),
   descripcion: t.Optional(t.Union([t.String(), t.Null()])),
+  esPromocion: t.Optional(t.Boolean()),
 });
 
 // Heurística para la advertencia de la Parte 4 ("estás entregando más
@@ -211,6 +215,7 @@ export const paquetes = new Elysia({ prefix: "/paquetes" })
           data: datosSinEmpresa<Prisma.PaqueteUncheckedCreateInput>({
             nombre: body.nombre,
             descripcion: body.descripcion ?? null,
+            esPromocion: body.esPromocion ?? false,
           }),
         });
         set.status = 201;
@@ -240,7 +245,7 @@ export const paquetes = new Elysia({ prefix: "/paquetes" })
       try {
         const paquete = await cliente.paquete.update({
           where: { id: params.id },
-          data: { nombre: body.nombre, descripcion: body.descripcion ?? null },
+          data: { nombre: body.nombre, descripcion: body.descripcion ?? null, esPromocion: body.esPromocion ?? false },
         });
         return { paquete: respuestaPaquete(paquete) };
       } catch (error) {

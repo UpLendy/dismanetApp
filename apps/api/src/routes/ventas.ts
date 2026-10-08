@@ -26,6 +26,7 @@ const esquemaPaqueteDisponible = t.Object({
   id: t.String(),
   nombre: t.String(),
   precioVenta: t.String(),
+  esPromocion: t.Boolean(),
 });
 
 // R4: nunca costo/utilidad/margen cuando quien consulta es VENDEDOR. El
@@ -39,9 +40,11 @@ const esquemaVenta = t.Composite([
     nombreDuracion: t.String(),
     nombreTipoCliente: t.String(),
     precioVenta: t.String(),
+    celularCliente: t.Union([t.String(), t.Null()]),
     fechaVenta: t.String(),
     fechaVencimientoMax: t.String(),
     mensajeGenerado: t.String(),
+    esPromocion: t.Boolean(),
   }),
   t.Object({
     costo: t.Optional(t.String()),
@@ -62,6 +65,9 @@ const cuerpoVenta = t.Object({
   paqueteId: t.Optional(t.String()),
   duracionId: t.String(),
   tipoClienteId: t.String(),
+  // Validación de formato es responsabilidad del frontend (suave, no
+  // bloqueante); aquí solo se acepta y se guarda tal cual (R3).
+  celularCliente: t.Optional(t.String()),
 });
 
 // Entrega 9 — listado de ventas (secciones 1 y 2).
@@ -82,10 +88,12 @@ const camposComunesListado = {
   nombreDuracion: t.String(),
   nombreTipoCliente: t.String(),
   precioVenta: t.String(),
+  celularCliente: t.Union([t.String(), t.Null()]),
   fechaVenta: t.String(),
   fechaVencimientoMax: t.String(),
   mensajeGenerado: t.String(),
   anulada: t.Boolean(),
+  esPromocion: t.Boolean(),
   detalles: t.Array(esquemaDetalleVenta),
 };
 
@@ -110,8 +118,45 @@ const filtrosListado = t.Object({
   tipoVenta: t.Optional(t.Union([t.Literal("UNIDAD"), t.Literal("PAQUETE")])),
   plataformaId: t.Optional(t.String()),
   paqueteId: t.Optional(t.String()),
+  esPromocion: t.Optional(t.Boolean()),
   codigoCompra: t.Optional(t.String()),
+  celularCliente: t.Optional(t.String()),
 });
+
+/** Filtros comunes a /listado y /codigos (Entrega 10): mismo criterio, para
+ * que "copiar códigos" siempre refleje exactamente lo que el filtro activo
+ * está mostrando en la pantalla. */
+function whereDesdeFiltros(query: {
+  desde?: string;
+  hasta?: string;
+  vendedorId?: string;
+  tipoVenta?: "UNIDAD" | "PAQUETE";
+  plataformaId?: string;
+  paqueteId?: string;
+  esPromocion?: boolean;
+  codigoCompra?: string;
+  celularCliente?: string;
+}): Prisma.VentaWhereInput {
+  const fechaVenta: Prisma.DateTimeFilter<"Venta"> = {};
+  if (query.desde) fechaVenta.gte = new Date(query.desde);
+  if (query.hasta) fechaVenta.lte = new Date(query.hasta);
+
+  return {
+    ...(Object.keys(fechaVenta).length > 0 ? { fechaVenta } : {}),
+    ...(query.vendedorId ? { vendedorId: query.vendedorId } : {}),
+    ...(query.tipoVenta ? { tipoVenta: query.tipoVenta } : {}),
+    ...(query.plataformaId ? { plataformaId: query.plataformaId } : {}),
+    ...(query.paqueteId ? { paqueteId: query.paqueteId } : {}),
+    // Venta.esPromocion directamente, nunca el paquete relacionado (R3): el
+    // paquete pudo dejar de ser promoción después de esta venta.
+    ...(query.esPromocion !== undefined ? { esPromocion: query.esPromocion } : {}),
+    // Búsqueda por código de compra: es como el cliente final pide
+    // soporte, así que debe tolerar mayúsculas/minúsculas y coincidir
+    // con un fragmento, no solo con el código completo.
+    ...(query.codigoCompra ? { codigoCompra: { contains: query.codigoCompra, mode: "insensitive" } } : {}),
+    ...(query.celularCliente ? { celularCliente: { contains: query.celularCliente, mode: "insensitive" } } : {}),
+  };
+}
 
 const esquemaTotalesPeriodo = t.Object({
   numeroVentas: t.Number(),
@@ -253,6 +298,7 @@ export const ventas = new Elysia({ prefix: "/ventas" })
   .post(
     "/",
     async ({ body, contexto, set }) => {
+      const celularCliente = body.celularCliente?.trim() || null;
       const entrada: EntradaVenta =
         body.tipoVenta === "UNIDAD"
           ? {
@@ -260,12 +306,14 @@ export const ventas = new Elysia({ prefix: "/ventas" })
               plataformaId: body.plataformaId ?? "",
               duracionId: body.duracionId,
               tipoClienteId: body.tipoClienteId,
+              celularCliente,
             }
           : {
               tipoVenta: "PAQUETE",
               paqueteId: body.paqueteId ?? "",
               duracionId: body.duracionId,
               tipoClienteId: body.tipoClienteId,
+              celularCliente,
             };
 
       const cliente = prismaParaEmpresa(contexto.empresaId);
@@ -299,9 +347,11 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           nombreDuracion: venta.nombreDuracion,
           nombreTipoCliente: venta.nombreTipoCliente,
           precioVenta: venta.precioVenta.toString(),
+          celularCliente: venta.celularCliente,
           fechaVenta: venta.fechaVenta.toISOString(),
           fechaVencimientoMax: venta.fechaVencimientoMax.toISOString(),
           mensajeGenerado: venta.mensajeGenerado,
+          esPromocion: venta.esPromocion,
           ...(esAdmin ? { costo: venta.costo.toString(), utilidad: venta.utilidad.toString() } : {}),
         },
         ...(resultado.plantillaFaltante
@@ -340,10 +390,12 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           nombreDuracion: true,
           nombreTipoCliente: true,
           precioVenta: true,
+          celularCliente: true,
           fechaVenta: true,
           fechaVencimientoMax: true,
           mensajeGenerado: true,
           anulada: true,
+          esPromocion: true,
           detalles: {
             select: { id: true, plataformaId: true, nombrePlataforma: true, correoCuenta: true, fechaVencimiento: true },
           },
@@ -359,10 +411,12 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           nombreDuracion: venta.nombreDuracion,
           nombreTipoCliente: venta.nombreTipoCliente,
           precioVenta: venta.precioVenta.toString(),
+          celularCliente: venta.celularCliente,
           fechaVenta: venta.fechaVenta.toISOString(),
           fechaVencimientoMax: venta.fechaVencimientoMax.toISOString(),
           mensajeGenerado: venta.mensajeGenerado,
           anulada: venta.anulada,
+          esPromocion: venta.esPromocion,
           detalles: venta.detalles.map(esquemaDetalleVentaMap),
         })),
       };
@@ -379,22 +433,7 @@ export const ventas = new Elysia({ prefix: "/ventas" })
     "/listado",
     async ({ contexto, query }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-
-      const fechaVenta: Prisma.DateTimeFilter<"Venta"> = {};
-      if (query.desde) fechaVenta.gte = new Date(query.desde);
-      if (query.hasta) fechaVenta.lte = new Date(query.hasta);
-
-      const where: Prisma.VentaWhereInput = {
-        ...(Object.keys(fechaVenta).length > 0 ? { fechaVenta } : {}),
-        ...(query.vendedorId ? { vendedorId: query.vendedorId } : {}),
-        ...(query.tipoVenta ? { tipoVenta: query.tipoVenta } : {}),
-        ...(query.plataformaId ? { plataformaId: query.plataformaId } : {}),
-        ...(query.paqueteId ? { paqueteId: query.paqueteId } : {}),
-        // Búsqueda por código de compra: es como el cliente final pide
-        // soporte, así que debe tolerar mayúsculas/minúsculas y coincidir
-        // con un fragmento, no solo con el código completo.
-        ...(query.codigoCompra ? { codigoCompra: { contains: query.codigoCompra, mode: "insensitive" } } : {}),
-      };
+      const where = whereDesdeFiltros(query);
 
       const ventas = await cliente.venta.findMany({
         where,
@@ -407,6 +446,7 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           nombreDuracion: true,
           nombreTipoCliente: true,
           precioVenta: true,
+          celularCliente: true,
           costo: true,
           utilidad: true,
           fechaVenta: true,
@@ -414,6 +454,7 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           mensajeGenerado: true,
           anulada: true,
           anuladaEn: true,
+          esPromocion: true,
           vendedor: { select: { id: true, nombre: true } },
           anuladaPor: { select: { id: true, nombre: true } },
           detalles: {
@@ -431,6 +472,7 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           nombreDuracion: venta.nombreDuracion,
           nombreTipoCliente: venta.nombreTipoCliente,
           precioVenta: venta.precioVenta.toString(),
+          celularCliente: venta.celularCliente,
           costo: venta.costo.toString(),
           utilidad: venta.utilidad.toString(),
           fechaVenta: venta.fechaVenta.toISOString(),
@@ -438,6 +480,7 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           mensajeGenerado: venta.mensajeGenerado,
           anulada: venta.anulada,
           anuladaEn: venta.anuladaEn?.toISOString() ?? null,
+          esPromocion: venta.esPromocion,
           vendedor: venta.vendedor,
           anuladaPor: venta.anuladaPor,
           detalles: venta.detalles.map(esquemaDetalleVentaMap),
@@ -447,6 +490,30 @@ export const ventas = new Elysia({ prefix: "/ventas" })
     {
       query: filtrosListado,
       response: { 200: t.Object({ ventas: t.Array(esquemaVentaListadoAdmin) }) },
+    },
+  )
+
+  // Entrega 10 — códigos de compra del conjunto filtrado completo, para
+  // sorteos. Un código por VENTA (no por pantalla): el campo vive en Venta,
+  // así que un paquete que entregó tres pantallas sigue aportando un solo
+  // código. Nunca incluye anuladas, sin importar el filtro recibido.
+  .get(
+    "/codigos",
+    async ({ contexto, query }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const where: Prisma.VentaWhereInput = { ...whereDesdeFiltros(query), anulada: false };
+
+      const ventas = await cliente.venta.findMany({
+        where,
+        orderBy: { fechaVenta: "desc" },
+        select: { codigoCompra: true },
+      });
+
+      return { codigos: ventas.map((v) => v.codigoCompra) };
+    },
+    {
+      query: filtrosListado,
+      response: { 200: t.Object({ codigos: t.Array(t.String()) }) },
     },
   )
 

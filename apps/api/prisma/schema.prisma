@@ -163,6 +163,9 @@ model Paquete {
   nombre      String
   descripcion String?
   activo      Boolean @default(true)
+  /// Qué ES este ítem hoy. No confundir con Venta.esPromocion, que es la
+  /// copia inmutable de QUÉ ERA al momento de vender (R3).
+  esPromocion Boolean @default(false)
 
   empresa Empresa @relation(fields: [empresaId], references: [id])
 
@@ -317,6 +320,15 @@ model Venta {
   precioVenta       Decimal        @db.Decimal(14, 2)
   costo             Decimal        @db.Decimal(14, 2)
   utilidad          Decimal        @db.Decimal(14, 2)
+  /// Copia de Paquete.esPromocion al momento de vender. Si el admin
+  /// desmarca la promoción después, esta venta sigue contando como
+  /// promoción (R3). Siempre false para tipoVenta UNIDAD.
+  esPromocion       Boolean        @default(false)
+
+  /// Celular del comprador final, opcional. Primer dato personal del
+  /// comprador que guarda el sistema: solo visible para el vendedor autor
+  /// de la venta y para ADMIN/SUPER_ADMIN (R4).
+  celularCliente String?
 
   fechaVenta          DateTime @default(now())
   /// Derivado, solo para filtrar/ordenar. NUNCA usar para disponibilidad (R5).

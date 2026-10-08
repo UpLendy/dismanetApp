@@ -36,6 +36,8 @@ export interface EntradaVentaUnidad {
   plataformaId: string;
   duracionId: string;
   tipoClienteId: string;
+  /** Celular del comprador final, opcional (R3: se copia una sola vez). */
+  celularCliente?: string | null;
 }
 
 export interface EntradaVentaPaquete {
@@ -43,6 +45,7 @@ export interface EntradaVentaPaquete {
   paqueteId: string;
   duracionId: string;
   tipoClienteId: string;
+  celularCliente?: string | null;
 }
 
 export type EntradaVenta = EntradaVentaUnidad | EntradaVentaPaquete;
@@ -125,6 +128,7 @@ export async function realizarVenta(
       composicion,
       precioVenta: precio.precioVenta,
       costo: precio.costo,
+      esPromocion: false,
     });
   }
 
@@ -157,6 +161,7 @@ export async function realizarVenta(
     composicion,
     precioVenta: precio.precioVenta,
     costo: precio.costo,
+    esPromocion: paquete.esPromocion,
   });
 }
 
@@ -168,6 +173,8 @@ interface DatosComunesVenta {
   composicion: ComponentePaquete[];
   precioVenta: Prisma.Decimal;
   costo: Prisma.Decimal;
+  /** Copia desde Paquete.esPromocion al momento de vender (R3). Siempre false para UNIDAD. */
+  esPromocion: boolean;
 }
 
 /**
@@ -186,7 +193,7 @@ async function realizarVentaConComposicion(
   entrada: EntradaVenta,
   datos: DatosComunesVenta,
 ): Promise<ResultadoVenta> {
-  const { empresa, tipoCliente, duracionVendida, nombreItem, composicion, precioVenta, costo } = datos;
+  const { empresa, tipoCliente, duracionVendida, nombreItem, composicion, precioVenta, costo, esPromocion } = datos;
 
   const plataformasInfo = await tx.plataforma.findMany({
     where: { id: { in: composicion.map((c) => c.plataformaId) } },
@@ -294,6 +301,7 @@ async function realizarVentaConComposicion(
                 pin: infoPantalla.pin ? descifrar(infoPantalla.pin) : null,
                 correo: cuenta.correo,
                 clave: descifrar(cuenta.password),
+                celularCliente: entrada.celularCliente ?? null,
               },
             });
           })()
@@ -308,6 +316,7 @@ async function realizarVentaConComposicion(
               precioVenta,
               nombrePaquete: nombreItem,
               componentes: componentesMensaje,
+              celularCliente: entrada.celularCliente ?? null,
             },
           });
 
@@ -340,6 +349,8 @@ async function realizarVentaConComposicion(
           precioVenta,
           costo,
           utilidad: precioVenta.minus(costo),
+          esPromocion,
+          celularCliente: entrada.celularCliente ?? null,
           fechaVenta,
           fechaVencimientoMax,
           mensajeGenerado,

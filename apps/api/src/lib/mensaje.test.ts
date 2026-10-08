@@ -123,6 +123,36 @@ describe("renderizarMensajeUnidad (f) — contiene código, fecha en letras, per
   });
 });
 
+describe("{{celular}} — venta sin celularCliente", () => {
+  const datosSinCelular: DatosMensajeUnidad = {
+    codigoCompra: "DIS995865",
+    fechaVenta: new Date("2026-09-27T15:00:00.000Z"),
+    nombreTipoCliente: "Nuevo",
+    nombreDuracion: "30 días",
+    fechaVencimientoMax: new Date("2026-10-27T15:00:00.000Z"),
+    precioVenta: "15000",
+    nombrePlataformaMensaje: "N.E.T.F.L.I.X",
+    perfil: "E",
+    pin: "5010",
+    correo: "geradooopaltaa32@hotmail.com",
+    clave: "Net8123@",
+    celularCliente: null,
+  };
+
+  const mensaje = renderizarMensajeUnidad("Código: {{codigoCompra}} · Celular: {{celular}}.", datosSinCelular);
+
+  it("el marcador se resuelve vacío: ni 'undefined' ni el marcador literal", () => {
+    expect(mensaje).toBe("Código: DIS995865 · Celular: .");
+    expect(mensaje).not.toContain("undefined");
+    expect(mensaje).not.toContain("{{celular}}");
+  });
+
+  it("con celularCliente presente, sustituye el número", () => {
+    const conCelular = renderizarMensajeUnidad("Celular: {{celular}}", { ...datosSinCelular, celularCliente: "3001234567" });
+    expect(conCelular).toBe("Celular: 3001234567");
+  });
+});
+
 describe("renderizarMensajePaquete (g) — un bloque por plataforma, con su duración real, omitiendo PERFIL/PIN cuando no aplica", () => {
   const datos: DatosMensajePaquete = {
     codigoCompra: "DIS123456",
