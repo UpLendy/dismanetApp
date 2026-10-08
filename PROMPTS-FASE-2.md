@@ -10,7 +10,8 @@ Trabajo posterior al MVP. Mismas reglas: `CLAUDE.md` y `PRD-MVP-Ventas.md` sigue
 |---|---|---|---|---|---|
 | 1 | Códigos para sorteos · celular opcional · tema claro y oscuro | ~14 h | Bajo | Nada | **Entregado**, con dos correcciones |
 | 2 | Promociones | ~6 h | Bajo | Bloque 1 | **Entregado**, con una corrección |
-| 3 | Saldo de revendedores y rol de empleado | ~22 h | **Alto** | Bloque 2 | Falta definir |
+| 3 | Saldo de revendedores | ~14 h | Medio | Bloque 2 | **Entregado**, con un pendiente menor |
+| 3.5 | Pulido antes de hacer merge a main | ~7 h | Bajo | Nada | **Listo para ejecutar** |
 | 4 | Módulo de garantías | ~28 h | Medio | La especificación del cliente | Bloqueado |
 | — | Logo | ~1 h | Nulo | Que llegue el archivo | Bloqueado |
 | — | Rediseño de la pantalla de ventas | ~8 h | Bajo | Saber qué no le gusta | Bloqueado |
@@ -49,6 +50,10 @@ Consecuencias que sí quedan:
 
 > **Si el cliente quiere promociones como entidad completamente aparte** —con vigencia desde/hasta, con su propia plantilla de mensaje, con reglas que un paquete no tiene— el camino es el de la entidad propia y son ~16 h. Decirlo antes de ejecutar este bloque, no después.
 
+### Decisiones del cliente
+
+Saldo **en pesos (COP)**, `Decimal(14,2)` igual que `precioVenta`. El revendedor **ve su propio saldo y sus movimientos**. **Solo el ADMIN de la empresa carga saldo** — el SUPER_ADMIN lo hace entrando a la empresa, como ya hace con todo lo demás, sin ruta propia.
+
 ### Saldo con bloqueo duro
 
 El saldo baja solo al vender y la venta se rechaza si no alcanza. Eso lo convierte en **parte del camino del dinero**, con las mismas exigencias que la asignación de pantallas:
@@ -57,11 +62,17 @@ El saldo baja solo al vender y la venta se rechaza si no alcanza. Eso lo convier
 - Toda variación del saldo deja un **movimiento registrado**: quién, cuánto, cuándo, por qué. El saldo guardado es el valor vigente; los movimientos son la historia. Nunca se edita un movimiento pasado.
 - Anular una venta **devuelve el saldo con un movimiento nuevo**, no editando el original.
 
-### ⚠️ El cambio de roles puede dejar sin vender a quien ya trabaja
+### El rol no cambia: el saldo es una bandera, no un rol nuevo
 
-Hoy en producción todos los vendedores tienen rol `VENDEDOR`. Si `VENDEDOR` pasa a significar "revendedor con saldo", **los empleados actuales del cliente quedan como revendedores con saldo en cero y no pueden vender**.
+**Decisión revisada, y es la que le quita el riesgo a este bloque.** La versión anterior de este documento introducía un rol `EMPLEADO` y redefinía `VENDEDOR` como "revendedor con saldo". Eso obligaba a una migración que convirtiera a todos los `VENDEDOR` de producción en el mismo despliegue, y si fallaba **el cliente se quedaba sin poder vender**. Era el punto más delicado de toda la fase 2.
 
-La migración tiene que convertir los `VENDEDOR` existentes a `EMPLEADO` en el mismo despliegue que introduce el rol. Es el punto más delicado de toda la fase 2.
+Pero el cliente dijo que lo único que distingue a un empleado de un revendedor es el saldo. Si eso es cierto, el rol no tiene nada que hacer aquí: `Usuario` suma `usaSaldo Boolean @default(false)`.
+
+Con eso, **el despliegue no cambia el comportamiento de nadie.** Todos los usuarios de producción siguen siendo `VENDEDOR` con `usaSaldo = false`, que es exactamente lo que son hoy: empleados que venden sin tope. El cliente marca después, con calma y de uno en uno, quiénes son revendedores. No hay migración de datos que pueda dejar a nadie sin vender, porque no hay migración de datos.
+
+Es el mismo movimiento que funcionó en el bloque 2: una bandera en vez de una clase nueva. Y el enum `Rol` no se toca. Si algún día empleado y revendedor difieren en **permisos** —no en saldo— ahí sí se justifica un rol.
+
+**Sin copia en `Venta`.** A diferencia de `esPromocion`, acá no hace falta: el movimiento de consumo apunta a la venta, así que "qué ventas gastaron saldo" se responde por el ledger, que es inmutable por construcción y mejor dato que una bandera copiada.
 
 ---
 
@@ -118,6 +129,41 @@ Es otra vez la misma forma de bug del proyecto: **la prueba de idempotencia pas�
 **Lo del aviso de precios inservibles: respuesta aceptada, y no hay que construirlo.** Al desactivar el TipoCliente, su columna y sus `Precio` desaparecen de la matriz en silencio, porque la API solo pide los tipos activos. No es un bug: esos precios quedan inalcanzables pero intactos, y el vendedor nunca puede seleccionar un tipo inactivo. El único efecto real es que si el cliente pregunta "¿dónde quedaron mis precios de promoción?", la interfaz no se lo puede contestar. Si lo pregunta, se le responde de palabra.
 
 **Lo visual sigue sin verificarse, y esta vez fue culpa del prompt.** Las credenciales de desarrollo están documentadas desde la Entrega 8 en `GUIA-DE-PRUEBA.md` (`admin@dismanet.local`), pero el prompt solo mandaba a leer `CLAUDE.md`, `DISENO.md` y el PRD. **Todo prompt que pida verificación visual tiene que incluir `GUIA-DE-PRUEBA.md` en la lista de lectura.** Queda como regla del template, no como pendiente.
+
+### F2.3 — Saldo de revendedores · **aprobada, con un pendiente menor**
+
+Revisado el 8 de octubre. Es la entrega mejor hecha del proyecto, y lo digo habiendo buscado específicamente dónde iba a estar roto.
+
+**Lo que más me preocupaba resultó correcto, y por la razón correcta.** El escenario que no estaba en el prompt y que rompe este tipo de implementación: un revendedor vende, el ADMIN lo pasa a empleado (`usaSaldo = false`), y después se anula esa venta. Si la devolución se decidiera leyendo `usuario.usaSaldo`, el revendedor perdería ese dinero en silencio — y el cuadre del ledger **no lo detectaría**, porque el saldo y la suma de movimientos seguirían coincidiendo. Dinero perdido sin rastro.
+
+La implementación decide con `movimientoSaldo.findFirst({ ventaId, tipo: "CONSUMO" })`: el hecho histórico, no la bandera vigente. Devuelve bien. Y el caso inverso —empleado que pasa a revendedor y se le anula una venta vieja que nunca cobró saldo— tampoco inventa un crédito, porque no hay CONSUMO que encontrar. Las dos direcciones correctas.
+
+Verificado contra el código:
+
+| Qué | Resultado |
+|---|---|
+| Orden de bloqueos | Correcto. `bloquearUsuarioParaVenta` en la línea 219 de `lib/ventas.ts`, `tomarPantallasDisponibles` en la 248. |
+| El bloqueo del usuario **sin** `SKIP LOCKED` | Correcto, y con el por qué escrito en el archivo para que nadie lo "optimice" después. |
+| SQL crudo en la lista blanca | Correcto. `src/lib/bloqueo-usuario.ts` está en `LISTA_BLANCA_RAW_SQL`. |
+| El `WHERE` lleva `id` **Y** `empresaId` | Correcto, con la nota de que `Usuario` es el único modelo con `empresaId` nullable. |
+| `@@unique([empresaId, ventaId, tipo])` | Presente. Y `ventaId` nullable no estorba: en Postgres los NULL son distintos entre sí, así que no limita las cargas ni los ajustes. |
+| Doble anulación | Bloqueada por dos vías: relectura tras el lock, y la restricción única como respaldo con `restriccionViolada()`. |
+| Rutas de saldo en `app-compuesta.test.ts` | Correcto, con los 403 del VENDEDOR sobre las rutas de administración de saldo. |
+| `DISENO.md` actualizado antes de usar el componente nuevo | Correcto, sin que el prompt lo pidiera. Agregó `Interruptor` y afinó `Dialogo` para separar "destructiva" de "irreversible pero no destructiva" — cargar saldo va en `principal`, no en rojo. Es exactamente la regla de la §2. |
+
+**El SUPER_ADMIN vendiendo dentro de una empresa** no toma bloqueo de usuario (su fila tiene `empresaId` nulo, así que el lock devuelve null). Revisado: no reintroduce riesgo de deadlock, porque una transacción que no sostiene ninguna fila de `Usuario` no puede cerrar un ciclo con otra que sí.
+
+**Pendiente menor, pero es el único que puede dejar a alguien sin vender.** El interruptor "Vende contra saldo" se aplica de inmediato y sin aviso. Si el ADMIN lo activa sobre un vendedor que está trabajando, con saldo en cero, **esa persona queda sin poder vender en ese instante y nada en pantalla se lo dice al ADMIN.** Es reversible y no corrompe datos, así que no bloquea nada — pero el objetivo declarado de este bloque era que nadie se quedara sin vender, y este es el último camino que queda abierto hacia eso.
+
+Arreglo: al activar sobre un usuario con saldo en cero, confirmar con `Dialogo` en variante `principal` diciéndolo con esas palabras. Va de primero en el próximo bloque.
+
+**Nota sobre la verificación visual.** Esta vez se hizo de verdad, y el agente encontró su propio error en el camino: `colorScheme: "dark"` de Playwright no hace nada en esta app, porque el tema se lee solo de `localStorage` antes del primer render. Lo detectó al notar que las capturas "oscuras" se veían idénticas a las claras, y lo corrigió con `addInitScript`. Eso es exactamente lo que no pasó en F2.1 y F2.2. Queda una limitación: Playwright se usó fuera del repositorio, así que las capturas no son reproducibles. No lo convertimos en infraestructura todavía — cuando llegue el rediseño de ventas, que es trabajo puramente visual, ahí se evalúa.
+
+### Higiene de ramas — F2.1 y F2.2 quedaron en un solo commit
+
+`0cf7b1f` en `feat/promociones` trae los dos bloques: el tema claro, el celular y los códigos de F2.1 viajan bajo el mensaje "feat: promociones", con tres migraciones en un commit. No se perdió nada y todo va al mismo PR, pero F2.1 ya no se puede revertir sin revertir promociones.
+
+Lo que importa de aquí en adelante: **F2.3 no se commitea sobre `feat/promociones`.** Es el bloque que toca el dinero; tiene que poder revisarse y revertirse solo.
 
 ---
 
@@ -338,12 +384,390 @@ Reporta:
 
 ---
 
+## Prompt F2.3 — Saldo de revendedores
+
+> **Estado:** listo para ejecutar.
+> **Verificable al terminar:** el ADMIN marca a un vendedor como revendedor y le carga $100.000; ese revendedor vende hasta agotarlo y la siguiente venta se rechaza diciendo cuánto falta; al anular una venta le vuelve el saldo; y el ADMIN ve el historial de cada carga y cada consumo.
+
+```
+Lee CLAUDE.md, DISENO.md, PRD-MVP-Ventas.md y GUIA-DE-PRUEBA.md antes de empezar.
+
+Antes de escribir código, lee la función de venta completa en lib/ventas.ts,
+en particular la transacción y el bloqueo de pantallas con FOR UPDATE SKIP
+LOCKED, y el handler de anulación. Este bloque mete dinero dentro de esa misma
+transacción, y es el trabajo de más riesgo de la fase 2. Si algo de lo que
+sigue no te cuadra con lo que ves en el código, para y dilo antes de construir.
+
+## Lo que NO vamos a hacer, y por qué
+
+**No se toca el enum `Rol`.** No se agrega EMPLEADO. No se redefine VENDEDOR.
+
+Lo único que distingue a un empleado de un revendedor es el saldo, así que es
+una bandera, no un rol: `Usuario.usaSaldo`, con default false. Así el
+despliegue no cambia el comportamiento de ningún usuario que ya exista —
+siguen siendo vendedores sin tope, que es lo que son hoy— y el cliente marca
+después quiénes son revendedores. Si en cambio migráramos roles, un error
+dejaría a los empleados del cliente sin poder vender el mismo día del
+despliegue.
+
+Tampoco se copia nada a `Venta`. El movimiento de consumo apunta a la venta;
+eso ya responde "qué ventas gastaron saldo", y es inmutable por construcción.
+
+## 1. Esquema
+
+En `Usuario`, dos campos aditivos con default:
+
+- `usaSaldo Boolean @default(false)` — si este usuario vende contra saldo.
+- `saldo Decimal @db.Decimal(14,2) @default(0)` — pesos. El valor vigente.
+
+Y un modelo nuevo, con `empresaId` como todos (R1):
+
+    MovimientoSaldo
+      id, empresaId, usuarioId,
+      tipo (CARGA | CONSUMO | DEVOLUCION | AJUSTE),
+      monto      Decimal(14,2)   -- positivo suma, negativo resta
+      saldoResultante Decimal(14,2)  -- el saldo que quedó tras este movimiento
+      ventaId?   -- presente en CONSUMO y DEVOLUCION, nulo en CARGA y AJUSTE
+      nota?      -- obligatoria en AJUSTE
+      creadoPorId, createdAt
+
+`saldoResultante` es redundante a propósito: es lo que permite auditar el
+ledger sin recalcular toda la historia, y es lo que hace evidente un descuadre.
+
+**Restricción única: `(empresaId, ventaId, tipo)`.** Es lo que hace
+estructuralmente imposible cobrar dos veces la misma venta o devolverle el
+saldo dos veces. Manéjala con `restriccionViolada()` además de validar antes
+(CLAUDE.md): validar y luego insertar es una condición de carrera.
+
+El saldo guardado es el valor vigente; los movimientos son la historia. Un
+movimiento pasado NUNCA se edita ni se borra. Un error se corrige con un
+AJUSTE nuevo.
+
+## 2. El orden de los bloqueos — lo más importante de este bloque
+
+La transacción de venta ya toma bloqueos: pantallas, con FOR UPDATE SKIP
+LOCKED, recorriendo plataformas ordenadas por plataformaId ascendente (R2).
+Ahora va a tomar un segundo tipo de bloqueo: la fila del usuario. **Dos tipos
+de bloqueo en una transacción sin un orden global fijo es un deadlock
+esperando a pasar.**
+
+Orden obligatorio, siempre el mismo:
+
+1. **Primero** la fila del usuario, con `SELECT ... FOR UPDATE` — **sin SKIP
+   LOCKED**, que espere.
+2. Leer el saldo y comparar contra el precio de venta.
+3. Si no alcanza, abortar con 409 antes de tocar inventario.
+4. **Después** las pantallas, con SKIP LOCKED y en orden de plataformaId, tal
+   como está hoy.
+5. Insertar la venta, insertar el movimiento de CONSUMO, actualizar el saldo.
+
+Por qué el usuario va primero: es la fila más específica —una por vendedor— así
+que dos ventas simultáneas del mismo revendedor se serializan ahí, que es
+justo lo que queremos, y dos ventas de revendedores distintos nunca compiten
+por ella.
+
+**Por qué el bloqueo del usuario NO lleva SKIP LOCKED:** con SKIP LOCKED, dos
+ventas simultáneas del mismo revendedor se saltarían la fila bloqueada y las
+dos leerían el saldo viejo. Las dos pasarían la verificación y el revendedor
+gastaría de más. Es exactamente el bug que este bloque existe para evitar, y
+se escribe igual que la versión correcta salvo dos palabras.
+
+Ese `SELECT ... FOR UPDATE` es SQL crudo: va en la lista blanca de archivos,
+parametrizado, y **su WHERE lleva `id` Y `empresaId`** — `Usuario` es el único
+modelo donde `empresaId` puede ser NULL (el SUPER_ADMIN), así que un WHERE solo
+por id es una fuga entre empresas esperando a pasar.
+
+## 3. El rechazo
+
+Si el saldo no alcanza, 409 con un mensaje que sirva: cuánto cuesta, cuánto
+tiene, cuánto le falta. "Saldo insuficiente" a secas obliga al revendedor a
+escribirle al admin para enterarse de lo que el sistema ya sabe.
+
+Un usuario con `usaSaldo = false` no pasa por nada de esto: ni se bloquea su
+fila, ni se verifica, ni se registra movimiento. Su camino de venta debe
+quedar byte por byte igual al de hoy.
+
+Precio cero con saldo cero: se permite. No hay nada que cobrar.
+
+## 4. Anulación
+
+Anular una venta que consumió saldo inserta un movimiento de DEVOLUCION y
+suma el saldo. Nunca edita el movimiento de CONSUMO.
+
+- El monto devuelto sale **del movimiento de CONSUMO original**, no del precio
+  actual de nada.
+- Anular una venta de un usuario sin saldo no genera movimiento. No inventes
+  un crédito donde nunca hubo un cobro.
+- **Anular dos veces no puede devolver dos veces.** La restricción única
+  `(empresaId, ventaId, tipo)` lo bloquea en la base; aun así, pruébalo
+  explícitamente. Antes, una doble anulación era un no-op; ahora sería dinero
+  regalado.
+- La devolución va dentro de la misma transacción que libera las pantallas, y
+  con el mismo bloqueo de la fila del usuario.
+
+## 5. Pantallas
+
+**ADMIN — en la pantalla de usuarios que ya existe:**
+- Switch "Vende contra saldo" en el panel de alta y edición.
+- Columna de saldo en la tabla, solo para los que usan saldo.
+- Acción "Cargar saldo": monto y nota opcional, con diálogo de confirmación
+  que nombre el monto y a quién. Es dinero.
+- Detalle del usuario con su historial de movimientos: fecha, tipo, monto,
+  saldo resultante, quién lo hizo, y enlace a la venta cuando aplique.
+- Un AJUSTE se puede registrar, exige nota, y queda en el historial como
+  cualquier otro movimiento.
+
+**REVENDEDOR — ve su propio saldo y sus propios movimientos:**
+- Su saldo visible en la barra superior, siempre, y en la pantalla de vender
+  antes de confirmar. Que se entere de que no alcanza antes de armar la venta,
+  no al apretar VENDER.
+- Su historial de movimientos, solo el suyo.
+- Esto no choca con R4: es su propio saldo, no cifras financieras de la
+  empresa. Sigue sin ver costo, utilidad ni margen, ni los movimientos de
+  nadie más.
+
+Un empleado (`usaSaldo = false`) no ve nada de saldo en ninguna parte. Ni en
+cero, ni deshabilitado: no existe para él.
+
+## 6. Verificación
+
+Esto es el camino del dinero. Las pruebas son el entregable, no un anexo.
+
+- Las pruebas existentes pasan sin modificarse. `tsc --noEmit` limpio en ambas
+  apps — **cero errores, incluidos los de archivos de prueba.**
+- `app-compuesta.test.ts`: toda ruta nueva, con el caso sin sesión además del
+  autenticado. Un revendedor pidiendo el saldo o los movimientos de otro
+  usuario recibe 403, y un empleado no alcanza las rutas de saldo.
+- **Concurrencia:** dos ventas simultáneas del mismo revendedor con saldo para
+  una sola. Una pasa, la otra se rechaza, el saldo final es correcto y hay
+  exactamente un movimiento de CONSUMO. Esta prueba es la razón de ser del
+  bloque; si no la puedes escribir de forma confiable, dilo en vez de
+  reemplazarla por una secuencial.
+- **Deadlock:** una venta de paquete de varias plataformas de un revendedor,
+  concurrente con otra del mismo revendedor que comparte plataformas. Ninguna
+  debe morir por deadlock.
+- **Doble anulación** no devuelve dos veces.
+- **Rollback:** si la asignación de pantallas falla por inventario (R2,
+  todo-o-nada), el saldo queda intacto y no hay movimiento huérfano.
+- **Cuadre del ledger:** para cada usuario con saldo, `saldo` es igual a la
+  suma de los montos de sus movimientos, y el `saldoResultante` del último
+  movimiento coincide con el saldo guardado. Esta prueba es la red que detecta
+  un descuadre antes que el cliente.
+- **No regresión del empleado:** un `usaSaldo = false` vende igual que antes y
+  no genera ningún movimiento.
+- Recorre en claro y en oscuro lo que toques (credenciales en
+  GUIA-DE-PRUEBA.md, no las pidas por chat).
+
+## 7. Entregable
+
+Reporta:
+- El orden de bloqueos tal como quedó en el código, citando las líneas.
+- Si la prueba de concurrencia la pudiste escribir de verdad, y cómo fuerzas
+  el solapamiento.
+- Si el cuadre del ledger lo expusiste además como verificación en el
+  diagnóstico de empresa, o solo como prueba.
+- Cualquier lugar donde el camino de venta de un empleado haya cambiado.
+  Idealmente son cero.
+```
+
+---
+
+## Revisión en vivo antes del merge — 8 de octubre
+
+Primera vez que alguien abre la aplicación corriendo y la mira, en vez de auditar el código. Recorrido como ADMIN sobre el servidor de desarrollo: login, panel, usuarios, vender, ventas, en claro y en oscuro.
+
+**Lo que funciona y se ve bien:** el tema claro por defecto, el selector Claro/Oscuro del menú de usuario, el ítem activo de la barra lateral con el rojo pastel que pidió el cliente, las tres pestañas Unidad · Paquete · Promoción, el botón "Copiar códigos", los filtros de Promoción y de Celular, el aviso de costos en cero en el panel, el saldo del revendedor en la tabla de usuarios con "Cargar saldo" y "Historial", y la regla de una sola acción sólida por pantalla respetada en todas.
+
+Siete hallazgos. El primero ya quedó arreglado.
+
+### 1 — Desajuste de hidratación en cada carga · **arreglado**
+
+El script en línea del tema pone `data-theme` en `<html>` antes de que React hidrate, así que el HTML del servidor nunca coincide con el del cliente. React lo reportaba en consola en **todas** las páginas, con el aviso de que "no lo va a parchar".
+
+Se ve bien en pantalla, pasa todas las pruebas y ninguna auditoría de código lo encuentra: solo aparece abriendo la aplicación y leyendo la consola. Arreglado con `suppressHydrationWarning` en `<html>`, que es el patrón estándar para este caso.
+
+### 2 — La pantalla de login está fuera del sistema de diseño
+
+`apps/web/app/login/page.tsx` usa clases crudas de Tailwind: `bg-neutral-900` para el botón, `bg-red-50` y `text-red-700` para el error. Cero tokens.
+
+Es la primera pantalla que ve el cliente y la única que no está en su marca: el botón principal sale **negro** en vez del rojo `--primario`. Y como es anterior al sistema de diseño, se quedó fuera por una razón concreta — la auditoría de F2.1 se limitó a `app/(protegido)`, y el login no está ahí.
+
+### 3 — `/vender` abre sin ningún modo seleccionado
+
+El vendedor entra y ve tres pestañas, ningún formulario y un botón VENDER muerto. Tiene que adivinar que debe hacer clic en "Unidad" para que aparezca algo.
+
+Es un clic de más en cada venta, en la pantalla que `DISENO.md` define como "una sola pantalla, muchas veces al día, con prisa". Antes de F2.2 eran dos pestañas; al pasar a tres se perdió la selección por defecto.
+
+### 4 — La pestaña "Promoción" está habilitada sin haber promociones
+
+El prompt F2.2 lo pedía explícitamente: *"Si no hay promociones activas con precio, la pestaña se muestra deshabilitada con el texto de por qué, no vacía y clicable."* Quedó clicable. El vendedor elige tipo de cliente y duración para después descubrir que la lista de productos está vacía, sin explicación.
+
+### 5 — En oscuro, los fondos de marca se quedan en claro
+
+El ítem activo de la barra lateral es un bloque casi blanco sobre la barra negra. La causa no es un error de implementación sino un hueco del sistema de diseño: en `DISENO.md` §2, la tabla de "Superficies e ink" tiene columnas Claro y Oscuro, pero la tabla de "Color de marca" tiene **un solo valor**. `--primario-suave`, `--primario-texto` y `--secundario-suave` nunca tuvieron versión oscura.
+
+Afecta a todo lo que usa esos tokens: el ítem activo del menú, la pestaña activa de vender, la pastilla "Promoción" y las celdas de excepción de la matriz de paquetes. Se arregla en `DISENO.md` primero y en `globals.css` después.
+
+### 6 — La tabla de usuarios se desborda y la fila pierde su nombre
+
+Con las columnas de saldo, a 1024px de ancho hay que desplazar la tabla a la derecha para alcanzar "Cargar saldo" — y al hacerlo desaparecen Nombre y Correo. Se termina cargando dinero a una fila sin ver de quién es.
+
+La pantalla de precios ya resolvió esto con cabeceras fijas al hacer scroll; acá aplica lo mismo a la columna de nombre.
+
+### 7 — La utilidad inflada se muestra en verde
+
+En `/ventas`, los totales y la columna de utilidad van en `--bien` (verde). Hoy el costo es cero en todo, así que la utilidad es igual al ingreso: el cliente ve "$76.900" en verde de ganancia cuando en realidad el sistema no sabe cuánto ganó.
+
+Dos cosas distintas, las dos ciertas: `DISENO.md` §2 dice que los colores de estado son reservados y no decorativos, y una cifra que no es real no debería ir pintada como buena noticia. El panel ya trae el aviso de costos en cero; `/ventas` no.
+
+### 8 — Toda venta que falla, falla en silencio · **arreglado**
+
+Encontrado por Felipe probando la vista del revendedor: al no alcanzar el saldo, la venta no se ejecuta y la pantalla no dice nada.
+
+El backend está bien — devuelve 409 con el costo, el saldo y el faltante, y está probado. El frontend también pone el mensaje. Y acto seguido lo borra:
+
+```
+setError(mensajeDeError(errorRespuesta));   // mensaje del 409
+await cargarOpciones();                     // y esto hace setError(null)
+```
+
+`cargarOpciones()` se agregó para refrescar los cupos tras un fallo —por si alguien agotó el inventario entre que se cargó la lista y el clic— y empieza limpiando el error. El mensaje se pone y se borra en el mismo tick.
+
+**No es solo el saldo: se traga todos los errores del camino de venta**, incluido inventario insuficiente. El saldo fue lo que lo hizo visible porque es el error más fácil de provocar a propósito.
+
+Arreglado moviendo el `setError(null)` de `cargarOpciones` al efecto que corre al cambiar de selección. Limpiar el error es consecuencia de que el usuario cambió algo, no de que refrescamos una lista.
+
+**La lección, que es la sexta vez que aparece con la misma forma.** Las 318 pruebas pasan, el 409 está bien construido y bien probado, y el bug estaba ahí igual: ninguna prueba verifica que el mensaje *llegue a la pantalla*. Está probado que el servidor lo devuelve y está probado que el componente lo pinta — nadie probó el camino completo. Queda como regla en la definición de terminado.
+
+---
+
+## Prompt F2.4 — Pulido antes del merge
+
+> **Estado:** listo para ejecutar.
+> **Verificable al terminar:** el cliente entra, ve su marca desde el login, vende sin un clic de más, y nada se ve roto en oscuro.
+
+```
+Lee CLAUDE.md, DISENO.md, PRD-MVP-Ventas.md y GUIA-DE-PRUEBA.md antes de
+empezar. Las credenciales de desarrollo están en GUIA-DE-PRUEBA.md: úsalas,
+no las pidas.
+
+Siete arreglos chicos e independientes, encontrados abriendo la aplicación.
+Ninguno toca la lógica de venta, los permisos ni el saldo. El hallazgo 1 de la
+lista original (desajuste de hidratación) ya está arreglado — no lo busques.
+
+## 1. Aviso al activar "Vende contra saldo" con saldo en cero
+
+Viene de F2.3 y es el único que puede dejar a alguien sin vender. Hoy el
+interruptor se aplica de inmediato y sin aviso: si el ADMIN lo activa sobre
+alguien que está trabajando, esa persona queda sin poder vender en ese
+instante y nada se lo dice.
+
+Al ACTIVAR sobre un usuario con saldo en cero, confirmar con `Dialogo` en
+variante `principal` —no `destructivo`, no es destructivo— diciéndolo con
+esas palabras: que esa persona no va a poder vender hasta que se le cargue
+saldo. Desactivar no necesita confirmación: devuelve a la gente su capacidad
+de vender, no se la quita.
+
+## 2. La pantalla de login, al sistema de diseño
+
+`apps/web/app/login/page.tsx` usa clases crudas: `bg-neutral-900`,
+`bg-red-50`, `text-red-700`. Es la primera pantalla que ve el cliente y la
+única fuera de su marca.
+
+- Botón "Ingresar" con el componente `Boton` en variante `principal`.
+- El bloque de error con el componente `Aviso` en variante `critico`.
+- Que responda al tema, igual que el resto.
+- Cero hex y cero colores de Tailwind: solo tokens.
+
+Después de este arreglo, **ninguna pantalla de la aplicación debe tener
+colores quemados.** La auditoría de F2.1 se limitó a `app/(protegido)` y por
+eso el login se escapó. Repítela sobre `apps/web` completa y reporta si queda
+algo.
+
+## 3. `/vender` abre en modo UNIDAD
+
+Hoy abre sin ningún modo seleccionado: tres pestañas, ningún formulario y un
+botón muerto. UNIDAD queda seleccionado al cargar, como estaba antes de que
+la tercera pestaña entrara.
+
+## 4. La pestaña "Promoción" deshabilitada si no hay promociones
+
+Lo pedía F2.2 y quedó pendiente. Si no hay promociones activas con precio, la
+pestaña va deshabilitada y con el texto de por qué — no clicable hacia un
+formulario que no puede completarse. Misma regla si algún día no hay paquetes.
+
+## 5. Valores oscuros para los tokens de marca
+
+`DISENO.md` §2: la tabla de "Superficies e ink" tiene columnas Claro y Oscuro,
+pero la de "Color de marca" tiene un solo valor. `--primario-suave`,
+`--primario-texto` y `--secundario-suave` nunca tuvieron versión oscura, y por
+eso el ítem activo del menú es un bloque casi blanco sobre la barra negra.
+
+- **Primero `DISENO.md`**, agregando la columna Oscuro a la tabla de marca,
+  con valores elegidos —no invertidos— que cumplan 4.5:1 para el texto sobre
+  su fondo. El modo oscuro es un conjunto de valores elegidos (§7).
+- Después `globals.css`, bajo los mismos selectores que ya usan los otros
+  tokens oscuros.
+- Revisa en oscuro todo lo que consume esos tokens: ítem activo del menú,
+  pestaña activa de vender, pastilla "Promoción", y las celdas de excepción
+  de la matriz de paquetes.
+
+## 6. La columna de nombre fija en la tabla de usuarios
+
+Con las columnas de saldo, a 1024px hay que desplazar la tabla para alcanzar
+"Cargar saldo", y al hacerlo desaparecen Nombre y Correo: se carga dinero a
+una fila sin ver de quién es.
+
+Columna de nombre fija al hacer scroll horizontal, como ya hace la matriz de
+precios con sus cabeceras. Si resulta que la tabla cabe holgada quitando algo,
+esa también es una solución válida — pero el nombre tiene que estar visible
+en el momento de cargar saldo.
+
+## 7. La utilidad deja de ir en verde mientras el costo sea cero
+
+En `/ventas`, los totales y la columna de utilidad van en `--bien`. Con todos
+los costos en cero, la utilidad es igual al ingreso: el cliente ve una cifra
+en verde de ganancia que el sistema no sabe si es real.
+
+- La utilidad va en `--ink`, como cualquier otra cifra. El verde es un color
+  de estado y está reservado (§2).
+- `/ventas` muestra el mismo `Aviso` de costos en cero que ya existe en el
+  panel, con la misma redacción, cuando haya precios sin costo.
+
+## 8. Verificación
+
+- Las pruebas existentes pasan sin modificarse. `tsc --noEmit` limpio en ambas
+  apps, cero errores incluidos los de archivos de prueba.
+- **Abre la aplicación y léela con la consola abierta.** Cero errores y cero
+  advertencias de React en login, panel, vender, ventas, usuarios y perfil.
+  Esta entrega existe porque nadie había hecho eso todavía.
+- **Pruebas de que el error llega a la pantalla, no solo de que el servidor lo
+  devuelve.** Para cada error del camino de venta —saldo insuficiente,
+  inventario insuficiente, plantilla no configurada— una prueba que haga
+  fallar la venta y verifique que el texto queda visible después de que
+  terminen los refrescos posteriores. Probar el 409 por un lado y el
+  componente por el otro no cubre el hueco entre los dos: ahí vivía el
+  hallazgo 8.
+- Recorre las pantallas en claro y en oscuro, incluido el login.
+- Si tomas capturas con Playwright, el tema se fija con
+  `addInitScript(() => localStorage.setItem("tema", "dark"))`. La opción
+  `colorScheme` de Playwright no hace nada en esta aplicación.
+
+## 9. Entregable
+
+Reporta qué encontró la auditoría de colores quemados sobre `apps/web`
+completa, y qué valores oscuros elegiste para los tokens de marca con su
+razón de contraste.
+```
+
+---
+
 ## Qué falta definir para los bloques siguientes
 
 | Bloque | Pendiente |
 |---|---|
 | 2 — Promociones | Entregado. Queda una pregunta que solo importa si el cliente la trae: si una promoción necesita **vigencia desde/hasta**, eso sí pide campos nuevos (~3 h sobre lo ya hecho, no las 16 h de la entidad aparte). |
-| 3 — Saldo | **Bloquea el arranque del bloque.** ¿El saldo se expresa en pesos, o en una unidad propia? ¿Un revendedor ve su propio saldo y sus movimientos? ¿Quién puede cargar saldo: solo el ADMIN, o también el SUPER_ADMIN desde fuera? |
+| 3 — Saldo | Resuelto: pesos, el revendedor ve lo suyo, solo el ADMIN carga. Nada bloqueante. |
 | 4 — Garantías | La especificación completa del cliente |
 | Logo | El archivo, en SVG si es posible |
 | Rediseño de ventas | Qué no le gusta de la pantalla actual |

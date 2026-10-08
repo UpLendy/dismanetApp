@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Wallet } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Boton } from "@/components/ui/boton";
@@ -9,6 +9,7 @@ import { Tarjeta } from "@/components/ui/tarjeta";
 import { Campo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
 import { Aviso } from "@/components/ui/aviso";
 import { Pastilla } from "@/components/ui/pastilla";
+import { EVENTO_SALDO_ACTUALIZADO } from "@/lib/eventos";
 
 interface Opcion {
   id: string;
@@ -120,6 +121,15 @@ export default function PaginaVender() {
   const [copiado, setCopiado] = useState(false);
   const [celularCliente, setCelularCliente] = useState("");
 
+  // Saldo propio del revendedor (null si usaSaldo es false): visible antes
+  // de confirmar la venta, no solo en la barra superior.
+  const [saldoPropio, setSaldoPropio] = useState<{ usaSaldo: boolean; saldo: string | null } | null>(null);
+
+  const cargarSaldoPropio = useCallback(async () => {
+    const { data } = await api.perfil.saldo.get();
+    if (data) setSaldoPropio({ usaSaldo: data.usaSaldo, saldo: data.saldo });
+  }, []);
+
   // Guarda síncrona contra doble envío: el estado `vendiendo` se actualiza en
   // el siguiente render, pero esta referencia se lee y escribe de inmediato,
   // así que dos clics rápidos en VENDER antes de ese render nunca producen
@@ -133,7 +143,8 @@ export default function PaginaVender() {
     api.ventas.duraciones.get().then(({ data }) => {
       if (data) setDuraciones(data.duraciones);
     });
-  }, []);
+    cargarSaldoPropio();
+  }, [cargarSaldoPropio]);
 
   // Paquete y Promoción son la misma categoría de producto a efectos de la
   // petición: un solo endpoint (`/ventas/paquetes`), una sola petición. El
@@ -144,7 +155,10 @@ export default function PaginaVender() {
   const cargarOpciones = useCallback(async () => {
     if (!categoria || !tipoClienteId || !duracionId) return;
     setCargandoOpciones(true);
-    setError(null);
+    // NO limpiar el error acá. Esta función también se llama después de que
+    // una venta falla, para refrescar cupos; si limpiara, borraría el mensaje
+    // que vender() acaba de poner y la venta fallaría en silencio. Limpiar al
+    // cambiar de selección es responsabilidad del efecto de abajo.
     const query = { duracionId, tipoClienteId };
 
     if (categoria === "UNIDAD") {
@@ -169,6 +183,7 @@ export default function PaginaVender() {
   useEffect(() => {
     setProductos([]);
     setProductoId("");
+    setError(null);
     cargarOpciones();
   }, [cargarOpciones]);
 
@@ -241,6 +256,10 @@ export default function PaginaVender() {
     }
 
     setVentaRealizada(data.venta);
+    if (saldoPropio?.usaSaldo) {
+      window.dispatchEvent(new Event(EVENTO_SALDO_ACTUALIZADO));
+      await cargarSaldoPropio();
+    }
   }
 
   function nuevaVenta() {
@@ -424,6 +443,17 @@ export default function PaginaVender() {
             <p className="etiqueta-dato">Precio</p>
             <p className="valor-dato text-ink">{formatearPesos(productoSeleccionado.precioVenta)}</p>
           </div>
+          {saldoPropio?.usaSaldo ? (
+            <div className="flex items-center justify-between border-t border-borde pt-3">
+              <span className="flex items-center gap-1.5 text-sm text-ink-2">
+                <Wallet className="size-4" />
+                Tu saldo
+              </span>
+              <span className="tabular-nums text-sm font-medium text-ink">
+                {formatearPesos(saldoPropio.saldo ?? "0")}
+              </span>
+            </div>
+          ) : null}
         </Tarjeta>
       ) : null}
 
