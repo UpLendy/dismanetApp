@@ -12,6 +12,7 @@ import { precios } from "./routes/precios.ts";
 import { cuentas } from "./routes/cuentas.ts";
 import { disponibilidad } from "./routes/disponibilidad.ts";
 import { ventas } from "./routes/ventas.ts";
+import { garantias } from "./routes/garantias.ts";
 import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
 import { manejadorErrores } from "./plugins/errores.ts";
@@ -45,6 +46,7 @@ const app = new Elysia()
   .use(cuentas)
   .use(disponibilidad)
   .use(ventas)
+  .use(garantias)
   .use(plantillas)
   .use(perfil);
 

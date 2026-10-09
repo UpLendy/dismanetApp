@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ShoppingCart, Receipt, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText } from "lucide-react";
+import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText } from "lucide-react";
 import type { Rol } from "@/lib/rol";
 
 export interface ItemNav {
@@ -25,6 +25,7 @@ const GRUPOS: GrupoNav[] = [
     titulo: null,
     items: [
       { etiqueta: "Vender", href: "/vender", icono: ShoppingCart, rolMinimo: "VENDEDOR", destacado: true },
+      { etiqueta: "Pantallas vendidas", href: "/pantallas-vendidas", icono: MonitorCheck, rolMinimo: "VENDEDOR" },
       { etiqueta: "Ventas", href: "/ventas", icono: Receipt, rolMinimo: "VENDEDOR" },
     ],
   },

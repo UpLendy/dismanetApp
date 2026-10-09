@@ -71,6 +71,7 @@ model Empresa {
   ventaDetalles              VentaDetalle[]
   plantillasMensaje          PlantillaMensaje[]
   movimientoSaldos           MovimientoSaldo[]
+  garantias                  Garantia[]
 
   @@unique([prefijoCodigo])
 }
@@ -110,6 +111,7 @@ model Usuario {
   ventasAnuladas          Venta[]           @relation("VentaAnuladaPor")
   movimientosSaldo        MovimientoSaldo[] @relation("MovimientoSaldoUsuario")
   movimientosSaldoCreados MovimientoSaldo[] @relation("MovimientoSaldoCreadoPor")
+  garantiasCreadas        Garantia[]        @relation("GarantiaCreadaPor")
 
   @@index([empresaId])
 }
@@ -411,8 +413,43 @@ model VentaDetalle {
   plataforma Plataforma @relation(fields: [plataformaId], references: [id])
   duracion   Duracion   @relation(fields: [duracionId], references: [id])
 
+  /// Presente si esta pantalla falló y fue reemplazada (este renglón es el ORIGINAL).
+  garantiaOriginal Garantia? @relation("GarantiaOriginal")
+  /// Presente si este renglón fue entregado como reemplazo de una garantía.
+  garantiaReemplazo Garantia? @relation("GarantiaReemplazo")
+
   @@index([empresaId])
   @@index([pantallaId, fechaVencimiento])
+}
+
+/// Reemplazo de una pantalla que dejó de funcionar para el comprador (R3): el
+/// VentaDetalle original nunca se toca — ni su pantallaId, ni sus
+/// credenciales, ni su fechaVencimiento. El reemplazo es un VentaDetalle
+/// NUEVO sobre la MISMA venta; esta fila es el hecho que conecta ambos.
+///
+/// ventaDetalleOriginalId es único: una pantalla entregada no se reemplaza
+/// dos veces. Si el reemplazo también falla, la garantía siguiente apunta al
+/// renglón de reemplazo, que es otro id.
+model Garantia {
+  id                      String   @id @default(cuid())
+  empresaId               String
+  ventaDetalleOriginalId  String   @unique
+  ventaDetalleReemplazoId String   @unique
+  motivo                  String?
+  /// Costo de la plataforma/duración al momento de la garantía — copia
+  /// inmutable (R3). Es la pérdida que asume la empresa; NO se resta de
+  /// Venta.utilidad de la venta original, que es historia y no se edita.
+  costoAsumido            Decimal  @db.Decimal(14, 2)
+  mensajeGenerado         String   @db.Text
+  creadoPorId             String
+  createdAt               DateTime @default(now())
+
+  empresa               Empresa      @relation(fields: [empresaId], references: [id])
+  ventaDetalleOriginal  VentaDetalle @relation("GarantiaOriginal", fields: [ventaDetalleOriginalId], references: [id])
+  ventaDetalleReemplazo VentaDetalle @relation("GarantiaReemplazo", fields: [ventaDetalleReemplazoId], references: [id])
+  creadoPor             Usuario      @relation("GarantiaCreadaPor", fields: [creadoPorId], references: [id])
+
+  @@index([empresaId])
 }
 
 /// Texto exacto por tipo de venta, con placeholders {{...}}. Editar la
