@@ -165,6 +165,41 @@ Arreglo: al activar sobre un usuario con saldo en cero, confirmar con `Dialogo` 
 
 Lo que importa de aquí en adelante: **F2.3 no se commitea sobre `feat/promociones`.** Es el bloque que toca el dinero; tiene que poder revisarse y revertirse solo.
 
+### F2.4 — Pulido · **aprobada con un pendiente**
+
+Revisado el 9 de octubre. Ocho arreglos, no siete: el reporte se contó de menos. El más importante —`PERFIL`/`PIN` en blanco en las ventas de unidad, el único que veía el comprador final— **quedó cerrado bien**: `renderizarMensajeUnidad` recibe `usaPerfilPin` y quita la línea completa con `quitarBloquesPerfilPin`, con la prueba espejo de la de paquetes, en los dos sentidos.
+
+Dos hallazgos propios de esa pasada, los dos reales y bien resueltos:
+
+- **El aviso de "plantilla no configurada" se descartaba en silencio.** El API lo devolvía en una venta exitosa y la pantalla nunca leía `data.aviso`. Es exactamente la clase del hallazgo 8 —servidor correcto, pantalla muda— encontrada por iniciativa propia.
+- **Infraestructura de pruebas en `apps/web`**, con cuatro pruebas que montan la pantalla de vender real, fuerzan cada error del servidor y verifican que el texto sigue visible *después* del refresco posterior. Eso convierte la regla del hallazgo 8 en algo que la suite vigila, que era el punto.
+
+### ⚠️ Pendiente — `--secundario-suave` quedó claro en modo oscuro
+
+El valor oscuro elegido fue `#E4E2FA`. El claro es `#EEF2FF`. Es el mismo lavanda casi blanco: no se eligió un valor oscuro, se movió un pelo.
+
+Comparar con el que sí se hizo bien: `--primario-suave` pasó de `#FEF3F2` a `#3A1412`.
+
+El reporte justifica el valor con "5.0:1 contra `--secundario`", y el dato es cierto pero mide lo que no era el problema. La queja nunca fue la legibilidad del texto sobre el chip: es que **un bloque casi blanco sobre una página `#0D0D0D` es un parche que grita**, igual que el ítem activo de la barra lateral que originó el hallazgo 5. `DISENO.md` §7: el modo oscuro es un conjunto de valores elegidos, no una inversión automática.
+
+**El alcance es mayor de lo que parece.** No son solo las celdas de excepción:
+
+| Dónde | Qué se ve mal en oscuro |
+|---|---|
+| `components/ui/aviso.tsx` | **Todo `Aviso` variante info** |
+| `components/ui/pastilla.tsx` | La pastilla secundaria, incluida "Promoción" |
+| `components/ui/tarjeta-acceso.tsx` | Las tarjetas de acceso directo del panel |
+| `navegacion/selector-empresa.tsx` | La pastilla de empresa del SUPER_ADMIN |
+| `panel/precios` · `panel/catalogo/paquetes` · `panel/mensajes` | Celdas modificadas, excepciones, filtro de promociones, marcadores |
+
+Es el mobiliario visual del panel, no un caso de esquina.
+
+**Y el síntoma se parchó en el componente, no en el token.** El hallazgo 1 de esa pasada —el select ilegible en las celdas de excepción— se arregló quitándole `bg-transparent` al select, o sea tapando la celda clara con una superficie opaca. La celda sigue clara debajo, y todo lo demás de la tabla de arriba también.
+
+**Por qué se esquivó, que es lo interesante:** el par de marca rojo tiene *dos* tokens, `--primario-suave` y `--primario-texto`, así que oscurecer el fondo y aclarar el texto fue directo. El par índigo solo tiene `--secundario`, que hace de color de gráfico **y** de texto sobre el chip. Con un fondo índigo oscuro, `#4F46E5` como texto tampoco contrasta. La asimetría del sistema de tokens es la que empujó al parche.
+
+El arreglo es cerrar esa asimetría: un `--secundario-texto` nuevo, declarado en `DISENO.md` §2 con sus dos valores, y `--secundario-suave` con un índigo oscuro de verdad. Media hora, y cierra el hallazgo 5 completo en vez de a medias.
+
 ---
 
 ## Prompt F2.1 — Códigos para sorteos, celular opcional y tema claro
@@ -639,6 +674,29 @@ Arreglado moviendo el `setError(null)` de `cargarOpciones` al efecto que corre a
 
 **La lección, que es la sexta vez que aparece con la misma forma.** Las 318 pruebas pasan, el 409 está bien construido y bien probado, y el bug estaba ahí igual: ninguna prueba verifica que el mensaje *llegue a la pantalla*. Está probado que el servidor lo devuelve y está probado que el componente lo pinta — nadie probó el camino completo. Queda como regla en la definición de terminado.
 
+### 9 — Las ventas de unidad mandan PERFIL y PIN en blanco · **en producción desde el lanzamiento**
+
+Apareció en el mensaje de ejemplo del reporte de garantías, y **no lo causó garantías**: estaba desde el primer día.
+
+`renderizarMensajePaquete` sabe omitir las líneas de PERFIL y PIN cuando la plataforma no usa perfiles — hay una prueba que lo verifica con Spotify. `renderizarMensajeUnidad` **no tiene ese concepto**: sustituye `{{perfil}}` y `{{pin}}` por cadena vacía y deja las etiquetas puestas.
+
+Resultado: cada venta suelta de Spotify, Canva o YouTube le llega al comprador así:
+
+```
+*PERFIL:*
+
+*PIN:*
+
+*CORREO:*
+...
+```
+
+Dos etiquetas vacías en el mensaje que el cliente reenvía a su comprador. Lleva en producción desde el lanzamiento.
+
+**Es la misma forma de siempre:** el camino probado está bien, el camino gemelo que nadie probó está mal. La prueba de omisión existe para paquetes y no existe para unidades.
+
+El arreglo no es sustituir por vacío: hay que **quitar la línea entera** de la plantilla cuando la plataforma no usa perfiles, porque la plantilla es texto que el admin edita.
+
 ---
 
 ## Prompt F2.4 — Pulido antes del merge
@@ -734,7 +792,30 @@ en verde de ganancia que el sistema no sabe si es real.
 - `/ventas` muestra el mismo `Aviso` de costos en cero que ya existe en el
   panel, con la misma redacción, cuando haya precios sin costo.
 
-## 8. Verificación
+## 8. PERFIL y PIN en blanco en las ventas de unidad
+
+El más viejo de todos y el único que ve el comprador final. Lleva en
+producción desde el lanzamiento.
+
+`renderizarMensajePaquete` omite las líneas de PERFIL y PIN cuando la
+plataforma no usa perfiles — `bloqueListaCuentas` lo hace con `usaPerfilPin`, y
+hay una prueba con Spotify que lo verifica. `renderizarMensajeUnidad` no:
+sustituye los marcadores por cadena vacía y deja las etiquetas puestas.
+
+Cada venta suelta de una plataforma sin perfiles (Spotify, Canva, YouTube) le
+llega al comprador con `*PERFIL:*` y `*PIN:*` vacíos.
+
+- `renderizarMensajeUnidad` recibe `usaPerfilPin` y, cuando es false, **quita
+  la línea completa** de la plantilla que contiene `{{perfil}}` o `{{pin}}`.
+  No basta con sustituir por vacío: la etiqueta vive en el texto de la
+  plantilla, que el admin edita.
+- Si los dos marcadores comparten una línea, se quita esa línea una sola vez.
+- Actualiza los dos llamadores: `lib/ventas.ts` y `lib/garantias.ts`.
+- **Prueba espejo de la que ya existe para paquetes**: una venta de unidad de
+  una plataforma sin perfiles no contiene "PERFIL" ni "PIN" en el mensaje; una
+  con perfiles sí, y con sus valores.
+
+## 9. Verificación
 
 - Las pruebas existentes pasan sin modificarse. `tsc --noEmit` limpio en ambas
   apps, cero errores incluidos los de archivos de prueba.
@@ -753,7 +834,7 @@ en verde de ganancia que el sistema no sabe si es real.
   `addInitScript(() => localStorage.setItem("tema", "dark"))`. La opción
   `colorScheme` de Playwright no hace nada en esta aplicación.
 
-## 9. Entregable
+## 10. Entregable
 
 Reporta qué encontró la auditoría de colores quemados sobre `apps/web`
 completa, y qué valores oscuros elegiste para los tokens de marca con su

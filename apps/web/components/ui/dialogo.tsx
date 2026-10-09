@@ -20,11 +20,19 @@ function Dialogo({
   varianteConfirmar = "destructivo",
   confirmando = false,
   onConfirmar,
+  children,
 }: {
   abierto: boolean;
   onCambiarAbierto: (abierto: boolean) => void;
   titulo: string;
+  /**
+   * La frase que explica la acción. Es lo que un lector de pantalla anuncia
+   * como descripción del diálogo, así que va texto, no interfaz: un campo o
+   * un aviso van en `children`.
+   */
   descripcion?: React.ReactNode;
+  /** Contenido debajo de la descripción: campos, avisos. */
+  children?: React.ReactNode;
   textoConfirmar?: string;
   textoCancelar?: string;
   varianteConfirmar?: "destructivo" | "principal";
@@ -41,9 +49,17 @@ function Dialogo({
           )}
         >
           <AlertDialog.Title className="titulo-seccion text-ink">{titulo}</AlertDialog.Title>
+          {/* asChild + <div>: por defecto Radix renderiza la descripción como un
+              <p>, y entonces cualquier bloque que le pase el llamador —otro
+              <p>, un Aviso, un Campo— es HTML inválido y revienta la
+              hidratación. Un <div> acepta lo que sea y conserva el
+              aria-describedby. */}
           {descripcion ? (
-            <AlertDialog.Description className="cuerpo mt-2 text-ink-2">{descripcion}</AlertDialog.Description>
+            <AlertDialog.Description asChild>
+              <div className="cuerpo mt-2 text-ink-2">{descripcion}</div>
+            </AlertDialog.Description>
           ) : null}
+          {children ? <div className="mt-4 space-y-3">{children}</div> : null}
           <div className="mt-6 flex justify-end gap-2">
             <AlertDialog.Cancel asChild>
               <Boton variante="contorno" type="button">

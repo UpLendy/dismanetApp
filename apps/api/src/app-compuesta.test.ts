@@ -16,6 +16,7 @@ import { precios } from "./routes/precios.ts";
 import { cuentas } from "./routes/cuentas.ts";
 import { disponibilidad } from "./routes/disponibilidad.ts";
 import { ventas } from "./routes/ventas.ts";
+import { garantias } from "./routes/garantias.ts";
 import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
 
@@ -44,6 +45,7 @@ const app = new Elysia()
   .use(cuentas)
   .use(disponibilidad)
   .use(ventas)
+  .use(garantias)
   .use(plantillas)
   .use(perfil);
 
@@ -208,6 +210,13 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuesta.status).toBe(200);
   });
 
+  it("un VENDEDOR y un ADMIN pueden usar /garantias/pantallas-vendidas aunque /empresas y /cuentas también estén montados", async () => {
+    const respuestaVendedor = await get("/garantias/pantallas-vendidas", cookieVendedor);
+    expect(respuestaVendedor.status).toBe(200);
+    const respuestaAdmin = await get("/garantias/pantallas-vendidas", cookieAdmin);
+    expect(respuestaAdmin.status).toBe(200);
+  });
+
   it("Entrega 9: un VENDEDOR vende y ve /ventas/mias, pero recibe 403 en /listado, /totales y al anular; un ADMIN sí puede usar esas rutas", async () => {
     const respuestaVenta = await post("/ventas", { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
     expect(respuestaVenta.status).toBe(201);
@@ -348,7 +357,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("NO_AUTENTICADO");
     }
 
-    for (const ruta of ["/cuentas", "/disponibilidad", "/plantillas", "/paquetes"]) {
+    for (const ruta of ["/cuentas", "/disponibilidad", "/plantillas", "/paquetes", "/garantias/pantallas-vendidas"]) {
       const respuesta = await sinCookie(ruta);
       expect(respuesta.status).toBe(403);
       expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("PERMISO_DENEGADO");

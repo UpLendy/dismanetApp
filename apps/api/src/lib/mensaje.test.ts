@@ -83,6 +83,7 @@ describe("renderizarMensajeUnidad (f) — contiene código, fecha en letras, per
     fechaVencimientoMax: new Date("2026-10-27T15:00:00.000Z"),
     precioVenta: "15000",
     nombrePlataformaMensaje: "N.E.T.F.L.I.X",
+    usaPerfilPin: true,
     perfil: "E",
     pin: "5010",
     correo: "geradooopaltaa32@hotmail.com",
@@ -132,6 +133,7 @@ describe("{{celular}} — venta sin celularCliente", () => {
     fechaVencimientoMax: new Date("2026-10-27T15:00:00.000Z"),
     precioVenta: "15000",
     nombrePlataformaMensaje: "N.E.T.F.L.I.X",
+    usaPerfilPin: true,
     perfil: "E",
     pin: "5010",
     correo: "geradooopaltaa32@hotmail.com",
@@ -150,6 +152,43 @@ describe("{{celular}} — venta sin celularCliente", () => {
   it("con celularCliente presente, sustituye el número", () => {
     const conCelular = renderizarMensajeUnidad("Celular: {{celular}}", { ...datosSinCelular, celularCliente: "3001234567" });
     expect(conCelular).toBe("Celular: 3001234567");
+  });
+});
+
+describe("renderizarMensajeUnidad — omite PERFIL/PIN cuando la plataforma no usa perfil/pin (h)", () => {
+  const base: DatosMensajeUnidad = {
+    codigoCompra: "DIS741852",
+    fechaVenta: new Date("2026-09-27T15:00:00.000Z"),
+    nombreTipoCliente: "Nuevo",
+    nombreDuracion: "1 mes",
+    fechaVencimientoMax: new Date("2026-10-27T15:00:00.000Z"),
+    precioVenta: "12000",
+    nombrePlataformaMensaje: "Spotify",
+    usaPerfilPin: false,
+    perfil: null,
+    pin: null,
+    correo: "spotify2@dismanet.test",
+    clave: "Spo9999@",
+  };
+
+  it("sin perfil/pin: el mensaje no contiene 'PERFIL' ni 'PIN', pero sí correo y contraseña", () => {
+    const mensaje = renderizarMensajeUnidad(PLANTILLA_UNIDAD, base);
+    expect(mensaje).not.toContain("PERFIL");
+    expect(mensaje).not.toContain("PIN");
+    expect(mensaje).toContain("*CORREO:*\nspotify2@dismanet.test");
+    expect(mensaje).toContain("*CONTRASEÑA:*\nSpo9999@");
+    expect(mensaje).not.toMatch(/\{\{\w+\}\}/);
+  });
+
+  it("con perfil/pin: sí contiene las etiquetas con sus valores", () => {
+    const mensaje = renderizarMensajeUnidad(PLANTILLA_UNIDAD, {
+      ...base,
+      usaPerfilPin: true,
+      perfil: "C",
+      pin: "9090",
+    });
+    expect(mensaje).toContain("*PERFIL:*\nC");
+    expect(mensaje).toContain("*PIN:*\n9090");
   });
 });
 

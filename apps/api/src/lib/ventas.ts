@@ -330,6 +330,7 @@ async function realizarVentaConComposicion(
                 fechaVencimientoMax,
                 precioVenta,
                 nombrePlataformaMensaje: plataformaInfo.nombreMensaje ?? plataformaInfo.nombre,
+                usaPerfilPin: plataformaInfo.usaPerfilPin,
                 perfil: infoPantalla.perfil,
                 pin: infoPantalla.pin ? descifrar(infoPantalla.pin) : null,
                 correo: cuenta.correo,

@@ -4,6 +4,10 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { inicioParaRol } from "@/lib/rol";
+import { Tarjeta } from "@/components/ui/tarjeta";
+import { Campo, EntradaCampo } from "@/components/ui/campo";
+import { Boton } from "@/components/ui/boton";
+import { Aviso } from "@/components/ui/aviso";
 
 export default function PaginaLogin() {
   const router = useRouter();
@@ -41,59 +45,49 @@ export default function PaginaLogin() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-6">
-      <form onSubmit={enviar} className="w-full max-w-sm space-y-4 rounded-lg border p-6">
-        <div>
-          <h1 className="text-xl font-semibold">Iniciar sesión</h1>
-          <p className="text-sm text-muted-foreground">Sistema Interno de Gestión</p>
-        </div>
+    <main className="flex min-h-screen items-center justify-center bg-plano p-6">
+      <Tarjeta className="w-full max-w-sm">
+        <form onSubmit={enviar} className="space-y-4">
+          <div>
+            <h1 className="titulo-seccion text-ink">Iniciar sesión</h1>
+            <p className="cuerpo text-ink-muted">Sistema Interno de Gestión</p>
+          </div>
 
-        {error ? (
-          <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-          </p>
-        ) : null}
+          {error ? <Aviso variante="critico">{error}</Aviso> : null}
 
-        <div className="space-y-1">
-          <label htmlFor="email" className="text-sm font-medium">
-            Correo
-          </label>
-          <input
-            id="email"
-            name="email"
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(evento) => setEmail(evento.target.value)}
-            className="w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
-          />
-        </div>
+          <Campo etiqueta="Correo">
+            {(props) => (
+              <EntradaCampo
+                {...props}
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(evento) => setEmail(evento.target.value)}
+              />
+            )}
+          </Campo>
 
-        <div className="space-y-1">
-          <label htmlFor="password" className="text-sm font-medium">
-            Contraseña
-          </label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(evento) => setPassword(evento.target.value)}
-            className="w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400"
-          />
-        </div>
+          <Campo etiqueta="Contraseña">
+            {(props) => (
+              <EntradaCampo
+                {...props}
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(evento) => setPassword(evento.target.value)}
+              />
+            )}
+          </Campo>
 
-        <button
-          type="submit"
-          disabled={cargando}
-          className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-        >
-          {cargando ? "Ingresando…" : "Ingresar"}
-        </button>
-      </form>
+          <Boton type="submit" variante="principal" disabled={cargando} className="w-full">
+            {cargando ? "Ingresando…" : "Ingresar"}
+          </Boton>
+        </form>
+      </Tarjeta>
     </main>
   );
 }

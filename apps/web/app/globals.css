@@ -83,6 +83,11 @@
   --ink: #ffffff;
   --ink-2: #c3c2b7;
   --ink-muted: #898781;
+
+  /* Color de marca — valores oscuros elegidos, ver DISENO.md §2 */
+  --primario-suave: #3a1412;
+  --primario-texto: #ffb4a8;
+  --secundario-suave: #e4e2fa;
 }
 
 @theme inline {

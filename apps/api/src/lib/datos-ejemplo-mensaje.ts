@@ -18,6 +18,7 @@ export const DATOS_EJEMPLO: Record<"UNIDAD" | "PAQUETE", EntradaMensajeVenta> = 
       precioVenta: "11400",
       celularCliente: "3001234567",
       nombrePlataformaMensaje: "N.E.T.F.L.I.X",
+      usaPerfilPin: true,
       perfil: "E",
       pin: "5010",
       correo: "geradooopaltaa32@hotmail.com",

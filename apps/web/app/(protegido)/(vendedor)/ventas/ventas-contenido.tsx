@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import { Ban, Check, ChevronDown, ChevronUp, Copy, Receipt, Search, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
+import { AVISO_COSTO_CERO_TITULO, avisoCostoCeroTexto, contarPreciosConCostoCero } from "@/lib/costo-cero";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { Campo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
@@ -277,6 +278,8 @@ function VentasAdmin() {
   const [totales, setTotales] = useState<Totales | null>(null);
   const [cargandoTotales, setCargandoTotales] = useState(true);
 
+  const [costoCeroCantidad, setCostoCeroCantidad] = useState(0);
+
   const [vendedores, setVendedores] = useState<Opcion[]>([]);
   const [plataformas, setPlataformas] = useState<Opcion[]>([]);
   const [paquetes, setPaquetes] = useState<Opcion[]>([]);
@@ -323,6 +326,7 @@ function VentasAdmin() {
       if (resPlataformas.data) setPlataformas(resPlataformas.data.plataformas);
       if (resPaquetes.data) setPaquetes(resPaquetes.data.paquetes);
     })();
+    contarPreciosConCostoCero().then(setCostoCeroCantidad);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -408,13 +412,19 @@ function VentasAdmin() {
                 </div>
                 <div>
                   <p className="etiqueta-dato">Utilidad</p>
-                  <p className="valor-dato text-bien">{formatearPesos(totales?.[periodo].utilidad ?? "0")}</p>
+                  <p className="valor-dato text-ink">{formatearPesos(totales?.[periodo].utilidad ?? "0")}</p>
                 </div>
               </div>
             </Tarjeta>
           ))
         )}
       </div>
+
+      {costoCeroCantidad > 0 ? (
+        <Aviso variante="aviso" titulo={AVISO_COSTO_CERO_TITULO}>
+          {avisoCostoCeroTexto(costoCeroCantidad)}
+        </Aviso>
+      ) : null}
 
       <Tarjeta>
         <form onSubmit={buscar} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -595,7 +605,7 @@ function VentasAdmin() {
                     </TablaCelda>
                     <TablaCelda className="text-right tabular-nums">{formatearPesos(venta.precioVenta)}</TablaCelda>
                     <TablaCelda className="text-right tabular-nums text-ink-muted">{formatearPesos(venta.costo)}</TablaCelda>
-                    <TablaCelda className="text-right tabular-nums text-bien">{formatearPesos(venta.utilidad)}</TablaCelda>
+                    <TablaCelda className="text-right tabular-nums text-ink">{formatearPesos(venta.utilidad)}</TablaCelda>
                     <TablaCelda className="text-ink-muted">{venta.celularCliente ?? "—"}</TablaCelda>
                     <TablaCelda>
                       <div className="flex flex-wrap gap-1.5">

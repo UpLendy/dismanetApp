@@ -2,9 +2,29 @@
 
 **Proyecto:** Sistema Interno de Gestión — DISMANET
 **En producción desde:** 6 de octubre de 2026
+**Último despliegue:** 8 de octubre de 2026 — toda la fase 2
 **Infraestructura:** API y PostgreSQL en Railway · Web en Vercel
 
 > Este documento era la lista de cierre previa al despliegue. Ahora el sistema está en producción, así que pasa a ser la lista de lo que sigue abierto con usuarios reales adentro. Lo resuelto queda registrado para no volver a discutirlo.
+
+---
+
+## Despliegue del 8 de octubre
+
+Nueve commits, cinco migraciones, todo verde. Entró de un solo merge a `main`.
+
+| Bloque | Qué quedó vivo |
+|---|---|
+| Perfil, plantillas y diagnóstico | Perfil propio con cambio de contraseña (cierra el punto 1.2), edición de plantillas en `/panel/mensajes` (cierra el 1.3), diagnóstico de empresa, validación de `Origin`. |
+| F2.1 | Códigos de compra para sorteos, celular del cliente opcional, tema claro por defecto con selector. |
+| F2.2 | Promociones como bandera de paquete. Desactivó el TipoCliente "Promoción" en la empresa del cliente. |
+| F2.3 | Saldo de revendedores con bloqueo de fila y ledger de movimientos. |
+
+**Lo que el despliegue hizo y hay que tener presente:**
+
+- **Se cayeron todas las sesiones abiertas**, por `versionSesion`. Esperado, de una sola vez.
+- **La columna de precios "Promoción" desapareció de la matriz.** Los precios no se borraron, quedaron inalcanzables. Si el cliente le vendía a alguien con ese precio, ahora se arma marcando un paquete como promoción.
+- **Nadie cambió de comportamiento por el saldo.** Todos los usuarios entraron con `usaSaldo = false`. El cliente tiene que marcar a mano quiénes son revendedores y cargarles saldo; hasta entonces el módulo está invisible.
 
 ---
 

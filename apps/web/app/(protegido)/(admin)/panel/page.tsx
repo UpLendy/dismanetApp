@@ -6,6 +6,7 @@ import { es } from "date-fns/locale";
 import { format, isSameDay, startOfDay, subDays } from "date-fns";
 import { Receipt, Wallet, TrendingUp, MonitorPlay, ShoppingCart, CircleDollarSign, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import { AVISO_COSTO_CERO_TITULO, avisoCostoCeroTexto, contarPreciosConCostoCero } from "@/lib/costo-cero";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { TileDato } from "@/components/ui/tile-dato";
 import { TarjetaAcceso } from "@/components/ui/tarjeta-acceso";
@@ -55,12 +56,11 @@ export default function PaginaPanel() {
 
     const desde = startOfDay(subDays(new Date(), 6)).toISOString();
 
-    const [resTotales, resDisponibilidad, resListado, resPlataformas, resPaquetes] = await Promise.all([
+    const [resTotales, resDisponibilidad, resListado, totalCeros] = await Promise.all([
       api.ventas.totales.get(),
       api.disponibilidad.get(),
       api.ventas.listado.get({ query: { desde } }),
-      api.plataformas.get(),
-      api.paquetes.get(),
+      contarPreciosConCostoCero(),
     ]);
 
     if (resTotales.error || !resTotales.data) {
@@ -82,20 +82,6 @@ export default function PaginaPanel() {
     setTotalesHoy(resTotales.data.hoy);
     setPantallasLibres(resDisponibilidad.data.disponibilidad.reduce((acc, p) => acc + p.libres, 0));
     setVentas7Dias(resListado.data.ventas);
-
-    const plataformasActivas = resPlataformas.data?.plataformas.filter((p) => p.activa) ?? [];
-    const paquetesActivos = resPaquetes.data?.paquetes.filter((p) => p.activo) ?? [];
-
-    const [avisosUnidades, avisosPaquetes] = await Promise.all([
-      Promise.all(
-        plataformasActivas.map((p) => api.precios.unidades.get({ query: { plataformaId: p.id } })),
-      ),
-      Promise.all(paquetesActivos.map((p) => api.precios.paquetes.get({ query: { paqueteId: p.id } }))),
-    ]);
-
-    const totalCeros =
-      avisosUnidades.reduce((acc, r) => acc + (r.data?.avisoCostoCero.cantidad ?? 0), 0) +
-      avisosPaquetes.reduce((acc, r) => acc + (r.data?.avisoCostoCero.cantidad ?? 0), 0);
     setCostoCeroCantidad(totalCeros);
 
     setCargando(false);
@@ -147,9 +133,8 @@ export default function PaginaPanel() {
       )}
 
       {!cargando && costoCeroCantidad > 0 ? (
-        <Aviso variante="aviso" titulo="Hay precios con costo en cero">
-          {costoCeroCantidad} celda(s) de precio no tienen costo registrado — la utilidad mostrada en esos casos no es
-          real. Revisa la matriz de precios.
+        <Aviso variante="aviso" titulo={AVISO_COSTO_CERO_TITULO}>
+          {avisoCostoCeroTexto(costoCeroCantidad)}
         </Aviso>
       ) : null}
 

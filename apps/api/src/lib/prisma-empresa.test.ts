@@ -34,6 +34,7 @@ interface FixtureEmpresa {
   ventaDetalleId: string;
   plantillaMensajeId: string;
   movimientoSaldoId: string;
+  garantiaId: string;
 }
 
 // Nombre de la propiedad del cliente de Prisma para un modelo del esquema:
@@ -161,6 +162,37 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  // Segundo VentaDetalle, solo para servir de "reemplazo" de la Garantia de
+  // prueba — Garantia exige dos VentaDetalle distintos (original/reemplazo),
+  // cada uno con restricción única propia.
+  const ventaDetalleReemplazo = await prismaRaw.ventaDetalle.create({
+    data: {
+      empresaId: empresa.id,
+      ventaId: venta.id,
+      pantallaId: pantalla.id,
+      cuentaId: cuenta.id,
+      plataformaId: plataforma.id,
+      nombrePlataforma: plataforma.nombre,
+      correoCuenta: cuenta.correo,
+      passwordCuenta: cuenta.password,
+      duracionId: duracionVendida.id,
+      cantidadDuracion: 30,
+      unidadDuracion: "DIAS",
+      fechaVencimiento: new Date(Date.now() + 28 * 24 * 60 * 60 * 1000),
+    },
+  });
+
+  const garantia = await prismaRaw.garantia.create({
+    data: {
+      empresaId: empresa.id,
+      ventaDetalleOriginalId: ventaDetalle.id,
+      ventaDetalleReemplazoId: ventaDetalleReemplazo.id,
+      costoAsumido: "0",
+      mensajeGenerado: "Mensaje de garantía de prueba",
+      creadoPorId: usuario.id,
+    },
+  });
+
   const plantillaMensaje = await prismaRaw.plantillaMensaje.create({
     data: { empresaId: empresa.id, tipo: "UNIDAD", contenido: "Plantilla de prueba" },
   });
@@ -194,6 +226,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     ventaDetalleId: ventaDetalle.id,
     plantillaMensajeId: plantillaMensaje.id,
     movimientoSaldoId: movimientoSaldo.id,
+    garantiaId: garantia.id,
   };
 }
 
@@ -203,6 +236,7 @@ async function borrarEmpresaCompleta(empresaId: string) {
   // MovimientoSaldo primero: referencia a Usuario con RESTRICT (no SET NULL
   // como su referencia a Venta), así que debe irse antes que el usuario.
   await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
+  await prismaRaw.garantia.deleteMany({ where: { empresaId } });
   await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
   await prismaRaw.venta.deleteMany({ where: { empresaId } });
   await prismaRaw.precio.deleteMany({ where: { empresaId } });
@@ -233,8 +267,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 14 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(14);
+  it("cubre los 15 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(15);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -251,6 +285,7 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         "VentaDetalle",
         "PlantillaMensaje",
         "MovimientoSaldo",
+        "Garantia",
       ].sort(),
     );
   });

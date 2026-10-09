@@ -102,6 +102,8 @@ function sustituirMarcadoresComunes(plantilla: string, datos: DatosMensajeComune
 export interface DatosMensajeUnidad extends DatosMensajeComunes {
   /** nombreMensaje de la plataforma si existe, si no nombre — ya resuelto por el caller. */
   nombrePlataformaMensaje: string;
+  /** Plataforma.usaPerfilPin — determina si el bloque PERFIL/PIN se incluye. */
+  usaPerfilPin: boolean;
   perfil: string | null;
   pin: string | null;
   correo: string;
@@ -109,8 +111,23 @@ export interface DatosMensajeUnidad extends DatosMensajeComunes {
   clave: string;
 }
 
+// La plantilla por defecto (Anexo B) pone la etiqueta y el marcador en líneas
+// distintas — "*PERFIL:*\n{{perfil}}" — así que quitar solo la línea del
+// marcador deja la etiqueta huérfana y vacía, que es exactamente el bug que
+// esto corrige. Se quita el bloque completo (separado por línea en blanco,
+// el mismo delimitador que ya usa bloqueListaCuentas entre cuentas) para
+// que la etiqueta se vaya con su marcador sin importar en cuántas líneas
+// esté escrita.
+function quitarBloquesPerfilPin(plantilla: string): string {
+  return plantilla
+    .split(/\n{2,}/)
+    .filter((bloque) => !bloque.includes("{{perfil}}") && !bloque.includes("{{pin}}"))
+    .join("\n\n");
+}
+
 export function renderizarMensajeUnidad(plantilla: string, datos: DatosMensajeUnidad): string {
-  return sustituirMarcadoresComunes(plantilla, datos)
+  const plantillaAjustada = datos.usaPerfilPin ? plantilla : quitarBloquesPerfilPin(plantilla);
+  return sustituirMarcadoresComunes(plantillaAjustada, datos)
     .replaceAll("{{plataforma}}", datos.nombrePlataformaMensaje)
     .replaceAll("{{perfil}}", datos.perfil ?? "")
     .replaceAll("{{pin}}", datos.pin ?? "")

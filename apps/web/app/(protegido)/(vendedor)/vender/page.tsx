@@ -122,6 +122,7 @@ export default function PaginaVender() {
   const [vendiendo, setVendiendo] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ventaRealizada, setVentaRealizada] = useState<VentaRealizada | null>(null);
+  const [avisoVenta, setAvisoVenta] = useState<string | null>(null);
   const [copiado, setCopiado] = useState(false);
   const [celularCliente, setCelularCliente] = useState("");
 
@@ -228,6 +229,16 @@ export default function PaginaVender() {
     productos.some((p) => !esPlataforma(p)) &&
     !productos.some((p) => !esPlataforma(p) && p.esPromocion);
 
+  // Misma regla, en sentido contrario: si el día que no haya paquetes
+  // normales (solo promociones), la pestaña Paquete se deshabilita igual.
+  const paqueteSinOpciones =
+    categoria === "PAQUETE" &&
+    tipoClienteId !== "" &&
+    duracionId !== "" &&
+    !cargandoOpciones &&
+    productos.some((p) => !esPlataforma(p)) &&
+    !productos.some((p) => !esPlataforma(p) && !p.esPromocion);
+
   const productoSeleccionado = productosVisibles.find((p) => p.id === productoId) ?? null;
 
   async function vender() {
@@ -260,6 +271,10 @@ export default function PaginaVender() {
     }
 
     setVentaRealizada(data.venta);
+    // La venta sí se registró (201); el aviso solo informa que se usó un
+    // mensaje de respaldo porque la empresa no configuró su plantilla — no
+    // es un error del camino de venta, y no debe perderse en silencio.
+    setAvisoVenta("aviso" in data && data.aviso ? data.aviso.mensaje : null);
     if (saldoPropio?.usaSaldo) {
       window.dispatchEvent(new Event(EVENTO_SALDO_ACTUALIZADO));
       await cargarSaldoPropio();
@@ -268,6 +283,7 @@ export default function PaginaVender() {
 
   function nuevaVenta() {
     setVentaRealizada(null);
+    setAvisoVenta(null);
     setModo(null);
     setTipoClienteId("");
     setDuracionId("");
@@ -289,6 +305,8 @@ export default function PaginaVender() {
     return (
       <div className="mx-auto max-w-xl space-y-6">
         <h1 className="titulo-pagina text-ink">Venta registrada</h1>
+
+        {avisoVenta ? <Aviso variante="aviso">{avisoVenta}</Aviso> : null}
 
         <Tarjeta className="space-y-3">
           <div>
@@ -347,7 +365,12 @@ export default function PaginaVender() {
         <PestanaModo activo={modo === "UNIDAD"} onClick={() => elegirModo("UNIDAD")}>
           Unidad
         </PestanaModo>
-        <PestanaModo activo={modo === "PAQUETE"} onClick={() => elegirModo("PAQUETE")}>
+        <PestanaModo
+          activo={modo === "PAQUETE"}
+          deshabilitado={paqueteSinOpciones}
+          titulo={paqueteSinOpciones ? "No hay paquetes activos con precio para esta combinación." : undefined}
+          onClick={() => elegirModo("PAQUETE")}
+        >
           Paquete
         </PestanaModo>
         <PestanaModo

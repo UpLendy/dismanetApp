@@ -375,7 +375,7 @@ export default function PaginaDetallePaquete() {
                               const duracionRealId = nuevoValor === IGUAL_A_LA_VENDIDA ? duracionVendida.id : nuevoValor;
                               cambiarExcepcion(duracionVendida.id, componente.plataformaId, duracionRealId);
                             }}
-                            className={cn("h-9 text-xs", excepcion ? "border-secundario/30 bg-transparent" : "")}
+                            className={cn("h-9 text-xs", excepcion ? "border-secundario/30" : "")}
                           >
                             <option value={IGUAL_A_LA_VENDIDA}>Igual a la vendida</option>
                             {duracionesActivas.map((d) => (

@@ -39,6 +39,12 @@ function formatearPesos(valor: string): string {
   return decimal ? `$${conPuntos},${decimal}` : `$${conPuntos}`;
 }
 
+// Solo dígitos: si lo que queda tras quitar el punto y el signo es puro
+// cero, el saldo es cero. Evita convertir dinero a number (CLAUDE.md).
+function esSaldoCero(saldo: string): boolean {
+  return /^0+$/.test(saldo.replace(/[.-]/g, ""));
+}
+
 export default function PaginaUsuarios() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [cargandoLista, setCargandoLista] = useState(true);
@@ -55,6 +61,9 @@ export default function PaginaUsuarios() {
 
   const [confirmandoDesactivar, setConfirmandoDesactivar] = useState<Usuario | null>(null);
   const [desactivando, setDesactivando] = useState(false);
+
+  const [confirmandoActivarSaldo, setConfirmandoActivarSaldo] = useState<Usuario | null>(null);
+  const [activandoSaldo, setActivandoSaldo] = useState(false);
 
   // Cargar saldo: el panel recoge monto + nota, y solo al confirmar en el
   // Dialogo (que nombra exactamente el monto y el destinatario) se llama al
@@ -152,6 +161,25 @@ export default function PaginaUsuarios() {
     cargarUsuarios();
   }
 
+  // Desactivar devuelve a la persona su capacidad de vender: no necesita
+  // aviso. Activar sobre alguien con saldo en cero la deja sin poder vender
+  // de inmediato, así que ese caso pide confirmación primero.
+  function alCambiarUsaSaldo(usuario: Usuario, usaSaldo: boolean) {
+    if (usaSaldo && esSaldoCero(usuario.saldo)) {
+      setConfirmandoActivarSaldo(usuario);
+      return;
+    }
+    cambiarUsaSaldo(usuario, usaSaldo);
+  }
+
+  async function confirmarActivarSaldo() {
+    if (!confirmandoActivarSaldo) return;
+    setActivandoSaldo(true);
+    await cambiarUsaSaldo(confirmandoActivarSaldo, true);
+    setActivandoSaldo(false);
+    setConfirmandoActivarSaldo(null);
+  }
+
   function abrirCargarSaldo(usuario: Usuario) {
     setCargandoSaldoPara(usuario);
     setMontoCarga("");
@@ -229,7 +257,7 @@ export default function PaginaUsuarios() {
         <Tabla>
           <TablaCabecera>
             <tr>
-              <TablaCeldaCabecera>Nombre</TablaCeldaCabecera>
+              <TablaCeldaCabecera className="sm:sticky sm:left-0 sm:z-20 sm:bg-superficie">Nombre</TablaCeldaCabecera>
               <TablaCeldaCabecera>Correo</TablaCeldaCabecera>
               <TablaCeldaCabecera>Rol</TablaCeldaCabecera>
               <TablaCeldaCabecera>Estado</TablaCeldaCabecera>
@@ -240,7 +268,9 @@ export default function PaginaUsuarios() {
           <TablaCuerpo>
             {usuarios.map((usuario) => (
               <TablaFila key={usuario.id}>
-                <TablaCelda className="font-medium text-ink">{usuario.nombre}</TablaCelda>
+                <TablaCelda className="font-medium text-ink sm:sticky sm:left-0 sm:z-10 sm:bg-superficie">
+                  {usuario.nombre}
+                </TablaCelda>
                 <TablaCelda>{usuario.email}</TablaCelda>
                 <TablaCelda>
                   {usuario.rol === "SUPER_ADMIN" ? (
@@ -263,7 +293,7 @@ export default function PaginaUsuarios() {
                   <div className="flex items-center gap-3">
                     <Interruptor
                       checked={usuario.usaSaldo}
-                      onCheckedChange={(valor) => cambiarUsaSaldo(usuario, valor)}
+                      onCheckedChange={(valor) => alCambiarUsaSaldo(usuario, valor)}
                       aria-label={`Vende contra saldo — ${usuario.nombre}`}
                     />
                     {usuario.usaSaldo ? (
@@ -406,6 +436,17 @@ export default function PaginaUsuarios() {
         textoConfirmar="Desactivar"
         confirmando={desactivando}
         onConfirmar={confirmarDesactivar}
+      />
+
+      <Dialogo
+        abierto={!!confirmandoActivarSaldo}
+        onCambiarAbierto={(abierto) => !abierto && setConfirmandoActivarSaldo(null)}
+        titulo={confirmandoActivarSaldo ? `Activar venta contra saldo para ${confirmandoActivarSaldo.nombre}` : ""}
+        descripcion="Esta persona no va a poder vender hasta que se le cargue saldo."
+        textoConfirmar="Activar"
+        varianteConfirmar="principal"
+        confirmando={activandoSaldo}
+        onConfirmar={confirmarActivarSaldo}
       />
     </div>
   );

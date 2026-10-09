@@ -24,14 +24,21 @@ Se declaran como variables CSS en `globals.css` y se usan por rol, nunca por hex
 
 ### Color de marca
 
-| Rol | Valor | Uso |
-|---|---|---|
-| `--primario` | `#D92D20` | Identidad, ítem activo de navegación, **la acción principal de cada pantalla** |
-| `--primario-hover` | `#B42318` | Estado hover del primario |
-| `--primario-suave` | `#FEF3F2` | Fondo del ítem activo en la barra lateral, fondos de énfasis |
-| `--primario-texto` | `#B42318` | Texto sobre fondo suave |
-| `--secundario` | `#4F46E5` | Acciones alternas, iconos de acceso directo, **marcas de los gráficos** |
-| `--secundario-suave` | `#EEF2FF` | Fondos de énfasis secundarios |
+| Rol | Claro | Oscuro | Uso |
+|---|---|---|---|
+| `--primario` | `#D92D20` | `#D92D20` | Identidad, ítem activo de navegación, **la acción principal de cada pantalla** |
+| `--primario-hover` | `#B42318` | `#B42318` | Estado hover del primario |
+| `--primario-suave` | `#FEF3F2` | `#3A1412` | Fondo del ítem activo en la barra lateral, fondos de énfasis |
+| `--primario-texto` | `#B42318` | `#FFB4A8` | Texto sobre fondo suave |
+| `--secundario` | `#4F46E5` | `#4F46E5` | Acciones alternas, iconos de acceso directo, **marcas de los gráficos** |
+| `--secundario-suave` | `#EEF2FF` | `#E4E2FA` | Fondos de énfasis secundarios |
+
+`--primario`, `--primario-hover` y `--secundario` se usan como relleno sólido o como texto plano — nunca como panel grande — así que el mismo valor funciona en ambos temas y no se invierte.
+
+`--primario-suave`/`--primario-texto` y `--secundario-suave` sí son paneles grandes (fondo del ítem activo del menú, pastillas, celdas de excepción): invertir `#FEF3F2` daría un negro casi puro sin relación con `--primario`, y dejarlo sin valor oscuro es el bug que esto corrige (bloque casi blanco sobre la barra negra). El oscuro es un tono elegido a mano:
+
+- `--primario-suave` oscuro (`#3A1412`, un marrón-rojo muy oscuro) + `--primario-texto` oscuro (`#FFB4A8`, un salmón claro) dan **9.6:1** — el texto sigue siendo "rojo de marca", solo que claro sobre oscuro en vez de oscuro sobre claro.
+- `--secundario` no cambia de valor entre temas (ver arriba), así que `--secundario-suave` oscuro tiene que seguir siendo un panel *claro* para que ese mismo `#4F46E5` siga leyéndose encima — oscurecerlo también habría bajado el contraste texto/fondo en vez de subirlo. `#E4E2FA` (un lavanda ligeramente más denso que el `#EEF2FF` claro, elegido para esta medición, no igual a ella) da **5.0:1** contra `--secundario` sin tocar ese token.
 
 ### Superficies e ink
 
