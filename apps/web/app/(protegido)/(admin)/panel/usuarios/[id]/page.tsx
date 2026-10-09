@@ -22,7 +22,7 @@ interface Usuario {
   id: string;
   nombre: string;
   email: string;
-  rol: "SUPER_ADMIN" | "ADMIN" | "VENDEDOR";
+  rol: "SUPER_ADMIN" | "ADMIN" | "EMPLEADO" | "VENDEDOR";
   activo: boolean;
   usaSaldo: boolean;
   saldo: string;
@@ -218,7 +218,10 @@ export default function PaginaDetalleUsuario() {
       </div>
 
       {!usuario.usaSaldo ? (
-        <Aviso variante="info">Este usuario no vende contra saldo. Actívalo desde la lista de usuarios.</Aviso>
+        <Aviso variante="info">
+          Este usuario no vende contra saldo: el saldo es exclusivo del rol VENDEDOR. Si necesita vender contra
+          saldo propio, cambia su rol a VENDEDOR desde la lista de usuarios.
+        </Aviso>
       ) : (
         <>
           <div className="flex flex-wrap items-end justify-between gap-3">

@@ -27,8 +27,8 @@ describe("realizarGarantia", () => {
         empresaId,
         email: `vendedor-garantias-${randomUUID()}@test.local`,
         passwordHash: "hash",
-        nombre: "Vendedor",
-        rol: "VENDEDOR",
+        nombre: "Empleado",
+        rol: "EMPLEADO",
       },
     });
     vendedorId = vendedor.id;

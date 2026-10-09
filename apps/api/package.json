@@ -10,6 +10,7 @@
     "start": "bun run src/index.ts",
     "seed": "bun run prisma/seed.ts",
     "backfill:catalogo-base": "bun run prisma/backfill-catalogo-base.ts",
+    "backfill:plataforma-pantalla": "bun run prisma/backfill-plataforma-pantalla.ts",
     "test": "bun test"
   },
   "dependencies": {

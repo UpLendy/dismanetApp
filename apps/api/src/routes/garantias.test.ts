@@ -45,9 +45,9 @@ describe("Rutas de garantías (/garantias)", () => {
     });
     cookieAdmin = await iniciarSesion(adminEmail);
 
-    const vendedorEmail = `vendedor-garantias-ruta-${randomUUID()}@test.local`;
+    const vendedorEmail = `empleado-garantias-ruta-${randomUUID()}@test.local`;
     await prismaRaw.usuario.create({
-      data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Vendedor", rol: "VENDEDOR" },
+      data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Empleado", rol: "EMPLEADO" },
     });
     cookieVendedor = await iniciarSesion(vendedorEmail);
 
@@ -127,7 +127,7 @@ describe("Rutas de garantías (/garantias)", () => {
       data: { empresaId, nombre: `Netflix (garantias-ruta.test ${sufijo})`, capacidadPantallas: 1, usaPerfilPin: true },
     });
     // Costo distinto de cero a propósito: así el escaneo R4 detectaría una
-    // fuga real si "costo"/"costoAsumido" se filtrara al VENDEDOR.
+    // fuga real si "costo"/"costoAsumido" se filtrara al EMPLEADO.
     await prismaRaw.precio.create({
       data: { empresaId, plataformaId: plataforma.id, duracionId, tipoClienteId, precioVenta: "15000", costo: "6000" },
     });
@@ -144,7 +144,7 @@ describe("Rutas de garantías (/garantias)", () => {
     return cuenta;
   }
 
-  it("GET /pantallas-vendidas: ambos roles listan, pero el JSON crudo del VENDEDOR nunca trae costo/utilidad/margen (R4)", async () => {
+  it("GET /pantallas-vendidas: ambos roles listan, pero el JSON crudo del EMPLEADO nunca trae costo/utilidad/margen (R4)", async () => {
     const plataformaId = await crearPlataforma("listado");
     await crearCuentaConPantallaLibre(plataformaId, "original-listado@garantias-ruta.test", "clave-original-listado");
     const { venta } = await venderUnidad(cookieVendedor, plataformaId);
@@ -169,7 +169,7 @@ describe("Rutas de garantías (/garantias)", () => {
     };
     const filaVendedor = cuerpoVendedor.pantallas.find((p) => p.correoCuenta === "original-listado@garantias-ruta.test");
     expect(filaVendedor).toBeDefined();
-    // El VENDEDOR SÍ ve las credenciales (sección 6: necesita poder revisar
+    // El EMPLEADO SÍ ve las credenciales (sección 6: necesita poder revisar
     // si la cuenta sirve, sin importar quién vendió).
     expect(filaVendedor?.claveCuenta).toBe("clave-original-listado");
     expect(filaVendedor?.estado).toBe("VIGENTE");
@@ -191,7 +191,7 @@ describe("Rutas de garantías (/garantias)", () => {
     expect(cuerpo.error.codigo).toBe("PANTALLA_NO_ENCONTRADA");
   });
 
-  it("flujo completo: reemplaza, el mensaje anuncia el reemplazo, el listado refleja REEMPLAZADA/VIGENTE y el VENDEDOR no ve costoAsumido mientras el ADMIN sí", async () => {
+  it("flujo completo: reemplaza, el mensaje anuncia el reemplazo, el listado refleja REEMPLAZADA/VIGENTE y el EMPLEADO no ve costoAsumido mientras el ADMIN sí", async () => {
     const plataformaId = await crearPlataforma("flujo");
     await crearCuentaConPantallaLibre(plataformaId, "original-flujo@garantias-ruta.test", "clave-original-flujo");
     const { venta } = await venderUnidad(cookieVendedor, plataformaId);
@@ -205,7 +205,7 @@ describe("Rutas de garantías (/garantias)", () => {
     expect(cuerpo.mensajeGenerado).toContain("*Reemplazo de pantalla*");
     expect(cuerpo.mensajeGenerado).toContain("clave-reemplazo-flujo");
 
-    // Vista del VENDEDOR: la fila original pasa a REEMPLAZADA, sin botón, y
+    // Vista del EMPLEADO: la fila original pasa a REEMPLAZADA, sin botón, y
     // sin costoAsumido (R4 — exclusión en el select, nunca post-filtrado).
     const listadoVendedor = await get("/garantias/pantallas-vendidas", cookieVendedor);
     const textoVendedor = await listadoVendedor.text();

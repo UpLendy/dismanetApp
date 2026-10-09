@@ -108,6 +108,12 @@ Un combo puede tener vencimientos distintos por plataforma: "Básico 1" vendido 
 
   Usar `scoped` solo cuando se haya verificado a qué nivel llega y se quiera exactamente eso. Toda guarda nueva se agrega a `app-compuesta.test.ts` con el caso sin sesión, no solo el caso autenticado.
 - **Pruebas de la app compuesta:** probar un router aislado con `.handle()` no detecta fugas de hooks entre routers, porque cada uno se monta solo. Todo router nuevo debe agregarse a `app-compuesta.test.ts`, que monta la app exactamente como `index.ts` y verifica que cada rol alcanza lo que le corresponde en todas las rutas. Una entrega que agrega rutas sin tocar ese archivo está incompleta.
+- **Arreglar el dato no es arreglar la fuente — ya pasó tres veces.** Cuando encuentres un estado inconsistente en la base o en la pantalla, la migración o el parche que lo corrige es la mitad del trabajo. La otra mitad es apagar lo que lo produce. Antes de dar por cerrado un arreglo así, busca **todos** los lugares que pueden volver a generar ese estado: la ruta del API, el seed, `backfill-catalogo-base.ts`, el alta de empresa, y el formulario.
+
+  Historial: la migración desactivó el TipoCliente "Promoción" pero `TIPOS_CLIENTE_POR_DEFECTO` lo seguía creando en cada empresa nueva y en cada corrida del backfill. El select ilegible en oscuro se tapó con una superficie opaca mientras el token `--secundario-suave` seguía claro para todo lo demás. El formulario de plataformas sincronizó una plantilla vacía tras crear, mientras `POST /plataformas` y el seed seguían produciendo plataformas con capacidad declarada y cero plantilla.
+
+  La prueba que lo vigila no es "el dato quedó bien", es **"una entidad creada mañana nace bien"**.
+
 - **Validar antes no reemplaza manejar P2002.** Comprobar que un nombre no existe y luego insertarlo es una condición de carrera: dos peticiones simultáneas pasan ambas la validación y una revienta contra la restricción. Toda ruta que inserte sobre una restricción única debe manejar además el P2002 con `restriccionViolada()`.
 
 ---

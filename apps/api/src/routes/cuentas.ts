@@ -64,23 +64,15 @@ function respuestaCuenta(fila: FilaCuenta, pantallasLibres: number, pantallasTot
   };
 }
 
-const cuerpoPantallaPropuesta = t.Object({
-  numero: t.Integer({ minimum: 1 }),
-  perfil: t.Union([t.String(), t.Null()]),
-  pin: t.Union([t.String({ pattern: "^[0-9]{4}$" }), t.Null()]),
-});
-
+// Parte 1 y 2 del encargo "plantilla de pantallas": capacidad, perfiles y
+// pines ya no se piden aquí — se copian de PlataformaPantalla (la plantilla
+// de la plataforma elegida). El cuerpo queda reducido a lo que de verdad
+// cambia entre cuentas de la misma plataforma.
 const cuerpoCrearCuenta = t.Object({
   plataformaId: t.String(),
   correo: t.String({ minLength: 1 }),
   password: t.String({ minLength: 1 }),
-  capacidadPantallas: t.Integer({ minimum: 1 }),
   notas: t.Optional(t.Union([t.String(), t.Null()])),
-  // Permite que el frontend envíe los perfiles/PIN ya editados por el
-  // ADMIN antes de guardar (Parte 2: "ambos editables, antes y después de
-  // guardar"). Si se omite, el servidor propone A, B, C... y PINes
-  // aleatorios.
-  pantallas: t.Optional(t.Array(cuerpoPantallaPropuesta)),
 });
 
 const cuerpoEditarCuenta = t.Object({
@@ -108,11 +100,18 @@ function contarPorCuenta(estados: { cuentaId: string; activa: boolean; libre: bo
   return porCuenta;
 }
 
-// Parte 2 — CRUD de cuentas, solo ADMIN (D6 del PRD: el vendedor no tiene
-// acceso a la base de correos/contraseñas). Como el resto del catálogo
-// (R3/CLAUDE.md), una cuenta o pantalla nunca se borra: se desactiva.
+// Parte 2 — CRUD de cuentas. Históricamente todo era ADMIN (D6 del PRD: el
+// vendedor no tiene acceso a la base de correos/contraseñas); el reparto de
+// roles EMPLEADO abre la creación de cuentas a EMPLEADO (planta: crea
+// cuentas y las carga de pantallas al vender), pero el resto del CRUD —
+// listar, ver detalle, ver credenciales, editar, activar/desactivar, editar
+// pantalla — sigue siendo exclusivo de ADMIN. Por eso el router abre en
+// EMPLEADO y declara POST / antes de escalar a ADMIN para todo lo demás:
+// mismo patrón de escalada a mitad de cadena que ventas.ts. Como el resto
+// del catálogo (R3/CLAUDE.md), una cuenta o pantalla nunca se borra: se
+// desactiva.
 export const cuentas = new Elysia({ prefix: "/cuentas" })
-  .use(requiereRol(Rol.ADMIN))
+  .use(requiereRol(Rol.EMPLEADO))
   .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;
@@ -124,6 +123,87 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
       };
     }
   })
+  .post(
+    "/",
+    async ({ body, contexto, set }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+
+      const plataforma = await cliente.plataforma.findUnique({ where: { id: body.plataformaId } });
+      if (!plataforma) {
+        set.status = 404;
+        return { error: { codigo: "PLATAFORMA_NO_ENCONTRADA", mensaje: "La plataforma no existe." } };
+      }
+      if (!plataforma.activa) {
+        set.status = 400;
+        return {
+          error: { codigo: "PLATAFORMA_INACTIVA", mensaje: "Solo se pueden crear cuentas de plataformas activas." },
+        };
+      }
+
+      // Parte 2: las pantallas se generan copiando la plantilla de la
+      // plataforma (PlataformaPantalla), nunca a mano. El chequeo de que la
+      // plantilla exista va DENTRO de la misma transacción que crea la
+      // Cuenta — así, si la plantilla está vacía, la transacción entera se
+      // revierte y nunca queda una cuenta sin pantallas (inventario
+      // fantasma que el vendedor vería disponible y no podría entregar).
+      const resultado = await prismaParaEmpresa(contexto.empresaId).$transaction(async (txCliente) => {
+        const plantilla = await txCliente.plataformaPantalla.findMany({
+          where: { plataformaId: body.plataformaId },
+          orderBy: { numero: "asc" },
+        });
+        if (plantilla.length === 0) {
+          return { tipo: "sin-plantilla" as const };
+        }
+
+        const creada = await txCliente.cuenta.create({
+          data: datosSinEmpresa<Prisma.CuentaUncheckedCreateInput>({
+            plataformaId: body.plataformaId,
+            correo: body.correo,
+            password: cifrar(body.password),
+            capacidadPantallas: plantilla.length,
+            notas: body.notas ?? null,
+          }),
+        });
+
+        for (const fila of plantilla) {
+          await txCliente.pantalla.create({
+            data: datosSinEmpresa<Prisma.PantallaUncheckedCreateInput>({
+              cuentaId: creada.id,
+              numero: fila.numero,
+              perfil: fila.perfil,
+              pin: fila.pin,
+            }),
+          });
+        }
+
+        return { tipo: "ok" as const, cuenta: creada };
+      });
+
+      if (resultado.tipo === "sin-plantilla") {
+        set.status = 400;
+        return {
+          error: {
+            codigo: "PLANTILLA_NO_CONFIGURADA",
+            mensaje: `La plataforma "${plataforma.nombre}" no tiene una plantilla de pantallas configurada. Configúrala primero en Plataformas antes de crear cuentas.`,
+          },
+        };
+      }
+
+      set.status = 201;
+      const cantidad = resultado.cuenta.capacidadPantallas;
+      return { cuenta: respuestaCuenta({ ...resultado.cuenta, plataforma: { nombre: plataforma.nombre } }, cantidad, cantidad) };
+    },
+    {
+      body: cuerpoCrearCuenta,
+      response: { 201: t.Object({ cuenta: esquemaCuenta }), 400: esquemaError, 404: esquemaError },
+    },
+  )
+
+  // Todo lo demás (listar, detalle, credenciales, editar, activar/
+  // desactivar, editar pantalla) sigue siendo exclusivo de ADMIN — mismo
+  // patrón de escalada de rol que ventas.ts.
+  .use(requiereRol(Rol.ADMIN))
+
   .get(
     "/",
     async ({ query, contexto }) => {
@@ -219,89 +299,6 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
       };
     },
     { params: t.Object({ id: t.String() }), response: { 200: esquemaCredenciales, 404: esquemaError } },
-  )
-  .post(
-    "/",
-    async ({ body, contexto, set }) => {
-      const cliente = prismaParaEmpresa(contexto.empresaId);
-
-      const plataforma = await cliente.plataforma.findUnique({ where: { id: body.plataformaId } });
-      if (!plataforma) {
-        set.status = 404;
-        return { error: { codigo: "PLATAFORMA_NO_ENCONTRADA", mensaje: "La plataforma no existe." } };
-      }
-      if (!plataforma.activa) {
-        set.status = 400;
-        return {
-          error: { codigo: "PLATAFORMA_INACTIVA", mensaje: "Solo se pueden crear cuentas de plataformas activas." },
-        };
-      }
-
-      if (body.pantallas) {
-        const numeros = body.pantallas.map((p) => p.numero);
-        const numerosEsperados = new Set(Array.from({ length: body.capacidadPantallas }, (_, i) => i + 1));
-        const valido =
-          numeros.length === body.capacidadPantallas &&
-          new Set(numeros).size === numeros.length &&
-          numeros.every((n) => numerosEsperados.has(n));
-        if (!valido) {
-          set.status = 400;
-          return {
-            error: {
-              codigo: "PANTALLAS_INVALIDAS",
-              mensaje: `Las pantallas propuestas deben numerarse del 1 al ${body.capacidadPantallas}, una sola vez cada una.`,
-            },
-          };
-        }
-      }
-
-      const cuenta = await prismaParaEmpresa(contexto.empresaId).$transaction(async (txCliente) => {
-        const creada = await txCliente.cuenta.create({
-          data: datosSinEmpresa<Prisma.CuentaUncheckedCreateInput>({
-            plataformaId: body.plataformaId,
-            correo: body.correo,
-            password: cifrar(body.password),
-            capacidadPantallas: body.capacidadPantallas,
-            notas: body.notas ?? null,
-          }),
-        });
-
-        const propuestaPorNumero = new Map((body.pantallas ?? []).map((p) => [p.numero, p]));
-        const pinesFijados = new Set(
-          (body.pantallas ?? []).map((p) => p.pin).filter((pin): pin is string => pin !== null),
-        );
-        const cantidadAleatorios = plataforma.usaPerfilPin
-          ? Array.from({ length: body.capacidadPantallas }, (_, i) => i + 1).filter(
-              (numero) => !propuestaPorNumero.get(numero)?.pin,
-            ).length
-          : 0;
-        const pinesGenerados = pinesDistintos(cantidadAleatorios, pinesFijados);
-        let siguientePinGenerado = 0;
-
-        for (let numero = 1; numero <= body.capacidadPantallas; numero++) {
-          const propuesta = propuestaPorNumero.get(numero);
-          const perfil = plataforma.usaPerfilPin ? propuesta?.perfil ?? letraPerfil(numero - 1) : null;
-          const pin = plataforma.usaPerfilPin ? propuesta?.pin ?? pinesGenerados[siguientePinGenerado++] : null;
-          await txCliente.pantalla.create({
-            data: datosSinEmpresa<Prisma.PantallaUncheckedCreateInput>({
-              cuentaId: creada.id,
-              numero,
-              perfil,
-              pin: pin ? cifrar(pin) : null,
-            }),
-          });
-        }
-
-        return creada;
-      });
-
-      set.status = 201;
-      return { cuenta: respuestaCuenta({ ...cuenta, plataforma: { nombre: plataforma.nombre } }, body.capacidadPantallas, body.capacidadPantallas) };
-    },
-    {
-      body: cuerpoCrearCuenta,
-      response: { 201: t.Object({ cuenta: esquemaCuenta }), 400: esquemaError, 404: esquemaError },
-    },
   )
   .patch(
     "/:id",

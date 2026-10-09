@@ -40,7 +40,7 @@ describe("R5 (0d) — la disponibilidad se calcula por renglón, no por Venta.fe
     empresaId = empresa.id;
 
     const vendedor = await prismaRaw.usuario.create({
-      data: { empresaId, email: `vendedor-r5x-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Vendedor", rol: "VENDEDOR" },
+      data: { empresaId, email: `vendedor-r5x-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Empleado", rol: "EMPLEADO" },
     });
     vendedorId = vendedor.id;
 

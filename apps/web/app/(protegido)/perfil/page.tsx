@@ -17,7 +17,7 @@ interface UsuarioPerfil {
   id: string;
   nombre: string;
   email: string;
-  rol: "VENDEDOR" | "ADMIN" | "SUPER_ADMIN";
+  rol: "VENDEDOR" | "EMPLEADO" | "ADMIN" | "SUPER_ADMIN";
 }
 
 type TipoMovimiento = "CARGA" | "CONSUMO" | "DEVOLUCION" | "AJUSTE";

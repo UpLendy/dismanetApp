@@ -1,16 +1,16 @@
 import { redirect } from "next/navigation";
 import { inicioParaRol, obtenerSesion, satisfaceRol } from "@/lib/sesion";
-import PreciosCliente from "./precios-cliente";
 
-export default async function PaginaPrecios() {
+export default async function LayoutCatalogo({ children }: { children: React.ReactNode }) {
   const sesion = await obtenerSesion();
   if (!sesion) redirect("/login");
 
   // El layout de (admin) ahora deja pasar a EMPLEADO (para /panel/cuentas).
-  // La matriz de precios sigue siendo exclusiva de ADMIN.
+  // El catálogo (plataformas, duraciones, tipos de cliente, paquetes) sigue
+  // siendo exclusivo de ADMIN.
   if (!satisfaceRol(sesion.usuario.rol, "ADMIN")) {
     redirect(inicioParaRol(sesion.usuario.rol));
   }
 
-  return <PreciosCliente />;
+  return <>{children}</>;
 }

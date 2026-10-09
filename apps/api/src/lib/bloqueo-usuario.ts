@@ -1,4 +1,4 @@
-import { Prisma } from "../generated/prisma/client.ts";
+import { Prisma, Rol } from "../generated/prisma/client.ts";
 
 // ---------------------------------------------------------------------------
 // Saldo — bloqueo de la fila del usuario antes de verificar/cobrar saldo.
@@ -37,13 +37,15 @@ type ClienteTx = Prisma.TransactionClient;
 
 export interface UsuarioBloqueado {
   id: string;
-  usaSaldo: boolean;
+  rol: Rol;
   saldo: Prisma.Decimal;
 }
 
 /**
  * Bloquea (FOR UPDATE, sin SKIP LOCKED: espera) la fila de Usuario `usuarioId`
- * dentro de la empresa `empresaId`, y devuelve su `usaSaldo`/`saldo` vigentes.
+ * dentro de la empresa `empresaId`, y devuelve su `rol`/`saldo` vigentes. El
+ * saldo es exclusivo de VENDEDOR (revendedor) — un EMPLEADO nunca lo usa,
+ * sin importar lo que diga la columna `usaSaldo`, que ya no se lee en código.
  * Devuelve null si no existe una fila de Usuario con ese id Y ese empresaId.
  */
 export async function bloquearUsuarioParaVenta(
@@ -52,7 +54,7 @@ export async function bloquearUsuarioParaVenta(
   usuarioId: string,
 ): Promise<UsuarioBloqueado | null> {
   const filas = await tx.$queryRaw<UsuarioBloqueado[]>(Prisma.sql`
-    SELECT id, "usaSaldo", saldo
+    SELECT id, rol, saldo
     FROM "Usuario"
     WHERE id = ${usuarioId}
       AND "empresaId" = ${empresaId}

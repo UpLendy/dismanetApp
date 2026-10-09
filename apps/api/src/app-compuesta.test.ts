@@ -69,6 +69,8 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   let cookieAdmin: string;
   let cookieVendedor: string;
   let vendedorId: string;
+  let cookieEmpleado: string;
+  let empleadoId: string;
   let plataformaId: string;
   let duracionId: string;
   let tipoClienteId: string;
@@ -95,10 +97,24 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     const vendedorEmail = `vendedor-app-compuesta-${randomUUID()}@test.local`;
     emailsUsuarios.push(vendedorEmail);
     const vendedor = await prismaRaw.usuario.create({
-      data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Vendedor", rol: "VENDEDOR" },
+      // saldo precargado: desde la división VENDEDOR/EMPLEADO, VENDEDOR es
+      // siempre un revendedor-con-saldo (rol-driven, ver lib/ventas.ts) —
+      // este fixture se reutiliza en pruebas de "Entrega 9/10" que no son
+      // sobre saldo, pero necesitan que la venta se complete de verdad. La
+      // prueba dedicada a saldo más abajo usa su propio usuario, sin tocar
+      // este.
+      data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Vendedor", rol: "VENDEDOR", saldo: "1000000" },
     });
     vendedorId = vendedor.id;
     cookieVendedor = await iniciarSesion(vendedorEmail);
+
+    const empleadoEmail = `empleado-app-compuesta-${randomUUID()}@test.local`;
+    emailsUsuarios.push(empleadoEmail);
+    const empleado = await prismaRaw.usuario.create({
+      data: { empresaId, email: empleadoEmail, passwordHash: hash, nombre: "Empleado", rol: "EMPLEADO" },
+    });
+    empleadoId = empleado.id;
+    cookieEmpleado = await iniciarSesion(empleadoEmail);
 
     const plataforma = await prismaRaw.plataforma.create({
       data: { empresaId, nombre: "Netflix (app-compuesta.test)", capacidadPantallas: 1, usaPerfilPin: false },
@@ -109,6 +125,13 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       data: { empresaId, plataformaId, correo: "netflix@app-compuesta.test", password: cifrar("clave"), capacidadPantallas: 1 },
     });
     await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuenta.id, numero: 1 } });
+
+    // POST /cuentas ahora copia la plantilla de la plataforma (Parte 1 y 2
+    // del encargo "plantilla de pantallas"): sin esto, el POST del test de
+    // EMPLEADO más abajo fallaría con PLANTILLA_NO_CONFIGURADA.
+    await prismaRaw.plataformaPantalla.create({
+      data: { empresaId, plataformaId, numero: 1, perfil: null, pin: null },
+    });
 
     const duracion = await prismaRaw.duracion.create({
       data: { empresaId, nombre: "30 días (app-compuesta.test)", cantidad: 30, unidad: "DIAS" },
@@ -134,6 +157,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     await prismaRaw.duracion.deleteMany({ where: { empresaId } });
     await prismaRaw.pantalla.deleteMany({ where: { empresaId } });
     await prismaRaw.cuenta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plataformaPantalla.deleteMany({ where: { empresaId } });
     await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.usuario.deleteMany({ where: { email: { in: emailsUsuarios } } });
     await prismaRaw.empresa.deleteMany({ where: { id: { in: idsEmpresas } } });
@@ -210,11 +234,60 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuesta.status).toBe(200);
   });
 
-  it("un VENDEDOR y un ADMIN pueden usar /garantias/pantallas-vendidas aunque /empresas y /cuentas también estén montados", async () => {
+  it("división VENDEDOR/EMPLEADO: un VENDEDOR recibe 403 en /garantias/pantallas-vendidas; un EMPLEADO y un ADMIN sí entran", async () => {
     const respuestaVendedor = await get("/garantias/pantallas-vendidas", cookieVendedor);
-    expect(respuestaVendedor.status).toBe(200);
+    expect(respuestaVendedor.status).toBe(403);
+    const respuestaEmpleado = await get("/garantias/pantallas-vendidas", cookieEmpleado);
+    expect(respuestaEmpleado.status).toBe(200);
     const respuestaAdmin = await get("/garantias/pantallas-vendidas", cookieAdmin);
     expect(respuestaAdmin.status).toBe(200);
+  });
+
+  it("división VENDEDOR/EMPLEADO: un EMPLEADO puede crear una cuenta (POST /cuentas) pero recibe 403 en el resto de /cuentas", async () => {
+    const crear = await post(
+      "/cuentas",
+      {
+        plataformaId,
+        correo: `empleado-cuenta-${randomUUID()}@test.local`,
+        password: "clave-cuenta-empleado",
+      },
+      cookieEmpleado,
+    );
+    expect(crear.status).toBe(201);
+    const cuerpoCreada = (await crear.json()) as { cuenta: { id: string } };
+    const cuentaCreadaId = cuerpoCreada.cuenta.id;
+
+    const listar = await get("/cuentas", cookieEmpleado);
+    expect(listar.status).toBe(403);
+    const verUna = await get(`/cuentas/${cuentaCreadaId}`, cookieEmpleado);
+    expect(verUna.status).toBe(403);
+    const verCredenciales = await get(`/cuentas/${cuentaCreadaId}/credenciales`, cookieEmpleado);
+    expect(verCredenciales.status).toBe(403);
+    const editar = await patchBody(`/cuentas/${cuentaCreadaId}`, { correo: "otro@test.local" }, cookieEmpleado);
+    expect(editar.status).toBe(403);
+    const desactivar = await patchBody(`/cuentas/${cuentaCreadaId}/desactivar`, {}, cookieEmpleado);
+    expect(desactivar.status).toBe(403);
+    const activar = await patchBody(`/cuentas/${cuentaCreadaId}/activar`, {}, cookieEmpleado);
+    expect(activar.status).toBe(403);
+
+    await prismaRaw.pantalla.deleteMany({ where: { cuentaId: cuentaCreadaId } });
+    await prismaRaw.cuenta.deleteMany({ where: { id: cuentaCreadaId } });
+  });
+
+  it("división VENDEDOR/EMPLEADO: un EMPLEADO recibe 403 en /usuarios, /empresas, /ventas/listado, /ventas/totales y /precios (ADMIN en adelante)", async () => {
+    for (const ruta of ["/usuarios", "/empresas", "/ventas/listado", "/ventas/totales", "/precios/unidades?plataformaId=x"]) {
+      const respuesta = await get(ruta, cookieEmpleado);
+      expect(respuesta.status).toBe(403);
+    }
+  });
+
+  it("nadie pierde la capacidad de vender: VENDEDOR y EMPLEADO venden y ven /ventas/mias", async () => {
+    for (const cookie of [cookieVendedor, cookieEmpleado]) {
+      const tiposCliente = await get("/ventas/tipos-cliente", cookie);
+      expect(tiposCliente.status).toBe(200);
+      const mias = await get("/ventas/mias", cookie);
+      expect(mias.status).toBe(200);
+    }
   });
 
   it("Entrega 9: un VENDEDOR vende y ve /ventas/mias, pero recibe 403 en /listado, /totales y al anular; un ADMIN sí puede usar esas rutas", async () => {
@@ -266,37 +339,51 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(codigosDespues).not.toContain(venta.codigoCompra);
   });
 
-  // Saldo: un VENDEDOR normal (usaSaldo=false) no ve nada de esto; un ADMIN
-  // lo activa como revendedor, le carga saldo, y desde ese momento sus
-  // ventas lo consumen. Cubre además R4 (los endpoints de administración de
-  // saldo son solo de ADMIN) montado junto al resto de la app compuesta.
-  it("Saldo: un VENDEDOR sin usaSaldo no ve saldo propio; ADMIN lo activa, carga saldo, y la venta del VENDEDOR lo consume", async () => {
-    const propioAntes = await get("/perfil/saldo", cookieVendedor);
-    expect(propioAntes.status).toBe(200);
-    expect(await propioAntes.json()).toEqual({ usaSaldo: false, saldo: null });
+  // Saldo: desde la división VENDEDOR/EMPLEADO, todo VENDEDOR usa saldo y
+  // todo EMPLEADO nunca lo usa — sin ningún paso de activación intermedio,
+  // es 100% consecuencia del rol. Un ADMIN le carga saldo al VENDEDOR, y
+  // desde ese momento sus ventas lo consumen. Cubre además R4 (los
+  // endpoints de administración de saldo son solo de ADMIN) montado junto
+  // al resto de la app compuesta.
+  it("Saldo: un VENDEDOR nuevo ya ve saldo propio en cero sin ningún paso de activación (es rol-driven); un EMPLEADO nunca lo ve; ADMIN carga saldo, y la venta del VENDEDOR lo consume", async () => {
+    // Fixture propio, aislado del vendedorId/cookieVendedor compartido (ese
+    // viene precargado con saldo para las pruebas de "Entrega 9/10" — ver el
+    // comentario en beforeAll): este necesita arrancar en cero de verdad.
+    const email = `vendedor-saldo-cero-app-compuesta-${randomUUID()}@test.local`;
+    emailsUsuarios.push(email);
+    const hashLocal = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
+    const vendedorSaldoCero = await prismaRaw.usuario.create({
+      data: { empresaId, email, passwordHash: hashLocal, nombre: "Vendedor saldo cero", rol: "VENDEDOR" },
+    });
+    const cookieVendedorSaldoCero = await iniciarSesion(email);
 
-    const historialAntes = await get("/perfil/saldo/movimientos", cookieVendedor);
+    const propioAntes = await get("/perfil/saldo", cookieVendedorSaldoCero);
+    expect(propioAntes.status).toBe(200);
+    expect(await propioAntes.json()).toEqual({ usaSaldo: true, saldo: "0" });
+
+    const historialAntes = await get("/perfil/saldo/movimientos", cookieVendedorSaldoCero);
     expect(historialAntes.status).toBe(200);
     expect(await historialAntes.json()).toEqual({ movimientos: [] });
 
+    // Un EMPLEADO no tiene saldo bajo ninguna circunstancia (rol-driven).
+    const propioEmpleado = await get("/perfil/saldo", cookieEmpleado);
+    expect(propioEmpleado.status).toBe(200);
+    expect(await propioEmpleado.json()).toEqual({ usaSaldo: false, saldo: null });
+
     // Un VENDEDOR no puede administrar saldo, ni el propio ni el de otros.
-    const usarSaldoDesdeVendedor = await patchBody(`/usuarios/${vendedorId}/usar-saldo`, { usaSaldo: true }, cookieVendedor);
-    expect(usarSaldoDesdeVendedor.status).toBe(403);
-    const cargarDesdeVendedor = await post(`/usuarios/${vendedorId}/saldo/cargar`, { monto: "50000" }, cookieVendedor);
+    const cargarDesdeVendedor = await post(
+      `/usuarios/${vendedorSaldoCero.id}/saldo/cargar`,
+      { monto: "50000" },
+      cookieVendedorSaldoCero,
+    );
     expect(cargarDesdeVendedor.status).toBe(403);
 
-    const activar = await patchBody(`/usuarios/${vendedorId}/usar-saldo`, { usaSaldo: true }, cookieAdmin);
-    expect(activar.status).toBe(200);
-    const { usuario: usuarioActivado } = (await activar.json()) as { usuario: { usaSaldo: boolean; saldo: string } };
-    expect(usuarioActivado.usaSaldo).toBe(true);
-    expect(new Prisma.Decimal(usuarioActivado.saldo).equals(0)).toBe(true);
-
-    const carga = await post(`/usuarios/${vendedorId}/saldo/cargar`, { monto: "50000" }, cookieAdmin);
+    const carga = await post(`/usuarios/${vendedorSaldoCero.id}/saldo/cargar`, { monto: "50000" }, cookieAdmin);
     expect(carga.status).toBe(200);
     const { usuario: usuarioCargado } = (await carga.json()) as { usuario: { saldo: string } };
     expect(new Prisma.Decimal(usuarioCargado.saldo).equals(50000)).toBe(true);
 
-    const propioDespuesDeCargar = await get("/perfil/saldo", cookieVendedor);
+    const propioDespuesDeCargar = await get("/perfil/saldo", cookieVendedorSaldoCero);
     const { usaSaldo: usaSaldoDespuesDeCargar, saldo: saldoDespuesDeCargar } = (await propioDespuesDeCargar.json()) as {
       usaSaldo: boolean;
       saldo: string;
@@ -307,12 +394,12 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     const respuestaVenta = await post(
       "/ventas",
       { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId },
-      cookieVendedor,
+      cookieVendedorSaldoCero,
     );
     expect(respuestaVenta.status).toBe(201);
     const { venta } = (await respuestaVenta.json()) as { venta: { id: string; precioVenta: string } };
 
-    const propioDespuesDeVender = await get("/perfil/saldo", cookieVendedor);
+    const propioDespuesDeVender = await get("/perfil/saldo", cookieVendedorSaldoCero);
     const { saldo: saldoDespuesDeVender } = (await propioDespuesDeVender.json()) as { saldo: string };
     expect(new Prisma.Decimal(saldoDespuesDeVender).equals(new Prisma.Decimal("50000").minus(venta.precioVenta))).toBe(
       true,
@@ -320,16 +407,19 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
 
     // El VENDEDOR ve su propio historial; un ADMIN ve el historial de
     // cualquiera de su empresa desde /usuarios.
-    const historialPropio = await get("/perfil/saldo/movimientos", cookieVendedor);
+    const historialPropio = await get("/perfil/saldo/movimientos", cookieVendedorSaldoCero);
     const { movimientos: movimientosPropios } = (await historialPropio.json()) as { movimientos: unknown[] };
     expect(movimientosPropios.length).toBe(2); // CARGA + CONSUMO
 
-    const historialDesdeAdmin = await get(`/usuarios/${vendedorId}/saldo/movimientos`, cookieAdmin);
+    const historialDesdeAdmin = await get(`/usuarios/${vendedorSaldoCero.id}/saldo/movimientos`, cookieAdmin);
     expect(historialDesdeAdmin.status).toBe(200);
     const { movimientos: movimientosDesdeAdmin } = (await historialDesdeAdmin.json()) as { movimientos: unknown[] };
     expect(movimientosDesdeAdmin.length).toBe(2);
 
-    const historialDesdeVendedorSobreSiMismo = await get(`/usuarios/${vendedorId}/saldo/movimientos`, cookieVendedor);
+    const historialDesdeVendedorSobreSiMismo = await get(
+      `/usuarios/${vendedorSaldoCero.id}/saldo/movimientos`,
+      cookieVendedorSaldoCero,
+    );
     expect(historialDesdeVendedorSobreSiMismo.status).toBe(403);
   });
 
@@ -357,11 +447,31 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("NO_AUTENTICADO");
     }
 
-    for (const ruta of ["/cuentas", "/disponibilidad", "/plantillas", "/paquetes", "/garantias/pantallas-vendidas"]) {
+    for (const ruta of [
+      "/cuentas",
+      "/disponibilidad",
+      "/plantillas",
+      "/paquetes",
+      "/garantias/pantallas-vendidas",
+      "/plataformas/cualquier-id/pantallas",
+    ]) {
       const respuesta = await sinCookie(ruta);
       expect(respuesta.status).toBe(403);
       expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("PERMISO_DENEGADO");
     }
+
+    // PUT /plataformas/:id/pantallas — misma guarda ADMIN, con cuerpo válido
+    // para que la validación del esquema no tape el 403 real (ver comentario
+    // debajo sobre sinCookieConMetodo).
+    const respuestaPutPlantilla = await app.handle(
+      new Request("http://local/plataformas/cualquier-id/pantallas", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pantallas: [] }),
+      }),
+    );
+    expect(respuestaPutPlantilla.status).toBe(403);
+    expect(((await respuestaPutPlantilla.json()) as RespuestaError).error.codigo).toBe("PERMISO_DENEGADO");
 
     // Cuerpo válido en cada caso: la validación del esquema corre antes que
     // la guarda de autenticación, así que un cuerpo vacío daría 422 por la
@@ -378,7 +488,6 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     // Mismo comportamiento que /cuentas, /disponibilidad, etc. en esta app
     // compuesta: 403 PERMISO_DENEGADO, no 401 (ver el bloque anterior).
     for (const [metodo, ruta, cuerpo] of [
-      ["PATCH", `/usuarios/${vendedorId}/usar-saldo`, { usaSaldo: true }],
       ["POST", `/usuarios/${vendedorId}/saldo/cargar`, { monto: "1000" }],
       ["POST", `/usuarios/${vendedorId}/saldo/ajuste`, { monto: "1000", nota: "x" }],
       ["GET", `/usuarios/${vendedorId}/saldo/movimientos`, undefined],
@@ -387,5 +496,29 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       expect(respuesta.status).toBe(403);
       expect(((await respuesta.json()) as RespuestaError).error.codigo).toBe("PERMISO_DENEGADO");
     }
+  });
+
+  // contexto.ts lee rol desde la BD en cada petición (igual que
+  // versionSesion), no del JWT firmado al iniciar sesión: cambiar el rol de
+  // un usuario debe surtir efecto en su SIGUIENTE petición, con la misma
+  // cookie, sin que tenga que volver a iniciar sesión.
+  it("el rol se lee de la BD en cada petición: subir a un usuario de VENDEDOR a EMPLEADO le abre /garantias/pantallas-vendidas sin volver a iniciar sesión", async () => {
+    const email = `rol-dinamico-app-compuesta-${randomUUID()}@test.local`;
+    emailsUsuarios.push(email);
+    const hash = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
+    const usuario = await prismaRaw.usuario.create({
+      data: { empresaId, email, passwordHash: hash, nombre: "Rol dinámico", rol: "VENDEDOR" },
+    });
+    const cookie = await iniciarSesion(email);
+
+    const antes = await get("/garantias/pantallas-vendidas", cookie);
+    expect(antes.status).toBe(403);
+
+    const cambioRol = await patchBody(`/usuarios/${usuario.id}/rol`, { rol: "EMPLEADO" }, cookieAdmin);
+    expect(cambioRol.status).toBe(200);
+
+    // Misma cookie de antes: si el rol viniera del JWT, esto seguiría en 403.
+    const despues = await get("/garantias/pantallas-vendidas", cookie);
+    expect(despues.status).toBe(200);
   });
 });

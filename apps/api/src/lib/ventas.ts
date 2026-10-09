@@ -1,4 +1,4 @@
-import { Prisma, type Venta } from "../generated/prisma/client.ts";
+import { Prisma, Rol, type Venta } from "../generated/prisma/client.ts";
 import type { UnidadDuracion } from "../generated/prisma/enums.ts";
 import { tomarPantallasDisponibles, type PantallaBloqueada } from "./bloqueo-pantallas.ts";
 import { bloquearUsuarioParaVenta } from "./bloqueo-usuario.ts";
@@ -66,7 +66,7 @@ export type ResultadoVenta =
   // R2 regla 2 — todo o nada: ninguna plataforma del paquete quedó tocada,
   // se nombra la que no alcanzó a cubrir su cupo completo.
   | { tipo: "inventario_insuficiente"; nombrePlataforma: string }
-  // Saldo: solo para usuarios con usaSaldo = true. Se devuelve ANTES de
+  // Saldo: solo para usuarios con rol VENDEDOR. Se devuelve ANTES de
   // tocar inventario (sección 2 del bloque de saldo) — nada quedó bloqueado
   // ni escrito. Lleva los tres números para que el mensaje al revendedor
   // sirva de verdad: cuánto cuesta, cuánto tiene, cuánto le falta.
@@ -211,13 +211,13 @@ async function realizarVentaConComposicion(
   //
   // usuarioBloqueado es null cuando no hay una fila de Usuario con ese id Y
   // ese empresaId (el caso del SUPER_ADMIN vendiendo en una empresa que no
-  // es la suya) — se trata igual que usaSaldo = false: sin verificación, sin
-  // movimiento. Un usuario con usaSaldo = false no pasa por nada de esto: ni
-  // se bloquea su fila con intención de cobrar, ni se verifica saldo, ni se
-  // registra movimiento — su camino de venta queda byte por byte igual al
-  // de antes de este bloque.
+  // es la suya) — se trata igual que un EMPLEADO: sin verificación, sin
+  // movimiento. Un EMPLEADO no pasa por nada de esto: ni se bloquea su fila
+  // con intención de cobrar, ni se verifica saldo, ni se registra
+  // movimiento — su camino de venta queda igual al de un VENDEDOR sin saldo
+  // antes de que existiera esta feature.
   const usuarioBloqueado = await bloquearUsuarioParaVenta(tx, empresaId, vendedorId);
-  if (usuarioBloqueado?.usaSaldo) {
+  if (usuarioBloqueado?.rol === Rol.VENDEDOR) {
     if (usuarioBloqueado.saldo.lessThan(precioVenta)) {
       return {
         tipo: "saldo_insuficiente",
@@ -417,7 +417,7 @@ async function realizarVentaConComposicion(
   // schema.prisma); `saldoResultante` es el saldo que queda, no el que había.
   // La restricción única (empresaId, ventaId, tipo) hace estructuralmente
   // imposible cobrar dos veces esta venta.
-  if (usuarioBloqueado?.usaSaldo) {
+  if (usuarioBloqueado?.rol === Rol.VENDEDOR) {
     const saldoResultante = usuarioBloqueado.saldo.minus(precioVenta);
     await tx.movimientoSaldo.create({
       data: datosSinEmpresa<Prisma.MovimientoSaldoUncheckedCreateInput>({

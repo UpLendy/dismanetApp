@@ -20,8 +20,9 @@ export const requiereAutenticacion = new Elysia({ name: "requiere-autenticacion"
 // cerrada de roles exactos. requiereRol(rol) exige ese rol como mínimo.
 const RANGO_ROL: Record<Rol, number> = {
   [Rol.VENDEDOR]: 0,
-  [Rol.ADMIN]: 1,
-  [Rol.SUPER_ADMIN]: 2,
+  [Rol.EMPLEADO]: 1,
+  [Rol.ADMIN]: 2,
+  [Rol.SUPER_ADMIN]: 3,
 };
 
 export const requiereRol = (rolMinimo: Rol) =>

@@ -31,8 +31,8 @@ describe("realizarVenta", () => {
         empresaId,
         email: `vendedor-ventas-${randomUUID()}@test.local`,
         passwordHash: "hash",
-        nombre: "Vendedor",
-        rol: "VENDEDOR",
+        nombre: "Empleado",
+        rol: "EMPLEADO",
       },
     });
     vendedorId = vendedor.id;
@@ -252,7 +252,7 @@ describe("realizarVenta (R2, prueba obligatoria 1) — UNIDAD: 20 peticiones en 
     const empresa = await prismaRaw.empresa.create({ data: { nombre: "Empresa R2-unidad (ventas.test)", prefijoCodigo: "R2U" } });
     empresaId = empresa.id;
     const vendedor = await prismaRaw.usuario.create({
-      data: { empresaId, email: `vendedor-r2u-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Vendedor", rol: "VENDEDOR" },
+      data: { empresaId, email: `vendedor-r2u-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Empleado", rol: "EMPLEADO" },
     });
     vendedorId = vendedor.id;
     const plataforma = await prismaRaw.plataforma.create({
@@ -321,7 +321,7 @@ describe("realizarVenta (R2, prueba obligatoria 2) — PAQUETE: todo o nada bajo
     const empresa = await prismaRaw.empresa.create({ data: { nombre: "Empresa R2-paquete (ventas.test)", prefijoCodigo: "R2P" } });
     empresaId = empresa.id;
     const vendedor = await prismaRaw.usuario.create({
-      data: { empresaId, email: `vendedor-r2p-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Vendedor", rol: "VENDEDOR" },
+      data: { empresaId, email: `vendedor-r2p-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Empleado", rol: "EMPLEADO" },
     });
     vendedorId = vendedor.id;
 
@@ -415,7 +415,7 @@ describe("realizarVenta (R2, prueba obligatoria 3) — código de compra bajo co
     const empresa = await prismaRaw.empresa.create({ data: { nombre: "Empresa R2-codigo (ventas.test)", prefijoCodigo: "R2C" } });
     empresaId = empresa.id;
     const vendedor = await prismaRaw.usuario.create({
-      data: { empresaId, email: `vendedor-r2c-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Vendedor", rol: "VENDEDOR" },
+      data: { empresaId, email: `vendedor-r2c-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Empleado", rol: "EMPLEADO" },
     });
     vendedorId = vendedor.id;
     const plataforma = await prismaRaw.plataforma.create({
@@ -479,7 +479,7 @@ describe("realizarVenta (R3) — editar la plantilla después de vender no cambi
     const empresa = await prismaRaw.empresa.create({ data: { nombre: "Empresa R3 (ventas.test)", prefijoCodigo: "R3V" } });
     empresaId = empresa.id;
     const vendedor = await prismaRaw.usuario.create({
-      data: { empresaId, email: `vendedor-r3-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Vendedor", rol: "VENDEDOR" },
+      data: { empresaId, email: `vendedor-r3-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Empleado", rol: "EMPLEADO" },
     });
     vendedorId = vendedor.id;
     const plataforma = await prismaRaw.plataforma.create({
@@ -562,8 +562,8 @@ describe("realizarVenta (0c, prueba forzada) — colisión real de código de co
         empresaId,
         email: `vendedor-r2x-${randomUUID()}@test.local`,
         passwordHash: "hash",
-        nombre: "Vendedor",
-        rol: "VENDEDOR",
+        nombre: "Empleado",
+        rol: "EMPLEADO",
       },
     });
     vendedorId = vendedor.id;
@@ -762,8 +762,8 @@ describe("realizarVenta — Promoción", () => {
         empresaId,
         email: `vendedor-promo-${randomUUID()}@test.local`,
         passwordHash: "hash",
-        nombre: "Vendedor",
-        rol: "VENDEDOR",
+        nombre: "Empleado",
+        rol: "EMPLEADO",
       },
     });
     vendedorId = vendedor.id;

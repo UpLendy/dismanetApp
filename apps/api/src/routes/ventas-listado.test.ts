@@ -42,7 +42,7 @@ async function patch(ruta: string, cookie: string) {
 }
 
 // Crea una empresa con una plataforma, duración, tipo de cliente y precio
-// listos para vender, más un ADMIN y un VENDEDOR ya logueados.
+// listos para vender, más un ADMIN ya logueado.
 async function crearEmpresaLista(prefijo: string, nombre: string, capacidadPantallas: number) {
   const hash = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
   const empresa = await prismaRaw.empresa.create({ data: { nombre, prefijoCodigo: prefijo } });
@@ -122,14 +122,14 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     vendedor1Email = `vendedor1-lsa-${randomUUID()}@test.local`;
     const hash = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
     const vendedor1 = await prismaRaw.usuario.create({
-      data: { empresaId: empresaAId, email: vendedor1Email, passwordHash: hash, nombre: "Vendedor Uno", rol: "VENDEDOR" },
+      data: { empresaId: empresaAId, email: vendedor1Email, passwordHash: hash, nombre: "Empleado Uno", rol: "EMPLEADO" },
     });
     vendedor1Id = vendedor1.id;
     cookieVendedor1 = await iniciarSesion(vendedor1Email);
 
     vendedor2Email = `vendedor2-lsa-${randomUUID()}@test.local`;
     await prismaRaw.usuario.create({
-      data: { empresaId: empresaAId, email: vendedor2Email, passwordHash: hash, nombre: "Vendedor Dos", rol: "VENDEDOR" },
+      data: { empresaId: empresaAId, email: vendedor2Email, passwordHash: hash, nombre: "Empleado Dos", rol: "EMPLEADO" },
     });
     cookieVendedor2 = await iniciarSesion(vendedor2Email);
 
@@ -212,7 +212,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     expect(cuerpoBusquedaAjena.ventas).toHaveLength(0);
   });
 
-  it("(b, c) VENDEDOR: /mias solo trae sus propias ventas, nunca las de otro vendedor, y el JSON crudo no tiene costo/utilidad/margen", async () => {
+  it("(b, c) EMPLEADO: /mias solo trae sus propias ventas, nunca las de otro vendedor, y el JSON crudo no tiene costo/utilidad/margen", async () => {
     const respuesta = await get("/ventas/mias", cookieVendedor1);
     expect(respuesta.status).toBe(200);
     const texto = await respuesta.text();
@@ -225,7 +225,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     expect(cuerpo.ventas[0].codigoCompra).toBe(codigoVenta1);
   });
 
-  it("VENDEDOR no puede usar /listado ni /totales (son exclusivos de ADMIN)", async () => {
+  it("EMPLEADO no puede usar /listado ni /totales (son exclusivos de ADMIN)", async () => {
     const respuestaListado = await get("/ventas/listado", cookieVendedor1);
     expect(respuestaListado.status).toBe(403);
     const respuestaTotales = await get("/ventas/totales", cookieVendedor1);
@@ -301,7 +301,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     expect(yaAnulada.status).toBe(409);
   });
 
-  it("VENDEDOR no puede anular una venta (403)", async () => {
+  it("EMPLEADO no puede anular una venta (403)", async () => {
     const respuesta = await patch(`/ventas/${ventaId1}/anular`, cookieVendedor1);
     expect(respuesta.status).toBe(403);
   });

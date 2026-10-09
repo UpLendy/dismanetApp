@@ -338,7 +338,7 @@ describe("realizarVenta (Saldo) — rollback: falla de inventario después de pa
   });
 });
 
-describe("realizarVenta (Saldo) — empleado (usaSaldo=false): camino de venta sin ningún cambio", () => {
+describe("realizarVenta (Saldo) — EMPLEADO: camino de venta sin ningún cambio, sin importar la columna usaSaldo", () => {
   let empresaId: string;
   let vendedorId: string;
   let plataformaId: string;
@@ -351,15 +351,19 @@ describe("realizarVenta (Saldo) — empleado (usaSaldo=false): camino de venta s
     });
     empresaId = empresa.id;
 
-    // usaSaldo se omite a propósito: default false, saldo default "0" —
-    // exactamente como era un Usuario antes de que existiera esta feature.
+    // usaSaldo se fija en true A PROPÓSITO: la lógica de saldo es 100%
+    // rol-driven (contexto.rol === Rol.VENDEDOR), nunca derivada de esta
+    // columna. Un EMPLEADO con la columna vieja en true no debe activar el
+    // camino de saldo — justo el bug que la división VENDEDOR/EMPLEADO vino
+    // a evitar.
     const vendedor = await prismaRaw.usuario.create({
       data: {
         empresaId,
         email: `vendedor-saldo-empleado-${randomUUID()}@test.local`,
         passwordHash: "hash",
         nombre: "Empleado",
-        rol: "VENDEDOR",
+        rol: "EMPLEADO",
+        usaSaldo: true,
       },
     });
     vendedorId = vendedor.id;
@@ -411,13 +415,16 @@ describe("realizarVenta (Saldo) — empleado (usaSaldo=false): camino de venta s
 
     const usuarioFinal = await prismaRaw.usuario.findUniqueOrThrow({ where: { id: vendedorId } });
     expect(new Prisma.Decimal(usuarioFinal.saldo).equals(0)).toBe(true);
-    expect(usuarioFinal.usaSaldo).toBe(false);
+    // La columna sigue en true (nunca se tocó): la prueba es justamente que
+    // no importa — el camino de saldo se decide por rol, no por esta columna.
+    expect(usuarioFinal.usaSaldo).toBe(true);
+    expect(usuarioFinal.rol).toBe("EMPLEADO");
 
     const movimientos = await prismaRaw.movimientoSaldo.findMany({ where: { usuarioId: vendedorId } });
     expect(movimientos).toHaveLength(0);
   });
 
-  it("sin inventario para una segunda venta, falla por inventario, nunca por saldo (el camino de saldo no se activa para un empleado)", async () => {
+  it("sin inventario para una segunda venta, falla por inventario, nunca por saldo (el camino de saldo no se activa para un EMPLEADO)", async () => {
     // La única pantalla ya se vendió en la prueba anterior. Si el camino de
     // saldo se activara por error para un empleado, el síntoma sería
     // "saldo_insuficiente" (saldo 0 < precio); el resultado correcto sigue
