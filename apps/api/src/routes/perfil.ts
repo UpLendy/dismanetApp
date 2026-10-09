@@ -179,19 +179,19 @@ export const perfil = new Elysia({ prefix: "/perfil" })
     },
   )
   // Saldo propio del revendedor — visible en la barra superior y antes de
-  // confirmar una venta en /vender. `saldo: null` cuando usaSaldo es false:
-  // un empleado nunca ve ni un saldo en cero ni un saldo deshabilitado,
+  // confirmar una venta en /vender. El saldo es exclusivo de rol VENDEDOR
+  // (nunca de la columna usaSaldo, que ya no se lee en código): `saldo: null`
+  // para un EMPLEADO, que nunca ve ni un saldo en cero ni uno deshabilitado,
   // simplemente no hay dato que mostrar y el frontend no renderiza nada.
   .get(
     "/saldo",
     async ({ contexto }) => {
+      if (contexto.rol !== Rol.VENDEDOR) return { usaSaldo: false, saldo: null };
       const usuario = await clientePropio(contexto).usuario.findUniqueOrThrow({
         where: { id: contexto.usuarioId! },
+        select: { saldo: true },
       });
-      return {
-        usaSaldo: usuario.usaSaldo,
-        saldo: usuario.usaSaldo ? usuario.saldo.toString() : null,
-      };
+      return { usaSaldo: true, saldo: usuario.saldo.toString() };
     },
     { response: { 200: t.Object({ usaSaldo: t.Boolean(), saldo: t.Union([t.String(), t.Null()]) }) } },
   )
@@ -200,16 +200,15 @@ export const perfil = new Elysia({ prefix: "/perfil" })
   .get(
     "/saldo/movimientos",
     async ({ contexto }) => {
-      const cliente = clientePropio(contexto);
-      const usuario = await cliente.usuario.findUniqueOrThrow({ where: { id: contexto.usuarioId! } });
-      // Un empleado (usaSaldo=false) nunca tuvo movimientos: la lista queda
-      // vacía de forma natural, sin necesidad de un caso especial.
-      const movimientos = usuario.usaSaldo
-        ? await cliente.movimientoSaldo.findMany({
-            where: { usuarioId: contexto.usuarioId! },
-            orderBy: { createdAt: "desc" },
-          })
-        : [];
+      // Un EMPLEADO nunca tuvo movimientos: la lista queda vacía de forma
+      // natural, sin necesidad de un caso especial.
+      const movimientos =
+        contexto.rol === Rol.VENDEDOR
+          ? await clientePropio(contexto).movimientoSaldo.findMany({
+              where: { usuarioId: contexto.usuarioId! },
+              orderBy: { createdAt: "desc" },
+            })
+          : [];
       return { movimientos: movimientos.map(respuestaMovimientoSaldo) };
     },
     { response: { 200: t.Object({ movimientos: t.Array(esquemaMovimientoSaldo) }) } },

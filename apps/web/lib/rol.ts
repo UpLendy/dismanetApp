@@ -1,6 +1,6 @@
-export type Rol = "VENDEDOR" | "ADMIN" | "SUPER_ADMIN";
+export type Rol = "VENDEDOR" | "EMPLEADO" | "ADMIN" | "SUPER_ADMIN";
 
-const RANGO_ROL: Record<Rol, number> = { VENDEDOR: 0, ADMIN: 1, SUPER_ADMIN: 2 };
+const RANGO_ROL: Record<Rol, number> = { VENDEDOR: 0, EMPLEADO: 1, ADMIN: 2, SUPER_ADMIN: 3 };
 
 /**
  * Jerarquía, no lista cerrada de roles — igual que requiereRol en el API.
@@ -16,5 +16,5 @@ export function satisfaceRol(rol: Rol, rolMinimo: Rol): boolean {
 
 /** La pantalla propia de cada rol — a dónde mandar a quien no califica para la ruta que pidió. */
 export function inicioParaRol(rol: Rol): string {
-  return rol === "VENDEDOR" ? "/vender" : "/panel";
+  return rol === "VENDEDOR" || rol === "EMPLEADO" ? "/vender" : "/panel";
 }

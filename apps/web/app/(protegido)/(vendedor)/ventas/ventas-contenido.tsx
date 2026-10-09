@@ -14,7 +14,7 @@ import { EstadoVacio } from "@/components/ui/estado-vacio";
 import { CargandoTabla, CargandoTarjeta } from "@/components/ui/cargando";
 import { Tabla, TablaCabecera, TablaCuerpo, TablaFila, TablaCeldaCabecera, TablaCelda } from "@/components/ui/tabla";
 
-type Rol = "VENDEDOR" | "ADMIN" | "SUPER_ADMIN";
+type Rol = "VENDEDOR" | "EMPLEADO" | "ADMIN" | "SUPER_ADMIN";
 type TipoVenta = "UNIDAD" | "PAQUETE";
 
 interface DetalleVenta {
@@ -670,5 +670,5 @@ function VentasAdmin() {
 }
 
 export function VentasContenido({ rol }: { rol: Rol }) {
-  return rol === "VENDEDOR" ? <VentasVendedor /> : <VentasAdmin />;
+  return rol === "VENDEDOR" || rol === "EMPLEADO" ? <VentasVendedor /> : <VentasAdmin />;
 }

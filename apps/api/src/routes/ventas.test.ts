@@ -46,9 +46,9 @@ describe("Rutas de ventas (venta rápida)", () => {
     });
     cookieAdmin = await iniciarSesion(adminEmail);
 
-    const vendedorEmail = `vendedor-ventas-ruta-${randomUUID()}@test.local`;
+    const vendedorEmail = `empleado-ventas-ruta-${randomUUID()}@test.local`;
     await prismaRaw.usuario.create({
-      data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Vendedor", rol: "VENDEDOR" },
+      data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Empleado", rol: "EMPLEADO" },
     });
     cookieVendedor = await iniciarSesion(vendedorEmail);
 
@@ -111,7 +111,7 @@ describe("Rutas de ventas (venta rápida)", () => {
     );
   }
 
-  it("un VENDEDOR ve la plataforma en el selector /ventas/plataformas con precio pero sin costo", async () => {
+  it("un EMPLEADO ve la plataforma en el selector /ventas/plataformas con precio pero sin costo", async () => {
     const respuesta = await get(`/ventas/plataformas?duracionId=${duracionId}&tipoClienteId=${tipoClienteId}`, cookieVendedor);
     expect(respuesta.status).toBe(200);
     const cuerpo = (await respuesta.json()) as { plataformas: Array<{ id: string; precioVenta: string }> };
@@ -121,7 +121,7 @@ describe("Rutas de ventas (venta rápida)", () => {
     expect(JSON.stringify(fila)).not.toContain("costo");
   });
 
-  it("R4: un VENDEDOR que vende UNIDAD recibe el mensaje pero NUNCA costo/utilidad; un ADMIN sí los recibe", async () => {
+  it("R4: un EMPLEADO que vende UNIDAD recibe el mensaje pero NUNCA costo/utilidad; un ADMIN sí los recibe", async () => {
     const respuestaVendedor = await post(
       { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId },
       cookieVendedor,

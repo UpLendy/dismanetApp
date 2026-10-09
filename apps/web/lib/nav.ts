@@ -15,23 +15,25 @@ export interface GrupoNav {
   items: ItemNav[];
 }
 
-const RANGO: Record<Rol, number> = { VENDEDOR: 0, ADMIN: 1, SUPER_ADMIN: 2 };
+const RANGO: Record<Rol, number> = { VENDEDOR: 0, EMPLEADO: 1, ADMIN: 2, SUPER_ADMIN: 3 };
 
 // Agrupación exacta de DISENO.md §3. El primer grupo no tiene encabezado y
 // es lo único que un VENDEDOR ve — los demás grupos se filtran por completo,
-// nunca se muestran deshabilitados.
+// nunca se muestran deshabilitados. Un EMPLEADO ve además "Cuentas" (solo
+// el botón de crear dentro de esa pantalla, ver cuentas/page.tsx), porque
+// crear cuentas es parte de su trabajo diario.
 const GRUPOS: GrupoNav[] = [
   {
     titulo: null,
     items: [
       { etiqueta: "Vender", href: "/vender", icono: ShoppingCart, rolMinimo: "VENDEDOR", destacado: true },
-      { etiqueta: "Pantallas vendidas", href: "/pantallas-vendidas", icono: MonitorCheck, rolMinimo: "VENDEDOR" },
+      { etiqueta: "Pantallas vendidas", href: "/pantallas-vendidas", icono: MonitorCheck, rolMinimo: "EMPLEADO" },
       { etiqueta: "Ventas", href: "/ventas", icono: Receipt, rolMinimo: "VENDEDOR" },
     ],
   },
   {
     titulo: "OPERACIÓN",
-    items: [{ etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "ADMIN" }],
+    items: [{ etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "EMPLEADO" }],
   },
   {
     titulo: "CONFIGURACIÓN",

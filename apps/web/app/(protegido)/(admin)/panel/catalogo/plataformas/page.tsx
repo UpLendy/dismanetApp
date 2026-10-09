@@ -31,6 +31,11 @@ interface Impacto {
   paquetesAfectados: { id: string; nombre: string }[];
 }
 
+interface FilaPlantilla {
+  perfil: string;
+  pin: string;
+}
+
 type Filtro = "todas" | "activas" | "inactivas";
 
 function mensajeDeError(errorRespuesta: unknown): string {
@@ -38,11 +43,14 @@ function mensajeDeError(errorRespuesta: unknown): string {
   return valor?.error?.mensaje ?? "No se pudo completar la operación.";
 }
 
+function letraPerfil(indice: number): string {
+  return String.fromCharCode(65 + (indice % 26));
+}
+
 const FORMULARIO_VACIO = {
   nombre: "",
   nombreMensaje: "",
   condiciones: "",
-  capacidadPantallas: "1",
   usaPerfilPin: false,
 };
 
@@ -63,9 +71,15 @@ export default function PaginaPlataformas() {
   const [panelAbierto, setPanelAbierto] = useState(false);
   const [editandoId, setEditandoId] = useState<string | null>(null);
   const [formulario, setFormulario] = useState(FORMULARIO_VACIO);
+  const [capacidadActual, setCapacidadActual] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [errorFila, setErrorFila] = useState<string | null>(null);
+
+  const [plantilla, setPlantilla] = useState<FilaPlantilla[]>([]);
+  const [cargandoPlantilla, setCargandoPlantilla] = useState(false);
+  const [guardandoPlantilla, setGuardandoPlantilla] = useState(false);
+  const [errorPlantilla, setErrorPlantilla] = useState<string | null>(null);
 
   const [confirmando, setConfirmando] = useState<{ plataforma: Plataforma; impacto: Impacto | null } | null>(null);
   const [desactivando, setDesactivando] = useState(false);
@@ -89,8 +103,23 @@ export default function PaginaPlataformas() {
   function abrirCrear() {
     setEditandoId(null);
     setFormulario(FORMULARIO_VACIO);
+    setCapacidadActual(1);
+    setPlantilla([]);
+    setErrorPlantilla(null);
     setError(null);
     setPanelAbierto(true);
+  }
+
+  async function cargarPlantilla(id: string) {
+    setCargandoPlantilla(true);
+    setErrorPlantilla(null);
+    const { data, error: errorRespuesta } = await api.plataformas({ id }).pantallas.get();
+    setCargandoPlantilla(false);
+    if (errorRespuesta || !data) {
+      setErrorPlantilla(mensajeDeError(errorRespuesta));
+      return;
+    }
+    setPlantilla(data.pantallas.map((p) => ({ perfil: p.perfil ?? "", pin: p.pin ?? "" })));
   }
 
   function abrirEditar(plataforma: Plataforma) {
@@ -99,11 +128,12 @@ export default function PaginaPlataformas() {
       nombre: plataforma.nombre,
       nombreMensaje: plataforma.nombreMensaje ?? "",
       condiciones: plataforma.condiciones ?? "",
-      capacidadPantallas: String(plataforma.capacidadPantallas),
       usaPerfilPin: plataforma.usaPerfilPin,
     });
+    setCapacidadActual(plataforma.capacidadPantallas);
     setError(null);
     setPanelAbierto(true);
+    cargarPlantilla(plataforma.id);
   }
 
   async function guardar(evento: FormEvent<HTMLFormElement>) {
@@ -115,22 +145,76 @@ export default function PaginaPlataformas() {
       nombre: formulario.nombre,
       ...(formulario.nombreMensaje ? { nombreMensaje: formulario.nombreMensaje } : {}),
       ...(formulario.condiciones ? { condiciones: formulario.condiciones } : {}),
-      capacidadPantallas: Number(formulario.capacidadPantallas),
+      capacidadPantallas: capacidadActual,
       usaPerfilPin: formulario.usaPerfilPin,
     };
 
-    const { data, error: errorRespuesta } = editandoId
-      ? await api.plataformas({ id: editandoId }).patch(cuerpo)
-      : await api.plataformas.post(cuerpo);
-
-    setGuardando(false);
-
-    if (errorRespuesta || !data) {
-      setError(mensajeDeError(errorRespuesta));
-      return;
+    if (editandoId) {
+      const { error: errorRespuesta } = await api.plataformas({ id: editandoId }).patch(cuerpo);
+      setGuardando(false);
+      if (errorRespuesta) {
+        setError(mensajeDeError(errorRespuesta));
+        return;
+      }
+    } else {
+      const { data, error: errorRespuesta } = await api.plataformas.post(cuerpo);
+      setGuardando(false);
+      const nuevaPlataforma = (data as { plataforma?: { id: string } } | undefined)?.plataforma;
+      if (errorRespuesta || !nuevaPlataforma) {
+        setError(mensajeDeError(errorRespuesta));
+        return;
+      }
+      // Una plataforma recién creada no tiene plantilla todavía: el body de
+      // POST /plataformas exige capacidadPantallas >= 1 por compatibilidad,
+      // pero eso no crea ninguna PlataformaPantalla. Sincronizar aquí mismo
+      // a 0 para que el número mostrado en todo el catálogo (incluida
+      // /disponibilidad) refleje la realidad — sin esto, el formulario de
+      // alta de cuentas diría "va a generar 1 pantalla" para una plataforma
+      // que en verdad no tiene plantilla y fallaría al crear.
+      await api.plataformas({ id: nuevaPlataforma.id }).pantallas.put({ pantallas: [] });
     }
 
     setPanelAbierto(false);
+    cargarPlataformas();
+  }
+
+  function cambiarCantidadPlantilla(cantidad: number) {
+    const nueva = Math.max(0, Math.trunc(cantidad) || 0);
+    setPlantilla((actual) => {
+      if (nueva <= actual.length) return actual.slice(0, nueva);
+      const agregadas = Array.from({ length: nueva - actual.length }, (_, i) => ({
+        perfil: letraPerfil(actual.length + i),
+        pin: "",
+      }));
+      return [...actual, ...agregadas];
+    });
+  }
+
+  function actualizarFilaPlantilla(indice: number, campo: "perfil" | "pin", valor: string) {
+    setPlantilla((actual) => actual.map((fila, i) => (i === indice ? { ...fila, [campo]: valor } : fila)));
+  }
+
+  async function guardarPlantilla() {
+    if (!editandoId) return;
+    setErrorPlantilla(null);
+    setGuardandoPlantilla(true);
+
+    const { data, error: errorRespuesta } = await api.plataformas({ id: editandoId }).pantallas.put({
+      pantallas: plantilla.map((fila) => ({
+        perfil: formulario.usaPerfilPin && fila.perfil ? fila.perfil : null,
+        pin: formulario.usaPerfilPin && fila.pin ? fila.pin : null,
+      })),
+    });
+
+    setGuardandoPlantilla(false);
+
+    if (errorRespuesta || !data) {
+      setErrorPlantilla(mensajeDeError(errorRespuesta));
+      return;
+    }
+
+    setPlantilla(data.pantallas.map((p) => ({ perfil: p.perfil ?? "", pin: p.pin ?? "" })));
+    setCapacidadActual(data.capacidadPantallas);
     cargarPlataformas();
   }
 
@@ -312,24 +396,6 @@ export default function PaginaPlataformas() {
             )}
           </Campo>
 
-          <Campo
-            etiqueta="Capacidad de pantallas por defecto"
-            required
-            ayuda="Solo se usa como valor propuesto al crear una cuenta nueva de esta plataforma. No modifica las cuentas existentes."
-          >
-            {(props) => (
-              <EntradaCampo
-                {...props}
-                type="number"
-                min={1}
-                step={1}
-                required
-                value={formulario.capacidadPantallas}
-                onChange={(e) => setFormulario({ ...formulario, capacidadPantallas: e.target.value })}
-              />
-            )}
-          </Campo>
-
           <label className="flex items-center gap-2 cuerpo text-ink">
             <input
               type="checkbox"
@@ -346,6 +412,90 @@ export default function PaginaPlataformas() {
             </Boton>
           </div>
         </form>
+
+        {editandoId ? (
+          <div className="mt-6 space-y-4 border-t border-borde pt-6">
+            <div>
+              <h2 className="cuerpo font-medium text-ink">Plantilla de pantallas</h2>
+              <p className="text-xs text-ink-muted">
+                Cuántas pantallas, con qué perfil y qué PIN, va a tener cada cuenta nueva de esta plataforma.
+              </p>
+            </div>
+
+            <Aviso variante="info">
+              Los cambios aquí solo aplican a las cuentas que se creen de ahora en adelante. Las cuentas que ya
+              existen conservan sus pantallas, perfiles y pines tal como están.
+            </Aviso>
+
+            {errorPlantilla ? <Aviso variante="critico">{errorPlantilla}</Aviso> : null}
+
+            {cargandoPlantilla ? (
+              <p className="cuerpo text-ink-muted">Cargando plantilla…</p>
+            ) : (
+              <>
+                <Campo etiqueta="Cantidad de pantallas">
+                  {(props) => (
+                    <EntradaCampo
+                      {...props}
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={String(plantilla.length)}
+                      onChange={(e) => cambiarCantidadPlantilla(Number(e.target.value))}
+                    />
+                  )}
+                </Campo>
+
+                {plantilla.length === 0 ? (
+                  <p className="cuerpo text-ink-muted">
+                    Sin plantilla configurada: no se podrán crear cuentas nuevas de esta plataforma hasta definir al
+                    menos una pantalla.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {plantilla.map((fila, indice) => (
+                      <div key={indice} className="flex items-center gap-2">
+                        <span className="w-6 shrink-0 text-right text-xs tabular-nums text-ink-muted">
+                          {indice + 1}
+                        </span>
+                        {formulario.usaPerfilPin ? (
+                          <>
+                            <EntradaCampo
+                              aria-label={`Perfil de la pantalla ${indice + 1}`}
+                              placeholder="Perfil"
+                              value={fila.perfil}
+                              onChange={(e) => actualizarFilaPlantilla(indice, "perfil", e.target.value)}
+                            />
+                            <EntradaCampo
+                              aria-label={`PIN de la pantalla ${indice + 1}`}
+                              placeholder="PIN"
+                              inputMode="numeric"
+                              maxLength={4}
+                              value={fila.pin}
+                              onChange={(e) => actualizarFilaPlantilla(indice, "pin", e.target.value)}
+                            />
+                          </>
+                        ) : (
+                          <span className="cuerpo text-ink-muted">Esta plataforma no usa perfil ni PIN.</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <Boton
+                  type="button"
+                  variante="principal"
+                  onClick={guardarPlantilla}
+                  disabled={guardandoPlantilla}
+                  className="w-full"
+                >
+                  {guardandoPlantilla ? "Guardando…" : "Guardar plantilla"}
+                </Boton>
+              </>
+            )}
+          </div>
+        ) : null}
       </PanelLateral>
 
       <Dialogo

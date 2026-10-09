@@ -17,6 +17,7 @@ datasource db {
 enum Rol {
   SUPER_ADMIN
   ADMIN
+  EMPLEADO
   VENDEDOR
 }
 
@@ -67,6 +68,7 @@ model Empresa {
   precios                    Precio[]
   cuentas                    Cuenta[]
   pantallas                  Pantalla[]
+  pantallasPlantilla         PlataformaPantalla[]
   ventas                     Venta[]
   ventaDetalles              VentaDetalle[]
   plantillasMensaje          PlantillaMensaje[]
@@ -93,10 +95,12 @@ model Usuario {
   /// permite "cerrar las demás sesiones" sin un almacén de sesiones aparte.
   versionSesion Int @default(1)
 
-  /// Distingue un revendedor (vende contra saldo) de un empleado (sin tope).
-  /// No es un rol (ver CLAUDE.md): un empleado y un revendedor pueden ser
-  /// ambos VENDEDOR. Default false para no cambiar el comportamiento de
-  /// ningún usuario existente al desplegar esta bandera.
+  /// OBSOLETA desde la división de roles VENDEDOR/EMPLEADO: la distinción
+  /// revendedor-con-saldo vs. empleado-sin-tope ahora la da `rol` (VENDEDOR
+  /// usa saldo, EMPLEADO nunca) — ver la migración de datos
+  /// 20261009164941_rol_migrar_empleados_sin_saldo. Ningún archivo bajo
+  /// src/ lee esta columna (ver lib/usa-saldo-lista-blanca.test.ts). No se
+  /// borra porque hay filas históricas que todavía la tienen poblada.
   usaSaldo Boolean @default(false)
   /// Saldo vigente, en pesos. Los movimientos (MovimientoSaldo) son la
   /// historia; este campo es el valor actual, redundante a propósito para
@@ -142,7 +146,30 @@ model Plataforma {
   cuentas                    Cuenta[]
   ventas                     Venta[]
   ventaDetalles              VentaDetalle[]
+  pantallasPlantilla         PlataformaPantalla[]
 
+  @@index([empresaId])
+}
+
+/// Plantilla de pantallas de una plataforma: todas las cuentas nuevas de esa
+/// plataforma generan sus Pantalla copiando estas filas (numero, perfil,
+/// pin). Editar la plantilla no toca ninguna Pantalla ya creada (R3: una
+/// pantalla vendida ya entregó su PIN al comprador por WhatsApp) — ver
+/// POST /cuentas en src/routes/cuentas.ts, que es el único lugar que lee
+/// esta tabla para copiarla.
+model PlataformaPantalla {
+  id           String  @id @default(cuid())
+  empresaId    String
+  plataformaId String
+  numero       Int
+  perfil       String?
+  /// Cifrado reversible (AES-256-GCM), igual que Pantalla.pin.
+  pin          String?
+
+  empresa    Empresa    @relation(fields: [empresaId], references: [id])
+  plataforma Plataforma @relation(fields: [plataformaId], references: [id])
+
+  @@unique([plataformaId, numero])
   @@index([empresaId])
 }
 
@@ -414,7 +441,7 @@ model VentaDetalle {
   duracion   Duracion   @relation(fields: [duracionId], references: [id])
 
   /// Presente si esta pantalla falló y fue reemplazada (este renglón es el ORIGINAL).
-  garantiaOriginal Garantia? @relation("GarantiaOriginal")
+  garantiaOriginal  Garantia? @relation("GarantiaOriginal")
   /// Presente si este renglón fue entregado como reemplazo de una garantía.
   garantiaReemplazo Garantia? @relation("GarantiaReemplazo")
 

@@ -1,4 +1,5 @@
 import { Elysia, t } from "elysia";
+import { cifrar, descifrar } from "../lib/cifrado.ts";
 import { datosSinEmpresa, prismaParaEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol } from "../generated/prisma/client.ts";
 import { restriccionViolada } from "../lib/errores.ts";
@@ -50,6 +51,32 @@ const cuerpoPlataforma = t.Object({
   condiciones: t.Optional(t.String()),
   capacidadPantallas: t.Integer({ minimum: 1 }),
   usaPerfilPin: t.Boolean(),
+});
+
+// Plantilla de pantallas (Parte 5 del encargo "plantilla de pantallas"): el
+// numero de cada fila es su posición en el arreglo (1-based), no un campo del
+// body — así subir/bajar la cantidad es simplemente cambiar el largo del
+// arreglo desde el frontend. perfil/pin se ignoran si la plataforma no usa
+// usaPerfilPin, sin importar lo que llegue en el body (igual que la
+// generación de Pantalla en cuentas.ts).
+const esquemaPantallaPlantilla = t.Object({
+  numero: t.Number(),
+  perfil: t.Union([t.String(), t.Null()]),
+  pin: t.Union([t.String(), t.Null()]),
+});
+
+const esquemaPlantilla = t.Object({
+  capacidadPantallas: t.Number(),
+  pantallas: t.Array(esquemaPantallaPlantilla),
+});
+
+const cuerpoPlantilla = t.Object({
+  pantallas: t.Array(
+    t.Object({
+      perfil: t.Optional(t.Union([t.String(), t.Null()])),
+      pin: t.Optional(t.Union([t.String({ pattern: "^[0-9]{4}$" }), t.Null()])),
+    }),
+  ),
 });
 
 // Catálogo — CRUD sin borrado (R3/Parte 6): las entidades de catálogo se
@@ -213,5 +240,93 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
     {
       params: t.Object({ id: t.String() }),
       response: { 200: t.Object({ plataforma: esquemaPlataforma }), 404: esquemaError },
+    },
+  )
+  // Plantilla de pantallas (Parte 1 y 5 del encargo "plantilla de
+  // pantallas"): de aquí copia POST /cuentas cada Pantalla nueva. Editar la
+  // plantilla NUNCA toca una Pantalla ya creada (R3) — ver cuentas.ts.
+  .get(
+    "/:id/pantallas",
+    async ({ params, contexto, set }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const plataforma = await cliente.plataforma.findUnique({ where: { id: params.id } });
+      if (!plataforma) {
+        set.status = 404;
+        return { error: { codigo: "PLATAFORMA_NO_ENCONTRADA", mensaje: "La plataforma no existe." } };
+      }
+
+      const filas = await cliente.plataformaPantalla.findMany({
+        where: { plataformaId: params.id },
+        orderBy: { numero: "asc" },
+      });
+
+      return {
+        capacidadPantallas: filas.length,
+        pantallas: filas.map((f) => ({ numero: f.numero, perfil: f.perfil, pin: f.pin ? descifrar(f.pin) : null })),
+      };
+    },
+    { params: t.Object({ id: t.String() }), response: { 200: esquemaPlantilla, 404: esquemaError } },
+  )
+  .put(
+    "/:id/pantallas",
+    async ({ params, body, contexto, set }) => {
+      const resultado = await prismaParaEmpresa(contexto.empresaId).$transaction(async (txCliente) => {
+        const plataforma = await txCliente.plataforma.findUnique({ where: { id: params.id } });
+        if (!plataforma) return null;
+
+        for (const [indice, fila] of body.pantallas.entries()) {
+          const numero = indice + 1;
+          const perfil = plataforma.usaPerfilPin ? fila.perfil ?? null : null;
+          const pin = plataforma.usaPerfilPin && fila.pin ? cifrar(fila.pin) : null;
+
+          const existente = await txCliente.plataformaPantalla.findFirst({
+            where: { plataformaId: params.id, numero },
+          });
+          if (existente) {
+            await txCliente.plataformaPantalla.update({ where: { id: existente.id }, data: { perfil, pin } });
+          } else {
+            await txCliente.plataformaPantalla.create({
+              data: datosSinEmpresa<Prisma.PlataformaPantallaUncheckedCreateInput>({
+                plataformaId: params.id,
+                numero,
+                perfil,
+                pin,
+              }),
+            });
+          }
+        }
+
+        // Baja de cantidad: borra solo las filas de LA PLANTILLA que
+        // sobraron (nunca una Pantalla real — eso no es inventario, ver
+        // CLAUDE.md Parte 5).
+        await txCliente.plataformaPantalla.deleteMany({
+          where: { plataformaId: params.id, numero: { gt: body.pantallas.length } },
+        });
+
+        await txCliente.plataforma.update({
+          where: { id: params.id },
+          data: { capacidadPantallas: body.pantallas.length },
+        });
+
+        return await txCliente.plataformaPantalla.findMany({
+          where: { plataformaId: params.id },
+          orderBy: { numero: "asc" },
+        });
+      });
+
+      if (!resultado) {
+        set.status = 404;
+        return { error: { codigo: "PLATAFORMA_NO_ENCONTRADA", mensaje: "La plataforma no existe." } };
+      }
+
+      return {
+        capacidadPantallas: resultado.length,
+        pantallas: resultado.map((f) => ({ numero: f.numero, perfil: f.perfil, pin: f.pin ? descifrar(f.pin) : null })),
+      };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: cuerpoPlantilla,
+      response: { 200: esquemaPlantilla, 404: esquemaError },
     },
   );

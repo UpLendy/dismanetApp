@@ -159,7 +159,7 @@ function mapearFila(
 }
 
 export const garantias = new Elysia({ prefix: "/garantias" })
-  .use(requiereRol(Rol.VENDEDOR))
+  .use(requiereRol(Rol.EMPLEADO))
   .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;

@@ -10,12 +10,13 @@ import { Aviso } from "@/components/ui/aviso";
 import { PastillaEstado, Pastilla } from "@/components/ui/pastilla";
 import { PanelLateral } from "@/components/ui/panel-lateral";
 import { Dialogo } from "@/components/ui/dialogo";
-import { Interruptor } from "@/components/ui/interruptor";
 import { EstadoVacio } from "@/components/ui/estado-vacio";
 import { CargandoTabla } from "@/components/ui/cargando";
 import { Tabla, TablaCabecera, TablaCuerpo, TablaFila, TablaCeldaCabecera, TablaCelda } from "@/components/ui/tabla";
 
-type Rol = "SUPER_ADMIN" | "ADMIN" | "VENDEDOR";
+type Rol = "SUPER_ADMIN" | "ADMIN" | "EMPLEADO" | "VENDEDOR";
+
+const AYUDA_ROL = "VENDEDOR revende con su propio saldo prepagado. EMPLEADO vende y crea cuentas sin saldo propio, como parte de tu equipo.";
 
 interface Usuario {
   id: string;
@@ -39,12 +40,6 @@ function formatearPesos(valor: string): string {
   return decimal ? `$${conPuntos},${decimal}` : `$${conPuntos}`;
 }
 
-// Solo dígitos: si lo que queda tras quitar el punto y el signo es puro
-// cero, el saldo es cero. Evita convertir dinero a number (CLAUDE.md).
-function esSaldoCero(saldo: string): boolean {
-  return /^0+$/.test(saldo.replace(/[.-]/g, ""));
-}
-
 export default function PaginaUsuarios() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [cargandoLista, setCargandoLista] = useState(true);
@@ -61,9 +56,6 @@ export default function PaginaUsuarios() {
 
   const [confirmandoDesactivar, setConfirmandoDesactivar] = useState<Usuario | null>(null);
   const [desactivando, setDesactivando] = useState(false);
-
-  const [confirmandoActivarSaldo, setConfirmandoActivarSaldo] = useState<Usuario | null>(null);
-  const [activandoSaldo, setActivandoSaldo] = useState(false);
 
   // Cargar saldo: el panel recoge monto + nota, y solo al confirmar en el
   // Dialogo (que nombra exactamente el monto y el destinatario) se llama al
@@ -151,35 +143,6 @@ export default function PaginaUsuarios() {
     cargarUsuarios();
   }
 
-  async function cambiarUsaSaldo(usuario: Usuario, usaSaldo: boolean) {
-    setErrorFila(null);
-    const { error: errorRespuesta } = await api.usuarios({ id: usuario.id })["usar-saldo"].patch({ usaSaldo });
-    if (errorRespuesta) {
-      setErrorFila(mensajeDeError(errorRespuesta));
-      return;
-    }
-    cargarUsuarios();
-  }
-
-  // Desactivar devuelve a la persona su capacidad de vender: no necesita
-  // aviso. Activar sobre alguien con saldo en cero la deja sin poder vender
-  // de inmediato, así que ese caso pide confirmación primero.
-  function alCambiarUsaSaldo(usuario: Usuario, usaSaldo: boolean) {
-    if (usaSaldo && esSaldoCero(usuario.saldo)) {
-      setConfirmandoActivarSaldo(usuario);
-      return;
-    }
-    cambiarUsaSaldo(usuario, usaSaldo);
-  }
-
-  async function confirmarActivarSaldo() {
-    if (!confirmandoActivarSaldo) return;
-    setActivandoSaldo(true);
-    await cambiarUsaSaldo(confirmandoActivarSaldo, true);
-    setActivandoSaldo(false);
-    setConfirmandoActivarSaldo(null);
-  }
-
   function abrirCargarSaldo(usuario: Usuario) {
     setCargandoSaldoPara(usuario);
     setMontoCarga("");
@@ -217,7 +180,8 @@ export default function PaginaUsuarios() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="titulo-pagina text-ink">Usuarios</h1>
-          <p className="cuerpo text-ink-muted">Gestión de los ADMIN y VENDEDOR de la empresa.</p>
+          <p className="cuerpo text-ink-muted">Gestión de los ADMIN, EMPLEADO y VENDEDOR de la empresa.</p>
+          <p className="text-xs text-ink-muted">{AYUDA_ROL}</p>
         </div>
         <Boton variante="principal" onClick={abrirCrear}>
           <Plus />
@@ -245,7 +209,7 @@ export default function PaginaUsuarios() {
         <EstadoVacio
           icono={UserRound}
           titulo="Todavía no hay usuarios"
-          descripcion="Crea el primer ADMIN o VENDEDOR de la empresa."
+          descripcion="Crea el primer ADMIN, EMPLEADO o VENDEDOR de la empresa."
           accion={
             <Boton variante="principal" onClick={abrirCrear}>
               <Plus />
@@ -261,7 +225,7 @@ export default function PaginaUsuarios() {
               <TablaCeldaCabecera>Correo</TablaCeldaCabecera>
               <TablaCeldaCabecera>Rol</TablaCeldaCabecera>
               <TablaCeldaCabecera>Estado</TablaCeldaCabecera>
-              <TablaCeldaCabecera>Vende contra saldo</TablaCeldaCabecera>
+              <TablaCeldaCabecera>Saldo</TablaCeldaCabecera>
               <TablaCeldaCabecera></TablaCeldaCabecera>
             </tr>
           </TablaCabecera>
@@ -282,6 +246,7 @@ export default function PaginaUsuarios() {
                       className="h-8 w-auto text-xs"
                     >
                       <option value="VENDEDOR">VENDEDOR</option>
+                      <option value="EMPLEADO">EMPLEADO</option>
                       <option value="ADMIN">ADMIN</option>
                     </SelectCampo>
                   )}
@@ -290,18 +255,11 @@ export default function PaginaUsuarios() {
                   <PastillaEstado estado={usuario.activo ? "activo" : "inactivo"} />
                 </TablaCelda>
                 <TablaCelda>
-                  <div className="flex items-center gap-3">
-                    <Interruptor
-                      checked={usuario.usaSaldo}
-                      onCheckedChange={(valor) => alCambiarUsaSaldo(usuario, valor)}
-                      aria-label={`Vende contra saldo — ${usuario.nombre}`}
-                    />
-                    {usuario.usaSaldo ? (
-                      <span className="tabular-nums text-ink">{formatearPesos(usuario.saldo)}</span>
-                    ) : (
-                      <span className="text-ink-muted">—</span>
-                    )}
-                  </div>
+                  {usuario.usaSaldo ? (
+                    <span className="tabular-nums text-ink">{formatearPesos(usuario.saldo)}</span>
+                  ) : (
+                    <span className="text-ink-muted">—</span>
+                  )}
                 </TablaCelda>
                 <TablaCelda>
                   <div className="flex justify-end gap-2">
@@ -358,10 +316,11 @@ export default function PaginaUsuarios() {
             )}
           </Campo>
 
-          <Campo etiqueta="Rol" required>
+          <Campo etiqueta="Rol" required ayuda={AYUDA_ROL}>
             {(props) => (
               <SelectCampo {...props} value={rol} onChange={(e) => setRol(e.target.value as Rol)}>
                 <option value="VENDEDOR">VENDEDOR</option>
+                <option value="EMPLEADO">EMPLEADO</option>
                 <option value="ADMIN">ADMIN</option>
               </SelectCampo>
             )}
@@ -436,17 +395,6 @@ export default function PaginaUsuarios() {
         textoConfirmar="Desactivar"
         confirmando={desactivando}
         onConfirmar={confirmarDesactivar}
-      />
-
-      <Dialogo
-        abierto={!!confirmandoActivarSaldo}
-        onCambiarAbierto={(abierto) => !abierto && setConfirmandoActivarSaldo(null)}
-        titulo={confirmandoActivarSaldo ? `Activar venta contra saldo para ${confirmandoActivarSaldo.nombre}` : ""}
-        descripcion="Esta persona no va a poder vender hasta que se le cargue saldo."
-        textoConfirmar="Activar"
-        varianteConfirmar="principal"
-        confirmando={activandoSaldo}
-        onConfirmar={confirmarActivarSaldo}
       />
     </div>
   );

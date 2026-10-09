@@ -28,13 +28,15 @@ const esquemaUsuario = t.Object({
   saldo: t.String(),
 });
 
+// usaSaldo en la respuesta se deriva del rol, nunca de la columna Usuario.usaSaldo
+// (que ya no se lee en código): el saldo es exclusivo de VENDEDOR desde que
+// EMPLEADO existe como rol separado.
 const respuestaUsuario = (usuario: {
   id: string;
   nombre: string;
   email: string;
   rol: Rol;
   activo: boolean;
-  usaSaldo: boolean;
   saldo: Prisma.Decimal;
 }) => ({
   id: usuario.id,
@@ -42,7 +44,7 @@ const respuestaUsuario = (usuario: {
   email: usuario.email,
   rol: usuario.rol,
   activo: usuario.activo,
-  usaSaldo: usuario.usaSaldo,
+  usaSaldo: usuario.rol === Rol.VENDEDOR,
   saldo: usuario.saldo.toString(),
 });
 
@@ -266,33 +268,6 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
       },
     },
   )
-  // Saldo — distingue revendedor de empleado (no es un rol, ver
-  // Usuario.usaSaldo en schema.prisma). Apagar la bandera no toca el saldo
-  // acumulado: si se vuelve a encender, el historial sigue intacto.
-  .patch(
-    "/:id/usar-saldo",
-    async ({ params, body, contexto, set }) => {
-      const cliente = prismaParaEmpresa(contexto.empresaId);
-      try {
-        const actualizado = await cliente.usuario.update({
-          where: { id: params.id },
-          data: { usaSaldo: body.usaSaldo },
-        });
-        return { usuario: respuestaUsuario(actualizado) };
-      } catch (error) {
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-          set.status = 404;
-          return { error: { codigo: "USUARIO_NO_ENCONTRADO", mensaje: "El usuario no existe." } };
-        }
-        throw error;
-      }
-    },
-    {
-      params: t.Object({ id: t.String() }),
-      body: t.Object({ usaSaldo: t.Boolean() }),
-      response: { 200: t.Object({ usuario: esquemaUsuario }), 404: esquemaError },
-    },
-  )
   // Cargar saldo: mueve plata a favor del revendedor. Misma disciplina de
   // bloqueo que la venta (lib/bloqueo-usuario.ts) — bloquear la fila de
   // Usuario antes de leer su saldo, para no perder una carga concurrente con
@@ -310,7 +285,7 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
       const resultado = await cliente.$transaction(async (tx) => {
         const usuarioBloqueado = await bloquearUsuarioParaVenta(tx, contexto.empresaId!, params.id);
         if (!usuarioBloqueado) return { tipo: "no_encontrado" as const };
-        if (!usuarioBloqueado.usaSaldo) return { tipo: "sin_saldo" as const };
+        if (usuarioBloqueado.rol !== Rol.VENDEDOR) return { tipo: "sin_saldo" as const };
 
         const saldoResultante = usuarioBloqueado.saldo.plus(monto);
         await tx.movimientoSaldo.create({
@@ -365,7 +340,7 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
       const resultado = await cliente.$transaction(async (tx) => {
         const usuarioBloqueado = await bloquearUsuarioParaVenta(tx, contexto.empresaId!, params.id);
         if (!usuarioBloqueado) return { tipo: "no_encontrado" as const };
-        if (!usuarioBloqueado.usaSaldo) return { tipo: "sin_saldo" as const };
+        if (usuarioBloqueado.rol !== Rol.VENDEDOR) return { tipo: "sin_saldo" as const };
 
         const saldoResultante = usuarioBloqueado.saldo.plus(monto);
         await tx.movimientoSaldo.create({

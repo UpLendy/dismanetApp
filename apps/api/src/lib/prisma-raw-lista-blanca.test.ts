@@ -40,6 +40,12 @@ const LISTA_BLANCA = new Set<string>([
   // operación de negocio dentro del loop usa prismaParaEmpresa, nunca
   // prismaRaw directamente.
   "prisma/backfill-catalogo-base.ts",
+  // Migración de datos (plantilla inicial de PlataformaPantalla a partir de
+  // las cuentas existentes): mismo caso que backfill-catalogo-base.ts arriba
+  // — necesita listar todas las empresas para recorrerlas. La lógica de
+  // negocio en sí vive en src/lib/backfill-plataforma-pantalla.ts y recibe
+  // siempre un cliente ya acotado por prismaParaEmpresa.
+  "prisma/backfill-plataforma-pantalla.ts",
   // Resuelve la identidad del usuario a partir del JWT: todavía no hay
   // empresaId de sesión fiable en ese punto (es justamente lo que esta
   // consulta ayuda a derivar), y para SUPER_ADMIN nunca hay una empresa

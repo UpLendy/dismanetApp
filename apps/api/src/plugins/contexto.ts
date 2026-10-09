@@ -82,7 +82,7 @@ export const contexto = new Elysia({ name: "contexto" })
     const payload = await jwt.verify(token);
     if (!payload) return { contexto: CONTEXTO_ANONIMO };
 
-    const { usuarioId, rol, empresaId, versionSesion } = payload as unknown as PayloadJwt;
+    const { usuarioId, empresaId, versionSesion } = payload as unknown as PayloadJwt;
 
     // prismaRaw: excepción explícita de R1 (lista blanca en
     // prisma-raw-lista-blanca.test.ts). Usuario no tiene empresaId fijo
@@ -90,22 +90,25 @@ export const contexto = new Elysia({ name: "contexto" })
     // que el login. Se compara versionSesion contra la base en cada
     // petición autenticada: es lo que permite que PUT /perfil/contrasena
     // invalide el resto de sesiones sin un almacén de sesiones aparte.
+    // rol también se lee de la base, nunca del JWT: un cambio de rol
+    // (ADMIN mueve a alguien de VENDEDOR a EMPLEADO) debe tomar efecto en la
+    // siguiente petición, no en el próximo login.
     const usuario = await prismaRaw.usuario.findUnique({
       where: { id: usuarioId },
-      select: { versionSesion: true },
+      select: { versionSesion: true, rol: true },
     });
     if (!usuario || usuario.versionSesion !== versionSesion) return { contexto: CONTEXTO_ANONIMO };
 
-    if (rol === Rol.SUPER_ADMIN) {
+    if (usuario.rol === Rol.SUPER_ADMIN) {
       const empresaActiva = cookie[NOMBRE_COOKIE_EMPRESA_ACTIVA]?.value;
       return {
         contexto: {
           usuarioId,
-          rol,
+          rol: usuario.rol,
           empresaId: typeof empresaActiva === "string" && empresaActiva ? empresaActiva : null,
         } satisfies ContextoPeticion,
       };
     }
 
-    return { contexto: { usuarioId, rol, empresaId: empresaId ?? null } satisfies ContextoPeticion };
+    return { contexto: { usuarioId, rol: usuario.rol, empresaId: empresaId ?? null } satisfies ContextoPeticion };
   });

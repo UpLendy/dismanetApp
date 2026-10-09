@@ -21,6 +21,7 @@ interface FixtureEmpresa {
   empresaId: string;
   usuarioId: string;
   plataformaId: string;
+  plataformaPantallaId: string;
   duracionId: string;
   duracionRealId: string;
   tipoClienteId: string;
@@ -66,6 +67,10 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
 
   const plataforma = await prismaRaw.plataforma.create({
     data: { empresaId: empresa.id, nombre: `Plataforma ${nombre}`, capacidadPantallas: 4 },
+  });
+
+  const plataformaPantalla = await prismaRaw.plataformaPantalla.create({
+    data: { empresaId: empresa.id, plataformaId: plataforma.id, numero: 1, perfil: "A", pin: "cifrado-de-prueba" },
   });
 
   const duracionVendida = await prismaRaw.duracion.create({
@@ -213,6 +218,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     empresaId: empresa.id,
     usuarioId: usuario.id,
     plataformaId: plataforma.id,
+    plataformaPantallaId: plataformaPantalla.id,
     duracionId: duracionVendida.id,
     duracionRealId: duracionReal.id,
     tipoClienteId: tipoCliente.id,
@@ -248,6 +254,7 @@ async function borrarEmpresaCompleta(empresaId: string) {
   await prismaRaw.paquete.deleteMany({ where: { empresaId } });
   await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
   await prismaRaw.duracion.deleteMany({ where: { empresaId } });
+  await prismaRaw.plataformaPantalla.deleteMany({ where: { empresaId } });
   await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.usuario.deleteMany({ where: { empresaId } });
   await prismaRaw.empresa.delete({ where: { id: empresaId } });
@@ -267,12 +274,13 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 15 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(15);
+  it("cubre los 16 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(16);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
         "Plataforma",
+        "PlataformaPantalla",
         "Duracion",
         "TipoCliente",
         "Paquete",
