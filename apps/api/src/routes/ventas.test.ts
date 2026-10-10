@@ -111,14 +111,45 @@ describe("Rutas de ventas (venta rápida)", () => {
     );
   }
 
-  it("un EMPLEADO ve la plataforma en el selector /ventas/plataformas con precio pero sin costo", async () => {
-    const respuesta = await get(`/ventas/plataformas?duracionId=${duracionId}&tipoClienteId=${tipoClienteId}`, cookieVendedor);
+  it("un EMPLEADO ve la plataforma en el grid /ventas/plataformas, sin duración/tipoCliente y sin precio (eso vive en /opciones)", async () => {
+    const respuesta = await get("/ventas/plataformas", cookieVendedor);
     expect(respuesta.status).toBe(200);
-    const cuerpo = (await respuesta.json()) as { plataformas: Array<{ id: string; precioVenta: string }> };
+    const cuerpo = (await respuesta.json()) as {
+      plataformas: Array<{ id: string; pantallasLibres: number; tienePrecio: boolean; logoUrl: string | null }>;
+    };
     const fila = cuerpo.plataformas.find((p) => p.id === plataformaId);
     expect(fila).toBeDefined();
-    expect(fila?.precioVenta).toBe("15000");
+    expect(fila?.pantallasLibres).toBe(2);
+    expect(fila?.tienePrecio).toBe(true);
+    expect(JSON.stringify(fila)).not.toContain("precioVenta");
     expect(JSON.stringify(fila)).not.toContain("costo");
+  });
+
+  it("GET /ventas/plataformas/:id/opciones trae la combinación con precio, nunca costo/utilidad (R4)", async () => {
+    const respuesta = await get(`/ventas/plataformas/${plataformaId}/opciones`, cookieVendedor);
+    expect(respuesta.status).toBe(200);
+    const texto = await respuesta.text();
+    expect(texto).not.toContain("costo");
+    expect(texto).not.toContain("utilidad");
+    expect(texto).not.toContain("margen");
+
+    const cuerpo = JSON.parse(texto) as { opciones: Array<{ duracionId: string; tipoClienteId: string; precioVenta: string }> };
+    const opcion = cuerpo.opciones.find((o) => o.duracionId === duracionId && o.tipoClienteId === tipoClienteId);
+    expect(opcion).toBeDefined();
+    expect(opcion?.precioVenta).toBe("15000");
+  });
+
+  it("GET /ventas/plataformas/:id/opciones de una plataforma sin ningún precio activo responde lista vacía, no error", async () => {
+    const sinPrecio = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "Sin precio (ventas-ruta.test)", capacidadPantallas: 1, usaPerfilPin: false },
+    });
+
+    const respuesta = await get(`/ventas/plataformas/${sinPrecio.id}/opciones`, cookieVendedor);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { opciones: unknown[] };
+    expect(cuerpo.opciones).toEqual([]);
+
+    await prismaRaw.plataforma.delete({ where: { id: sinPrecio.id } });
   });
 
   it("R4: un EMPLEADO que vende UNIDAD recibe el mensaje pero NUNCA costo/utilidad; un ADMIN sí los recibe", async () => {

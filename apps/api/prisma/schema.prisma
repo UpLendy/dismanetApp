@@ -128,6 +128,9 @@ model Usuario {
 /// Si es null se usa `nombre`.
 /// condiciones: texto que se muestra al vendedor antes de vender, ej. "1 pantalla. Solo TV".
 /// usaPerfilPin: false para plataformas como Spotify, Canva, YouTube.
+/// logoUrl: ruta bajo /logos/<archivo> (apps/web/public/logos/) o URL externa.
+/// Null hasta que un admin la configure; sin logo el grid muestra una
+/// pastilla con la inicial del nombre (vender/page.tsx), nunca un ícono roto.
 model Plataforma {
   id                 String  @id @default(cuid())
   empresaId          String
@@ -137,6 +140,7 @@ model Plataforma {
   capacidadPantallas Int
   usaPerfilPin       Boolean @default(false)
   activa             Boolean @default(true)
+  logoUrl            String?
 
   empresa Empresa @relation(fields: [empresaId], references: [id])
 

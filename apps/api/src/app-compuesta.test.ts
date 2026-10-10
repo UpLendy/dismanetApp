@@ -72,6 +72,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   let cookieEmpleado: string;
   let empleadoId: string;
   let plataformaId: string;
+  let paqueteId: string;
   let duracionId: string;
   let tipoClienteId: string;
 
@@ -145,12 +146,18 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     await prismaRaw.plantillaMensaje.create({
       data: { empresaId, tipo: "UNIDAD", contenido: "Código {{codigoCompra}} - {{correo}} - {{clave}}" },
     });
+
+    const paquete = await prismaRaw.paquete.create({
+      data: { empresaId, nombre: "Paquete básico (app-compuesta.test)" },
+    });
+    paqueteId = paquete.id;
   });
 
   afterAll(async () => {
     await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
     await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
+    await prismaRaw.paquete.deleteMany({ where: { empresaId } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
     await prismaRaw.precio.deleteMany({ where: { empresaId } });
     await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
@@ -223,15 +230,28 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   });
 
   it("un VENDEDOR puede usar los selectores de /ventas aunque /empresas y /cuentas también estén montados", async () => {
-    for (const ruta of ["/ventas/tipos-cliente", "/ventas/duraciones"]) {
+    for (const ruta of [
+      "/ventas/tipos-cliente",
+      "/ventas/duraciones",
+      "/ventas/plataformas",
+      "/ventas/paquetes",
+      `/ventas/plataformas/${plataformaId}/opciones`,
+      `/ventas/paquetes/${paqueteId}/opciones`,
+    ]) {
       const respuesta = await get(ruta, cookieVendedor);
       expect(respuesta.status).toBe(200);
     }
   });
 
   it("un ADMIN también puede usar /ventas (jerarquía de rol, no lista cerrada)", async () => {
-    const respuesta = await get("/ventas/tipos-cliente", cookieAdmin);
-    expect(respuesta.status).toBe(200);
+    for (const ruta of [
+      "/ventas/tipos-cliente",
+      `/ventas/plataformas/${plataformaId}/opciones`,
+      `/ventas/paquetes/${paqueteId}/opciones`,
+    ]) {
+      const respuesta = await get(ruta, cookieAdmin);
+      expect(respuesta.status).toBe(200);
+    }
   });
 
   it("división VENDEDOR/EMPLEADO: un VENDEDOR recibe 403 en /garantias/pantallas-vendidas; un EMPLEADO y un ADMIN sí entran", async () => {
@@ -454,6 +474,8 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       "/paquetes",
       "/garantias/pantallas-vendidas",
       "/plataformas/cualquier-id/pantallas",
+      "/ventas/plataformas/cualquier-id/opciones",
+      "/ventas/paquetes/cualquier-id/opciones",
     ]) {
       const respuesta = await sinCookie(ruta);
       expect(respuesta.status).toBe(403);
