@@ -5,9 +5,9 @@ import { randomUUID } from "node:crypto";
 // paquetes.test.ts.
 import { prismaRaw } from "./prisma.ts";
 import { prismaParaEmpresa } from "./prisma-empresa.ts";
-import { plataformasDisponibles } from "./pantallas.ts";
+import { plataformasParaGrid } from "./pantallas.ts";
 
-describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + inventario libre (R5)", () => {
+describe("plataformasParaGrid (/vender paso 2, modo UNIDAD) — nunca oculta, solo deshabilita (R5)", () => {
   let empresaId: string;
   let plataformaId: string;
   let cuentaId: string;
@@ -17,7 +17,7 @@ describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + in
 
   beforeAll(async () => {
     const empresa = await prismaRaw.empresa.create({
-      data: { nombre: "Empresa plataformas-disponibles (pantallas.test)", prefijoCodigo: "PFD" },
+      data: { nombre: "Empresa plataformas-grid (pantallas.test)", prefijoCodigo: "PFD" },
     });
     empresaId = empresa.id;
 
@@ -28,6 +28,7 @@ describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + in
         condiciones: "1 pantalla. Solo TV",
         capacidadPantallas: 1,
         usaPerfilPin: false,
+        logoUrl: "/logos/netflix.svg",
       },
     });
     plataformaId = plataforma.id;
@@ -45,7 +46,7 @@ describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + in
     const vendedor = await prismaRaw.usuario.create({
       data: {
         empresaId,
-        email: `vendedor-plataformas-disponibles-${randomUUID()}@test.local`,
+        email: `vendedor-plataformas-grid-${randomUUID()}@test.local`,
         passwordHash: "hash",
         nombre: "Vendedor",
         rol: "VENDEDOR",
@@ -77,29 +78,33 @@ describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + in
     await prismaRaw.empresa.delete({ where: { id: empresaId } });
   });
 
-  it("con precio activo e inventario libre, la plataforma aparece con sus condiciones y el conteo de libres", async () => {
+  it("con precio activo e inventario libre, aparece con condiciones, logo, conteo de libres y tienePrecio", async () => {
     const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await plataformasDisponibles(cliente, duracionId, tipoClienteId);
+    const grid = await plataformasParaGrid(cliente);
 
-    const fila = disponibles.find((p) => p.id === plataformaId);
+    const fila = grid.find((p) => p.id === plataformaId);
     expect(fila).toBeDefined();
     expect(fila?.condiciones).toBe("1 pantalla. Solo TV");
+    expect(fila?.logoUrl).toBe("/logos/netflix.svg");
     expect(fila?.pantallasLibres).toBe(1);
+    expect(fila?.tienePrecio).toBe(true);
   });
 
-  it("sin precio activo para la duración/tipo de cliente consultados, la plataforma no aparece aunque haya inventario", async () => {
-    const otraDuracion = await prismaRaw.duracion.create({
-      data: { empresaId, nombre: "14 días (sin precio, pantallas.test)", cantidad: 14, unidad: "DIAS" },
-    });
+  it("desactivar el único precio de la plataforma la deja SIN precio, pero sigue apareciendo (no se oculta)", async () => {
+    await prismaRaw.precio.updateMany({ where: { empresaId, plataformaId }, data: { activo: false } });
 
     const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await plataformasDisponibles(cliente, otraDuracion.id, tipoClienteId);
-    expect(disponibles.map((p) => p.id)).not.toContain(plataformaId);
+    const grid = await plataformasParaGrid(cliente);
+    const fila = grid.find((p) => p.id === plataformaId);
 
-    await prismaRaw.duracion.delete({ where: { id: otraDuracion.id } });
+    expect(fila).toBeDefined();
+    expect(fila?.tienePrecio).toBe(false);
+    expect(fila?.pantallasLibres).toBe(1);
+
+    await prismaRaw.precio.updateMany({ where: { empresaId, plataformaId }, data: { activo: true } });
   });
 
-  it("con la única pantalla ocupada por una venta vigente no anulada, la plataforma deja de estar disponible", async () => {
+  it("con la única pantalla ocupada por una venta vigente no anulada, sigue apareciendo con pantallasLibres 0 (no se oculta)", async () => {
     const pantalla = await prismaRaw.pantalla.findFirstOrThrow({ where: { empresaId, cuentaId } });
 
     const venta = await prismaRaw.venta.create({
@@ -142,19 +147,29 @@ describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + in
     });
 
     const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await plataformasDisponibles(cliente, duracionId, tipoClienteId);
-    expect(disponibles.map((p) => p.id)).not.toContain(plataformaId);
+    const grid = await plataformasParaGrid(cliente);
+    const fila = grid.find((p) => p.id === plataformaId);
+
+    expect(fila).toBeDefined();
+    expect(fila?.pantallasLibres).toBe(0);
+    expect(fila?.tienePrecio).toBe(true);
 
     await prismaRaw.venta.update({ where: { id: venta.id }, data: { anulada: true } });
   });
 
-  it("desactivar el precio de la plataforma la saca de disponibles aunque el inventario siga libre", async () => {
-    await prismaRaw.precio.updateMany({ where: { empresaId, plataformaId }, data: { activo: false } });
+  it("una plataforma sin logoUrl configurado devuelve logoUrl null, no una cadena vacía ni un error", async () => {
+    const sinLogo = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "Sin logo (pantallas.test)", capacidadPantallas: 1, usaPerfilPin: false },
+    });
 
     const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await plataformasDisponibles(cliente, duracionId, tipoClienteId);
-    expect(disponibles.map((p) => p.id)).not.toContain(plataformaId);
+    const grid = await plataformasParaGrid(cliente);
+    const fila = grid.find((p) => p.id === sinLogo.id);
 
-    await prismaRaw.precio.updateMany({ where: { empresaId, plataformaId }, data: { activo: true } });
+    expect(fila).toBeDefined();
+    expect(fila?.logoUrl).toBeNull();
+    expect(fila?.tienePrecio).toBe(false);
+
+    await prismaRaw.plataforma.delete({ where: { id: sinLogo.id } });
   });
 });

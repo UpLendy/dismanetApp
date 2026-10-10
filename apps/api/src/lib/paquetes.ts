@@ -72,46 +72,63 @@ export async function resolverComposicionDePaquete(
   });
 }
 
-export interface PaqueteDisponible {
+export interface ComponenteParaGrid {
+  plataformaId: string;
+  nombrePlataforma: string;
+  logoUrl: string | null;
+}
+
+export interface PaqueteParaGrid {
   id: string;
   nombre: string;
   esPromocion: boolean;
+  componentes: ComponenteParaGrid[];
+  armable: boolean;
+  tienePrecio: boolean;
 }
 
 /**
- * Parte 6 (entrega 8) — paquetes activos que:
- * 1. tienen un precio activo para la duración vendida y el tipo de cliente
- *    dados (Precio.paqueteId = paquete, sin precio no se puede vender), y
- * 2. tienen suficientes pantallas libres en TODAS sus plataformas
- *    componentes, contra el inventario existente (R5: una pantalla está
- *    ocupada si tiene un VentaDetalle con venta no anulada y
- *    fechaVencimiento > now()).
+ * Grid de selección de /vender (paso 2, modos PAQUETE y PROMOCIÓN) — a
+ * diferencia de la extinta paquetesDisponibles(duracionVendidaId,
+ * tipoClienteId), no recibe duración ni tipo de cliente.
+ *
+ * La composición de un paquete (qué plataformas y cuántas pantallas de
+ * cada una) no depende de la duración — solo el VENCIMIENTO que recibe
+ * cada componente depende de ella (ver resolverComposicionDePaquete, que
+ * sigue necesitando duracionVendidaId porque esa sí es su pregunta). Si
+ * el paquete puede armarse HOY contra el inventario (R5: pantallasDisponibles
+ * no toma duración) es una pregunta completamente distinta de cuánto durará
+ * cada pantalla entregada, así que "armable" se calcula igual que antes,
+ * sencillamente sin filtrar primero por duración.
+ *
+ * Devuelve TODOS los paquetes activos, incluidos los no armables o sin
+ * precio: el grid los muestra deshabilitados con el motivo, nunca ocultos.
  */
-export async function paquetesDisponibles(
-  cliente: ClienteEmpresa,
-  duracionVendidaId: string,
-  tipoClienteId: string,
-): Promise<PaqueteDisponible[]> {
+export async function paquetesParaGrid(cliente: ClienteEmpresa): Promise<PaqueteParaGrid[]> {
   const paquetes = await cliente.paquete.findMany({
     where: { activo: true },
     select: {
       id: true,
       nombre: true,
       esPromocion: true,
-      paquetePlataformas: { select: { plataformaId: true, cantidadPantallas: true } },
+      paquetePlataformas: {
+        orderBy: { plataformaId: "asc" },
+        select: {
+          plataformaId: true,
+          cantidadPantallas: true,
+          plataforma: { select: { nombre: true, logoUrl: true } },
+        },
+      },
     },
+    orderBy: { nombre: "asc" },
   });
 
   if (paquetes.length === 0) return [];
 
   const preciosActivos = await cliente.precio.findMany({
-    where: {
-      activo: true,
-      duracionId: duracionVendidaId,
-      tipoClienteId,
-      paqueteId: { in: paquetes.map((p) => p.id) },
-    },
+    where: { activo: true, paqueteId: { in: paquetes.map((p) => p.id) } },
     select: { paqueteId: true },
+    distinct: ["paqueteId"],
   });
   const paquetesConPrecio = new Set(preciosActivos.map((p) => p.paqueteId));
 
@@ -125,14 +142,20 @@ export async function paquetesDisponibles(
   );
   const libresPorPlataforma = new Map(conteos);
 
-  return paquetes
-    .filter((paquete) => paquetesConPrecio.has(paquete.id))
-    .filter((paquete) =>
-      paquete.paquetePlataformas.every(
-        (componente) => (libresPorPlataforma.get(componente.plataformaId) ?? 0) >= componente.cantidadPantallas,
-      ),
-    )
-    .map((paquete) => ({ id: paquete.id, nombre: paquete.nombre, esPromocion: paquete.esPromocion }));
+  return paquetes.map((paquete) => ({
+    id: paquete.id,
+    nombre: paquete.nombre,
+    esPromocion: paquete.esPromocion,
+    componentes: paquete.paquetePlataformas.map((c) => ({
+      plataformaId: c.plataformaId,
+      nombrePlataforma: c.plataforma.nombre,
+      logoUrl: c.plataforma.logoUrl,
+    })),
+    armable: paquete.paquetePlataformas.every(
+      (componente) => (libresPorPlataforma.get(componente.plataformaId) ?? 0) >= componente.cantidadPantallas,
+    ),
+    tienePrecio: paquetesConPrecio.has(paquete.id),
+  }));
 }
 
 export interface CostoComponentes {

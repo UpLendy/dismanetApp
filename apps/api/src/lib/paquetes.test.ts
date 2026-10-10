@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 // de cualquier contexto de empresa autenticado, igual que duraciones.test.ts.
 import { prismaRaw } from "./prisma.ts";
 import { prismaParaEmpresa } from "./prisma-empresa.ts";
-import { costoComponentesPaquete, paquetesDisponibles, resolverComposicionDePaquete } from "./paquetes.ts";
+import { costoComponentesPaquete, paquetesParaGrid, resolverComposicionDePaquete } from "./paquetes.ts";
 
 describe("resolverComposicionDePaquete (a) — caso construido: Netflix con excepción, Disney+ sin excepción", () => {
   let empresaId: string;
@@ -156,7 +156,7 @@ describe("resolverComposicionDePaquete (b) — las cinco excepciones del seed de
   });
 });
 
-describe("paquetesDisponibles — disponibilidad por inventario (R5)", () => {
+describe("paquetesParaGrid (/vender paso 2, modos PAQUETE/PROMOCIÓN) — nunca oculta, solo deshabilita (R5)", () => {
   let empresaId: string;
   let paqueteId: string;
   let plataformaId: string;
@@ -172,7 +172,13 @@ describe("paquetesDisponibles — disponibilidad por inventario (R5)", () => {
     empresaId = empresa.id;
 
     const plataforma = await prismaRaw.plataforma.create({
-      data: { empresaId, nombre: "Netflix (paquetes-disponibles.test)", capacidadPantallas: 1, usaPerfilPin: false },
+      data: {
+        empresaId,
+        nombre: "Netflix (paquetes-disponibles.test)",
+        capacidadPantallas: 1,
+        usaPerfilPin: false,
+        logoUrl: "/logos/netflix.svg",
+      },
     });
     plataformaId = plataforma.id;
 
@@ -231,13 +237,20 @@ describe("paquetesDisponibles — disponibilidad por inventario (R5)", () => {
     await prismaRaw.empresa.delete({ where: { id: empresaId } });
   });
 
-  it("con la única pantalla libre, el paquete aparece disponible", async () => {
+  it("con la única pantalla libre, el paquete aparece armable, con sus componentes y logos", async () => {
     const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await paquetesDisponibles(cliente, duracionId, tipoClienteId);
-    expect(disponibles.map((p) => p.id)).toContain(paqueteId);
+    const grid = await paquetesParaGrid(cliente);
+    const fila = grid.find((p) => p.id === paqueteId);
+
+    expect(fila).toBeDefined();
+    expect(fila?.armable).toBe(true);
+    expect(fila?.tienePrecio).toBe(true);
+    expect(fila?.componentes).toEqual([
+      { plataformaId, nombrePlataforma: "Netflix (paquetes-disponibles.test)", logoUrl: "/logos/netflix.svg" },
+    ]);
   });
 
-  it("con la única pantalla ocupada por una venta vigente no anulada, el paquete deja de estar disponible", async () => {
+  it("con la única pantalla ocupada por una venta vigente no anulada, el paquete sigue apareciendo pero armable=false (no se oculta)", async () => {
     const venta = await prismaRaw.venta.create({
       data: {
         empresaId,
@@ -279,32 +292,33 @@ describe("paquetesDisponibles — disponibilidad por inventario (R5)", () => {
     });
 
     const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await paquetesDisponibles(cliente, duracionId, tipoClienteId);
-    expect(disponibles.map((p) => p.id)).not.toContain(paqueteId);
+    const grid = await paquetesParaGrid(cliente);
+    const fila = grid.find((p) => p.id === paqueteId);
+
+    expect(fila).toBeDefined();
+    expect(fila?.armable).toBe(false);
+    expect(fila?.tienePrecio).toBe(true);
+
+    await prismaRaw.venta.update({ where: { id: venta.id }, data: { anulada: true } });
   });
 
-  it("con inventario libre pero sin precio activo para la duración/tipo de cliente consultados, el paquete no aparece", async () => {
-    // Libera la pantalla que ocupó la prueba anterior: estas dos pruebas
-    // solo quieren aislar el efecto del precio, no el de R5.
-    await prismaRaw.venta.updateMany({ where: { empresaId }, data: { anulada: true } });
-
-    const otraDuracion = await prismaRaw.duracion.create({
-      data: { empresaId, nombre: "14 días (sin precio, paquetes.test)", cantidad: 14, unidad: "DIAS" },
-    });
-
-    const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await paquetesDisponibles(cliente, otraDuracion.id, tipoClienteId);
-    expect(disponibles.map((p) => p.id)).not.toContain(paqueteId);
-
-    await prismaRaw.duracion.delete({ where: { id: otraDuracion.id } });
-  });
-
-  it("desactivar el precio del paquete lo saca de disponibles aunque el inventario siga libre", async () => {
+  // Prueba central del hallazgo pedido: ¿armable depende de la duración?
+  // Esta prueba desactiva el ÚNICO precio del paquete (para TODA duración,
+  // no solo una) y confirma que armable sigue en true porque el inventario
+  // sigue libre. La composición de un paquete (qué plataformas, cuántas
+  // pantallas) no cambia con la duración — solo el vencimiento que recibe
+  // cada componente, que resuelve resolverComposicionDePaquete en el
+  // momento de vender, no aquí. Ver paquetesParaGrid en paquetes.ts.
+  it("sin NINGÚN precio activo pero con inventario libre, el paquete sigue armable=true: armable no depende de la duración", async () => {
     await prismaRaw.precio.updateMany({ where: { empresaId, paqueteId }, data: { activo: false } });
 
     const cliente = prismaParaEmpresa(empresaId);
-    const disponibles = await paquetesDisponibles(cliente, duracionId, tipoClienteId);
-    expect(disponibles.map((p) => p.id)).not.toContain(paqueteId);
+    const grid = await paquetesParaGrid(cliente);
+    const fila = grid.find((p) => p.id === paqueteId);
+
+    expect(fila).toBeDefined();
+    expect(fila?.armable).toBe(true);
+    expect(fila?.tienePrecio).toBe(false);
 
     await prismaRaw.precio.updateMany({ where: { empresaId, paqueteId }, data: { activo: true } });
   });
