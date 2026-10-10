@@ -7,7 +7,7 @@ const tonos = {
   aviso: "bg-aviso/15 text-aviso",
   serio: "bg-serio/15 text-serio",
   critico: "bg-critico/10 text-critico",
-  secundario: "bg-secundario-suave text-secundario-texto",
+  secundario: "bg-secundario-suave text-secundario",
   neutral: "bg-ink-muted/10 text-ink-2",
 } as const;
 

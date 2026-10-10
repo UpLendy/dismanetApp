@@ -259,7 +259,7 @@ export default function PaginaPaquetes() {
               className={cn(
                 "rounded-control border px-3 py-1.5 text-xs font-medium transition-colors",
                 filtroPromocion === opcion.valor
-                  ? "border-secundario bg-secundario-suave text-secundario-texto"
+                  ? "border-secundario bg-secundario-suave text-secundario"
                   : "border-borde text-ink-2 hover:bg-black/4 dark:hover:bg-white/5",
               )}
             >

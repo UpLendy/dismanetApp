@@ -10,7 +10,6 @@ import { Boton } from "@/components/ui/boton";
 import { Campo, EntradaCampo, AreaCampo } from "@/components/ui/campo";
 import { Aviso } from "@/components/ui/aviso";
 import { PastillaEstado } from "@/components/ui/pastilla";
-import { LogoPlataforma } from "@/components/ui/logo-plataforma";
 import { PanelLateral } from "@/components/ui/panel-lateral";
 import { Dialogo } from "@/components/ui/dialogo";
 import { EstadoVacio } from "@/components/ui/estado-vacio";
@@ -22,7 +21,6 @@ interface Plataforma {
   nombre: string;
   nombreMensaje: string | null;
   condiciones: string | null;
-  logoUrl: string | null;
   capacidadPantallas: number;
   usaPerfilPin: boolean;
   activa: boolean;
@@ -53,7 +51,6 @@ const FORMULARIO_VACIO = {
   nombre: "",
   nombreMensaje: "",
   condiciones: "",
-  logoUrl: "",
   usaPerfilPin: false,
 };
 
@@ -131,7 +128,6 @@ export default function PaginaPlataformas() {
       nombre: plataforma.nombre,
       nombreMensaje: plataforma.nombreMensaje ?? "",
       condiciones: plataforma.condiciones ?? "",
-      logoUrl: plataforma.logoUrl ?? "",
       usaPerfilPin: plataforma.usaPerfilPin,
     });
     setCapacidadActual(plataforma.capacidadPantallas);
@@ -149,7 +145,6 @@ export default function PaginaPlataformas() {
       nombre: formulario.nombre,
       ...(formulario.nombreMensaje ? { nombreMensaje: formulario.nombreMensaje } : {}),
       ...(formulario.condiciones ? { condiciones: formulario.condiciones } : {}),
-      ...(formulario.logoUrl ? { logoUrl: formulario.logoUrl } : {}),
       capacidadPantallas: capacidadActual,
       usaPerfilPin: formulario.usaPerfilPin,
     };
@@ -398,24 +393,6 @@ export default function PaginaPlataformas() {
                 value={formulario.condiciones}
                 onChange={(e) => setFormulario({ ...formulario, condiciones: e.target.value })}
               />
-            )}
-          </Campo>
-
-          <Campo
-            etiqueta="URL del logo"
-            ayuda='Ruta bajo /logos/ (ej. "/logos/netflix.svg") o una URL externa completa. Si se deja vacío, se muestra el inicial del nombre.'
-          >
-            {(props) => (
-              <div className="flex items-center gap-3">
-                <LogoPlataforma logoUrl={formulario.logoUrl || null} nombre={formulario.nombre || "?"} />
-                <EntradaCampo
-                  {...props}
-                  placeholder="/logos/netflix.svg"
-                  value={formulario.logoUrl}
-                  onChange={(e) => setFormulario({ ...formulario, logoUrl: e.target.value })}
-                  className="flex-1"
-                />
-              </div>
             )}
           </Campo>
 

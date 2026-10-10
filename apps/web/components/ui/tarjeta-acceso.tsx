@@ -32,7 +32,7 @@ function TarjetaAcceso({
       <span
         className={cn(
           "flex size-12 shrink-0 items-center justify-center rounded-tarjeta",
-          tono === "primario" ? "bg-primario-suave text-primario-texto" : "bg-secundario-suave text-secundario-texto",
+          tono === "primario" ? "bg-primario-suave text-primario-texto" : "bg-secundario-suave text-secundario",
         )}
       >
         <Icono className="size-6" />

@@ -31,33 +31,14 @@ Se declaran como variables CSS en `globals.css` y se usan por rol, nunca por hex
 | `--primario-suave` | `#FEF3F2` | `#3A1412` | Fondo del ítem activo en la barra lateral, fondos de énfasis |
 | `--primario-texto` | `#B42318` | `#FFB4A8` | Texto sobre fondo suave |
 | `--secundario` | `#4F46E5` | `#4F46E5` | Acciones alternas, iconos de acceso directo, **marcas de los gráficos** |
-| `--secundario-suave` | `#EEF2FF` | `#23214A` | Fondos de énfasis secundarios (pastilla "Ocupada", celdas de excepción) |
-| `--secundario-texto` | `#4F46E5` | `#C7D2FE` | Texto sobre `--secundario-suave` |
+| `--secundario-suave` | `#EEF2FF` | `#E4E2FA` | Fondos de énfasis secundarios |
 
 `--primario`, `--primario-hover` y `--secundario` se usan como relleno sólido o como texto plano — nunca como panel grande — así que el mismo valor funciona en ambos temas y no se invierte.
 
-`--primario-suave`/`--primario-texto` y `--secundario-suave`/`--secundario-texto` sí son paneles grandes (fondo del ítem activo del menú, pastillas, celdas de excepción): invertir `#FEF3F2` daría un negro casi puro sin relación con `--primario`, y dejarlo sin valor oscuro es el bug que esto corrige (bloque casi blanco sobre la barra negra). El oscuro es un tono elegido a mano:
+`--primario-suave`/`--primario-texto` y `--secundario-suave` sí son paneles grandes (fondo del ítem activo del menú, pastillas, celdas de excepción): invertir `#FEF3F2` daría un negro casi puro sin relación con `--primario`, y dejarlo sin valor oscuro es el bug que esto corrige (bloque casi blanco sobre la barra negra). El oscuro es un tono elegido a mano:
 
 - `--primario-suave` oscuro (`#3A1412`, un marrón-rojo muy oscuro) + `--primario-texto` oscuro (`#FFB4A8`, un salmón claro) dan **9.6:1** — el texto sigue siendo "rojo de marca", solo que claro sobre oscuro en vez de oscuro sobre claro.
-- `--secundario-suave` oscuro **corregido** — bug pendiente desde la versión anterior de este documento, hecho explícito aquí. El valor oscuro anterior (`#E4E2FA`) era, en los hechos, un lavanda *claro*: pasaba la medición de contraste (5.0:1) reutilizando `--secundario` (`#4F46E5`, invariante entre temas) como color de texto, pero como panel se veía igual de claro en modo oscuro que en modo claro — un bloque pastel flotando sobre una página negra, el mismo síntoma que ya se había corregido para `--primario-suave`. La causa era no tener un token de texto propio para el oscuro: sin él, oscurecer el panel bajaba el contraste en vez de subirlo. La corrección introduce `--secundario-texto` (nuevo) para desacoplar panel y texto por tema:
-  - Claro: panel `#EEF2FF` sin cambios, texto `--secundario-texto` claro = `#4F46E5` (el mismo `--secundario` de siempre) → **5.62:1**.
-  - Oscuro: panel `#23214A` (índigo oscuro genuino, no una inversión automática) + `--secundario-texto` oscuro `#C7D2FE` (lavanda claro) → **10.14:1**.
-  - `Pastilla` (`components/ui/pastilla.tsx`) usa ahora `bg-secundario-suave text-secundario-texto`, no `text-secundario` a secas, para que el texto sí cambie de tono entre temas.
-
-### Tonos de categoría — `/vender`, paso 1
-
-Las tres pastillas grandes de modo (UNIDAD / PAQUETE / PROMOCIÓN) necesitan distinguirse por color sin pisar los tokens de estado (`--bien`/`--aviso`/`--serio`/`--critico`, reservados — ver más abajo): una pastilla verde junto a una pastilla de estado "Activo" también verde enseñaría lo contrario de lo que significa. Dos tonos nuevos, uno por modo que lo necesita:
-
-| Rol | Claro | Oscuro | Uso |
-|---|---|---|---|
-| `--categoria-paquete-suave` | `#ECFEFF` | `#083344` | Fondo de la pastilla PAQUETE |
-| `--categoria-paquete-texto` | `#0F766E` | `#5EEAD4` | Texto/ícono sobre `--categoria-paquete-suave` — **5.26:1** claro, **9.06:1** oscuro |
-| `--categoria-promocion-suave` | `#FAF5FF` | `#2E1065` | Fondo de la pastilla PROMOCIÓN |
-| `--categoria-promocion-texto` | `#7E22CE` | `#E9D5FF` | Texto/ícono sobre `--categoria-promocion-suave` — **6.51:1** claro, **11.19:1** oscuro |
-
-La pastilla UNIDAD **no** recibe un tono nuevo: reutiliza `--primario-suave`/`--primario-texto` a propósito, porque UNIDAD es el tipo de venta más frecuente y ya tiene el rojo de marca como asociación. Las tres pastillas comparten entonces la misma forma (fondo suave + texto/ícono de color, nunca relleno sólido): VENDER sigue siendo la única acción de relleno sólido de la pantalla.
-
-Los dos tonos nuevos son deliberadamente distintos de `--secundario` (índigo) además de los cuatro de estado, para no competir visualmente con la pastilla "Ocupada" ni con el anillo de foco (ambos `--secundario`).
+- `--secundario` no cambia de valor entre temas (ver arriba), así que `--secundario-suave` oscuro tiene que seguir siendo un panel *claro* para que ese mismo `#4F46E5` siga leyéndose encima — oscurecerlo también habría bajado el contraste texto/fondo en vez de subirlo. `#E4E2FA` (un lavanda ligeramente más denso que el `#EEF2FF` claro, elegido para esta medición, no igual a ella) da **5.0:1** contra `--secundario` sin tocar ese token.
 
 ### Superficies e ink
 
@@ -212,22 +193,15 @@ Un solo gráfico en el MVP: **ingresos de los últimos 7 días**.
 
 ### `/vender` — la pantalla estrella
 
-Es la que más se usa y la única con tratamiento especial. Sin barra lateral desplegada en móvil; el foco es el flujo. Tres pasos progresivos en una sola pantalla — nunca rutas separadas — para que retroceder no pierda estado.
+Es la que más se usa y la única con tratamiento especial. Sin barra lateral desplegada en móvil; el foco es el flujo.
 
-1. **Paso 1 — tres pastillas grandes de modo**: UNIDAD / PAQUETE / PROMOCIÓN, cada una con ícono, nombre y conteo de ítems ("12 plataformas", "4 paquetes"). El conteo viene de los datos de grilla, cargados una sola vez al montar la pantalla, no al presionar cada pastilla. UNIDAD usa `--primario-suave`/`--primario-texto` (el rojo de marca, por ser el tipo de venta más frecuente); PAQUETE y PROMOCIÓN usan los tonos nuevos de [§2 "Tonos de categoría"](#tonos-de-categoría--vender-paso-1).
-2. **Paso 2 — modal de selección**, abierto al presionar una pastilla: una grilla de tarjetas con logo (`LogoPlataforma`, con reserva al inicial sobre `--plano` si no hay `logoUrl` o si la imagen falla al cargar — nunca un ícono de imagen rota) y, debajo del logo, su disponibilidad.
-   - En UNIDAD: **todas** las plataformas activas, sin excepción. Las de cero pantallas libres se muestran **deshabilitadas con el motivo** ("sin pantallas libres"), nunca ocultas — que el callejón sin salida deje de existir en vez de descubrirse después.
-   - En PAQUETE/PROMOCIÓN: paquetes con los logos pequeños de sus plataformas componentes y si son armables ahora mismo. Armabilidad es independiente de la duración (ver nota técnica abajo); un paquete sin ningún precio activo pero con inventario libre sigue apareciendo armable, solo deshabilitado por precio con su motivo ("sin precio configurado").
-   - Más de 12 tarjetas → aparece un buscador arriba de la grilla.
-   - El modal se cierra sin elegir nada con la X o tocando fuera; cerrarlo no pierde el paso 1.
-3. **Paso 3 — selectores progresivos**, revelados solo después de elegir un ítem en el modal: duración y tipo de cliente (poblados desde `GET .../opciones`, que nunca incluye `costo` ni `utilidad`), el precio calculado en el cliente a partir de la combinación elegida, el campo de celular, y el botón VENDER. Si `opciones` viene vacía, el paso 3 lo dice explícitamente en palabras ("Esta plataforma no tiene combinaciones de precio configuradas") en vez de mostrar selectores vacíos.
-   - Un botón de retroceso siempre visible desde el paso 3 vuelve al paso 1 sin perder qué pastilla estaba abierta ni reabrir el modal innecesariamente.
-4. **Botón VENDER sólido primario, ancho completo, altura 56px.** Es la única acción sólida de la pantalla — ninguna de las tres pastillas de modo ni las tarjetas del modal usan relleno sólido.
-5. Al vender: la tarjeta del mensaje reemplaza el formulario, con el texto en fuente monoespaciada dentro de un bloque, un botón grande **Copiar mensaje**, y debajo un botón de contorno **Nueva venta**.
-6. Confirmación visible al copiar — una pastilla verde "Copiado" junto al botón, no un toast que desaparezca antes de que lo vean.
-7. Un error del servidor, una vez mostrado, sobrevive a un refresco posterior de datos en segundo plano — no lo reemplaza un reintento silencioso.
-
-**Nota técnica — por qué el paso 2 no depende de la duración:** si una pantalla está libre u ocupada depende solo de las ventas *ya registradas* (R5: `VentaDetalle.fechaVencimiento` + `anulada`), nunca de una venta hipotética todavía sin crear. Lo mismo vale para la armabilidad de un paquete: su composición (qué plataformas, cuántas pantallas de cada una) no cambia con la duración elegida — solo cambia qué vencimiento recibe cada componente al momento de vender (`resolverComposicionDePaquete`), que es irrelevante para "¿se puede armar esto ahora mismo?". Por eso el paso 2 pregunta disponibilidad una sola vez, antes de pedir duración, y el paso 3 solo filtra combinaciones de precio ya existentes — nunca vuelve a consultar inventario.
+1. Selector de modo **UNIDAD / PAQUETE** como dos pestañas grandes.
+2. Tres selectores en fila: tipo de cliente, duración, producto. En móvil se apilan.
+3. Cada opción de producto muestra su contador de disponibles y, si tiene, sus condiciones.
+4. Tarjeta de resumen con el precio en grande antes de confirmar.
+5. **Botón VENDER sólido primario, ancho completo, altura 56px.** Es la única acción sólida de la pantalla.
+6. Al vender: la tarjeta del mensaje reemplaza el formulario, con el texto en fuente monoespaciada dentro de un bloque, un botón grande **Copiar mensaje**, y debajo un botón de contorno **Nueva venta**.
+7. Confirmación visible al copiar — una pastilla verde "Copiado" junto al botón, no un toast que desaparezca antes de que lo vean.
 
 ### `/panel` — inicio del administrador
 

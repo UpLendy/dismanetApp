@@ -15,7 +15,6 @@ const esquemaPlataforma = t.Object({
   nombre: t.String(),
   nombreMensaje: t.Union([t.String(), t.Null()]),
   condiciones: t.Union([t.String(), t.Null()]),
-  logoUrl: t.Union([t.String(), t.Null()]),
   capacidadPantallas: t.Number(),
   usaPerfilPin: t.Boolean(),
   activa: t.Boolean(),
@@ -31,7 +30,6 @@ interface FilaPlataforma {
   nombre: string;
   nombreMensaje: string | null;
   condiciones: string | null;
-  logoUrl: string | null;
   capacidadPantallas: number;
   usaPerfilPin: boolean;
   activa: boolean;
@@ -42,7 +40,6 @@ const respuestaPlataforma = (fila: FilaPlataforma) => ({
   nombre: fila.nombre,
   nombreMensaje: fila.nombreMensaje,
   condiciones: fila.condiciones,
-  logoUrl: fila.logoUrl,
   capacidadPantallas: fila.capacidadPantallas,
   usaPerfilPin: fila.usaPerfilPin,
   activa: fila.activa,
@@ -52,11 +49,6 @@ const cuerpoPlataforma = t.Object({
   nombre: t.String({ minLength: 1 }),
   nombreMensaje: t.Optional(t.String()),
   condiciones: t.Optional(t.String()),
-  // Acepta tanto una ruta bajo /logos/ (apps/web/public/logos/) como una URL
-  // externa completa — un solo campo para los dos orígenes (CLAUDE.md,
-  // encargo de logos). Sin validar que el archivo exista: la reserva de
-  // LogoPlataforma al inicial cubre el caso de una ruta rota.
-  logoUrl: t.Optional(t.String()),
   capacidadPantallas: t.Integer({ minimum: 1 }),
   usaPerfilPin: t.Boolean(),
 });
@@ -122,7 +114,6 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
             nombre: body.nombre,
             nombreMensaje: body.nombreMensaje ?? null,
             condiciones: body.condiciones ?? null,
-            logoUrl: body.logoUrl ?? null,
             capacidadPantallas: body.capacidadPantallas,
             usaPerfilPin: body.usaPerfilPin,
           }),
@@ -158,7 +149,6 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
             nombre: body.nombre,
             nombreMensaje: body.nombreMensaje ?? null,
             condiciones: body.condiciones ?? null,
-            logoUrl: body.logoUrl ?? null,
             capacidadPantallas: body.capacidadPantallas,
             usaPerfilPin: body.usaPerfilPin,
           },

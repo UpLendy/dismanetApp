@@ -3,7 +3,7 @@ import { Info, AlertTriangle, AlertOctagon, XOctagon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const variantes = {
-  info: { clase: "bg-secundario-suave text-secundario-texto border-secundario/20", icono: Info },
+  info: { clase: "bg-secundario-suave text-secundario border-secundario/20", icono: Info },
   aviso: { clase: "bg-aviso/10 text-ink border-aviso/30", icono: AlertTriangle },
   serio: { clase: "bg-serio/10 text-ink border-serio/30", icono: AlertOctagon },
   critico: { clase: "bg-critico/10 text-critico border-critico/20", icono: XOctagon },

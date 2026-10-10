@@ -119,51 +119,50 @@ export async function pantallasDeCuentas(cliente: ClienteEmpresa, cuentaIds: str
   return estadoDePantallas(cliente, { cuentaId: { in: cuentaIds } });
 }
 
-export interface PlataformaParaGrid {
+export interface PlataformaDisponible {
   id: string;
   nombre: string;
   condiciones: string | null;
-  logoUrl: string | null;
   pantallasLibres: number;
-  tienePrecio: boolean;
 }
 
 /**
- * Grid de selección de /vender (paso 2, modo UNIDAD) — a diferencia de la
- * extinta plataformasDisponibles(duracionId, tipoClienteId), esta función no
- * recibe duración ni tipo de cliente: en el flujo nuevo el vendedor elige la
- * plataforma ANTES de elegir esos dos (ver GET /ventas/plataformas/:id/opciones
- * en routes/ventas.ts). R5 ya garantiza que pantallasLibres no depende de la
- * duración de una venta todavía no hecha, así que no hace falta pedirla aquí.
- *
- * Devuelve TODAS las plataformas activas, incluidas las de pantallasLibres
- * 0 o tienePrecio false: el grid las muestra deshabilitadas con el motivo en
- * vez de ocultarlas (si desaparecieran, el vendedor creería que no existen,
- * no que están agotadas o sin precio configurado).
+ * Entrega 8 (venta rápida, modo UNIDAD) — equivalente de paquetesDisponibles
+ * para plataformas individuales: activas, con precio activo para la
+ * duración y el tipo de cliente dados, y con al menos una pantalla libre
+ * (R5). `condiciones` y `pantallasLibres` son justo lo que el vendedor
+ * necesita ver antes de confirmar (ej. "1 pantalla. Solo TV" + "quedan 3").
  */
-export async function plataformasParaGrid(cliente: ClienteEmpresa): Promise<PlataformaParaGrid[]> {
+export async function plataformasDisponibles(
+  cliente: ClienteEmpresa,
+  duracionId: string,
+  tipoClienteId: string,
+): Promise<PlataformaDisponible[]> {
   const plataformas = await cliente.plataforma.findMany({
     where: { activa: true },
-    select: { id: true, nombre: true, condiciones: true, logoUrl: true },
-    orderBy: { nombre: "asc" },
+    select: { id: true, nombre: true, condiciones: true },
   });
   if (plataformas.length === 0) return [];
 
   const preciosActivos = await cliente.precio.findMany({
-    where: { activo: true, plataformaId: { in: plataformas.map((p) => p.id) } },
+    where: {
+      activo: true,
+      duracionId,
+      tipoClienteId,
+      plataformaId: { in: plataformas.map((p) => p.id) },
+    },
     select: { plataformaId: true },
-    distinct: ["plataformaId"],
   });
   const plataformasConPrecio = new Set(preciosActivos.map((p) => p.plataformaId));
 
-  return Promise.all(
-    plataformas.map(async (plataforma) => {
-      const estados = await pantallasDisponibles(cliente, plataforma.id);
-      return {
-        ...plataforma,
-        pantallasLibres: estados.filter((e) => e.libre).length,
-        tienePrecio: plataformasConPrecio.has(plataforma.id),
-      };
-    }),
+  const conDisponibilidad = await Promise.all(
+    plataformas
+      .filter((plataforma) => plataformasConPrecio.has(plataforma.id))
+      .map(async (plataforma) => {
+        const estados = await pantallasDisponibles(cliente, plataforma.id);
+        return { ...plataforma, pantallasLibres: estados.filter((e) => e.libre).length };
+      }),
   );
+
+  return conDisponibilidad.filter((plataforma) => plataforma.pantallasLibres > 0);
 }

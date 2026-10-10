@@ -2,8 +2,8 @@ import { Elysia, t } from "elysia";
 import { prismaParaEmpresa, datosSinEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol } from "../generated/prisma/client.ts";
 import { requiereRol } from "../plugins/guardas.ts";
-import { plataformasParaGrid } from "../lib/pantallas.ts";
-import { paquetesParaGrid } from "../lib/paquetes.ts";
+import { plataformasDisponibles } from "../lib/pantallas.ts";
+import { paquetesDisponibles } from "../lib/paquetes.ts";
 import { realizarVenta, type EntradaVenta } from "../lib/ventas.ts";
 import { bloquearUsuarioParaVenta } from "../lib/bloqueo-usuario.ts";
 import { restriccionViolada } from "../lib/errores.ts";
@@ -16,42 +16,19 @@ const esquemaError = t.Object({
 const esquemaTipoCliente = t.Object({ id: t.String(), nombre: t.String() });
 const esquemaDuracion = t.Object({ id: t.String(), nombre: t.String(), cantidad: t.Number(), unidad: t.String() });
 
-// Grid de selección de /vender (paso 2) — sin duración ni tipo de cliente:
-// el vendedor elige el ítem antes de elegir esos dos (ver esquemaOpcionPrecio
-// más abajo). disponible/tienePrecio nunca se ocultan filtrando filas: el
-// grid necesita mostrar deshabilitado-y-por-qué, no hacer desaparecer el ítem.
-const esquemaPlataformaGrid = t.Object({
+const esquemaPlataformaDisponible = t.Object({
   id: t.String(),
   nombre: t.String(),
   condiciones: t.Union([t.String(), t.Null()]),
-  logoUrl: t.Union([t.String(), t.Null()]),
   pantallasLibres: t.Number(),
-  tienePrecio: t.Boolean(),
+  precioVenta: t.String(),
 });
 
-const esquemaComponenteGrid = t.Object({
-  plataformaId: t.String(),
-  nombrePlataforma: t.String(),
-  logoUrl: t.Union([t.String(), t.Null()]),
-});
-
-const esquemaPaqueteGrid = t.Object({
+const esquemaPaqueteDisponible = t.Object({
   id: t.String(),
   nombre: t.String(),
-  esPromocion: t.Boolean(),
-  componentes: t.Array(esquemaComponenteGrid),
-  armable: t.Boolean(),
-  tienePrecio: t.Boolean(),
-});
-
-// Paso 3 de /vender: combinaciones con precio activo para el ítem ya
-// elegido. R4: el select de Prisma (routes/ventas.ts más abajo) solo pide
-// duracionId/tipoClienteId/precioVenta — costo/utilidad nunca se consultan,
-// no hay nada que filtrar después.
-const esquemaOpcionPrecio = t.Object({
-  duracionId: t.String(),
-  tipoClienteId: t.String(),
   precioVenta: t.String(),
+  esPromocion: t.Boolean(),
 });
 
 // R4: nunca costo/utilidad/margen cuando quien consulta es VENDEDOR. El
@@ -262,52 +239,62 @@ export const ventas = new Elysia({ prefix: "/ventas" })
   )
   .get(
     "/plataformas",
-    async ({ contexto }) => {
+    async ({ contexto, query }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-      const plataformas = await plataformasParaGrid(cliente);
-      return { plataformas };
+      const disponibles = await plataformasDisponibles(cliente, query.duracionId, query.tipoClienteId);
+      if (disponibles.length === 0) return { plataformas: [] };
+
+      const precios = await cliente.precio.findMany({
+        where: {
+          activo: true,
+          duracionId: query.duracionId,
+          tipoClienteId: query.tipoClienteId,
+          plataformaId: { in: disponibles.map((p) => p.id) },
+        },
+        select: { plataformaId: true, precioVenta: true },
+      });
+      const precioPorPlataforma = new Map(precios.map((p) => [p.plataformaId, p.precioVenta]));
+
+      return {
+        plataformas: disponibles.map((p) => ({
+          ...p,
+          precioVenta: (precioPorPlataforma.get(p.id) ?? "0").toString(),
+        })),
+      };
     },
-    { response: { 200: t.Object({ plataformas: t.Array(esquemaPlataformaGrid) }) } },
+    {
+      query: t.Object({ duracionId: t.String(), tipoClienteId: t.String() }),
+      response: { 200: t.Object({ plataformas: t.Array(esquemaPlataformaDisponible) }) },
+    },
   )
   .get(
     "/paquetes",
-    async ({ contexto }) => {
+    async ({ contexto, query }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-      const paquetes = await paquetesParaGrid(cliente);
-      return { paquetes };
-    },
-    { response: { 200: t.Object({ paquetes: t.Array(esquemaPaqueteGrid) }) } },
-  )
-  .get(
-    "/plataformas/:id/opciones",
-    async ({ contexto, params }) => {
-      const cliente = prismaParaEmpresa(contexto.empresaId);
-      // R4: select exhaustivo — ni costo ni utilidad entran a esta consulta,
-      // no hay nada que excluir después.
+      const disponibles = await paquetesDisponibles(cliente, query.duracionId, query.tipoClienteId);
+      if (disponibles.length === 0) return { paquetes: [] };
+
       const precios = await cliente.precio.findMany({
-        where: { activo: true, plataformaId: params.id },
-        select: { duracionId: true, tipoClienteId: true, precioVenta: true },
+        where: {
+          activo: true,
+          duracionId: query.duracionId,
+          tipoClienteId: query.tipoClienteId,
+          paqueteId: { in: disponibles.map((p) => p.id) },
+        },
+        select: { paqueteId: true, precioVenta: true },
       });
-      return { opciones: precios.map((p) => ({ ...p, precioVenta: p.precioVenta.toString() })) };
+      const precioPorPaquete = new Map(precios.map((p) => [p.paqueteId, p.precioVenta]));
+
+      return {
+        paquetes: disponibles.map((p) => ({
+          ...p,
+          precioVenta: (precioPorPaquete.get(p.id) ?? "0").toString(),
+        })),
+      };
     },
     {
-      params: t.Object({ id: t.String() }),
-      response: { 200: t.Object({ opciones: t.Array(esquemaOpcionPrecio) }) },
-    },
-  )
-  .get(
-    "/paquetes/:id/opciones",
-    async ({ contexto, params }) => {
-      const cliente = prismaParaEmpresa(contexto.empresaId);
-      const precios = await cliente.precio.findMany({
-        where: { activo: true, paqueteId: params.id },
-        select: { duracionId: true, tipoClienteId: true, precioVenta: true },
-      });
-      return { opciones: precios.map((p) => ({ ...p, precioVenta: p.precioVenta.toString() })) };
-    },
-    {
-      params: t.Object({ id: t.String() }),
-      response: { 200: t.Object({ opciones: t.Array(esquemaOpcionPrecio) }) },
+      query: t.Object({ duracionId: t.String(), tipoClienteId: t.String() }),
+      response: { 200: t.Object({ paquetes: t.Array(esquemaPaqueteDisponible) }) },
     },
   )
   .post(
