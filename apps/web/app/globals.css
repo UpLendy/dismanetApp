@@ -198,8 +198,15 @@
     color: var(--ink-muted);
   }
   .valor-dato {
-    font-size: 28px;
+    /* F4.9 — tamaño fluido según el ancho del contenedor más cercano con
+       @container (la tarjeta, no la ventana): baja hasta 16px antes de
+       desbordar. tabular-nums fija el ancho de cada dígito, así el ancho
+       del texto no depende de qué números tocaron. nowrap: un monto
+       partido a mitad es peor que uno pequeño (nunca break-all/anywhere). */
+    font-size: clamp(16px, 7cqi, 28px);
     font-weight: 700;
     line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 }

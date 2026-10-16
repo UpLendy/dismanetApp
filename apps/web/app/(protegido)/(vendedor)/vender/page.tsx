@@ -466,7 +466,7 @@ export default function PaginaVender() {
           <p className="cuerpo text-ink-2">
             {ventaRealizada.nombreItem} · {ventaRealizada.nombreDuracion} · {ventaRealizada.nombreTipoCliente}
           </p>
-          <div>
+          <div className="@container">
             <p className="etiqueta-dato">Precio</p>
             <p className="valor-dato text-ink">{formatearPesos(ventaRealizada.precioVenta)}</p>
           </div>
@@ -725,9 +725,9 @@ export default function PaginaVender() {
               );
             })}
           </ul>
-          <div className="flex items-center justify-between border-t border-borde pt-3">
-            <p className="etiqueta-dato">Total sugerido</p>
-            <p className="valor-dato text-ink">{formatearPesos(totalSugeridoTexto)}</p>
+          <div className="@container flex items-center justify-between gap-3 border-t border-borde pt-3">
+            <p className="etiqueta-dato shrink-0">Total sugerido</p>
+            <p className="valor-dato min-w-0 text-ink">{formatearPesos(totalSugeridoTexto)}</p>
           </div>
           {saldoPropio?.usaSaldo ? (
             <div className="flex items-center justify-between border-t border-borde pt-3">
@@ -771,7 +771,7 @@ export default function PaginaVender() {
           {esPlataforma(productoSeleccionado) && productoSeleccionado.condiciones ? (
             <p className="cuerpo text-ink-2">{productoSeleccionado.condiciones}</p>
           ) : null}
-          <div>
+          <div className="@container">
             <p className="etiqueta-dato">Precio</p>
             <p className="valor-dato text-ink">{formatearPesos(productoSeleccionado.precioVenta)}</p>
           </div>

@@ -218,9 +218,11 @@ export default function EstadisticasContenido() {
         <>
           <AvisoCostoFaltante datos={costosFaltantes} />
           {hayCostosSinRegistrar ? (
-            <Aviso variante="aviso" titulo="Hay ventas de este periodo sin costo registrado">
-              {resumen?.ventasSinCostoRegistrado} venta(s) tienen al menos un renglón sin costo: la utilidad de este
-              periodo no suma ese costo, no lo cuenta como cero.
+            <Aviso variante="info" titulo="Sin desglose de costo por plataforma">
+              {resumen?.ventasSinCostoRegistrado} venta(s) de este periodo no guardan el costo renglón por renglón.
+              La mayoría son anteriores al 15 de octubre, cuando el sistema empezó a guardar ese detalle.{" "}
+              <strong className="font-semibold text-ink">El costo y la utilidad totales del periodo no dependen de
+              esto</strong> — solo afecta las columnas de costo e ingreso de la tabla por plataforma.
             </Aviso>
           ) : null}
 
@@ -368,8 +370,8 @@ export default function EstadisticasContenido() {
                 <TarjetaCabecera titulo="Por plataforma" />
                 <p className="mb-3 text-xs text-ink-muted">
                   Unidades: todas las ventas del periodo. Ingreso y costo: parciales — los paquetes no siempre
-                  permiten atribuir ingreso por plataforma, y las ventas sin costo registrado no entran en esa suma
-                  (se cuentan aparte, no como cero).
+                  permiten atribuir ingreso por plataforma, y las ventas sin desglose de costo por plataforma no
+                  entran en esa suma (se cuentan aparte, no como cero).
                 </p>
                 {datos!.porPlataforma.length === 0 ? (
                   <p className="cuerpo py-4 text-center text-ink-muted">Sin renglones en este periodo.</p>

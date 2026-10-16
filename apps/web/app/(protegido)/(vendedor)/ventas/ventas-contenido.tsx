@@ -397,22 +397,31 @@ function VentasAdmin() {
           </>
         ) : (
           (Object.keys(ETIQUETA_PERIODO) as (keyof Totales)[]).map((periodo) => (
-            <Tarjeta key={periodo}>
+            <Tarjeta key={periodo} className="@container">
               <TarjetaCabecera titulo={ETIQUETA_PERIODO[periodo]} />
-              <div className="mt-2 grid grid-cols-2 gap-3">
-                <div>
+              {/* F4.9 — @container va en la Tarjeta (el ancestro), no en este
+                  grid: un elemento no puede ser contenedor de consulta de sí
+                  mismo (spec de container queries), así que @max-[240px] en
+                  el mismo nodo que declara @container nunca dispara. Aquí el
+                  grid es descendiente del contenedor, por eso sí funciona.
+                  @max-[240px] es la salida de emergencia: si ni el tamaño
+                  fluido de .valor-dato alcanza, el grid pasa a una columna
+                  antes de que algo se desborde (mejor una tarjeta más alta
+                  que una ilegible). */}
+              <div className="mt-2 grid grid-cols-2 gap-3 @max-[240px]:grid-cols-1">
+                <div className="min-w-0">
                   <p className="etiqueta-dato">Ventas</p>
                   <p className="valor-dato text-ink">{totales?.[periodo].numeroVentas ?? 0}</p>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="etiqueta-dato">Ingresos</p>
                   <p className="valor-dato text-ink">{formatearPesos(totales?.[periodo].ingresos ?? "0")}</p>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="etiqueta-dato">Costos</p>
                   <p className="valor-dato text-ink-muted">{formatearPesos(totales?.[periodo].costos ?? "0")}</p>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="etiqueta-dato">Utilidad</p>
                   <p className="valor-dato text-ink">{formatearPesos(totales?.[periodo].utilidad ?? "0")}</p>
                   {totales && Number(totales[periodo].perdidaGarantias) > 0 ? (

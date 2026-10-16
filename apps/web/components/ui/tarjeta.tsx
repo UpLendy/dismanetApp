@@ -7,7 +7,11 @@ function Tarjeta({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "rounded-tarjeta border border-borde bg-superficie p-5 shadow-tarjeta",
+        // min-w-0: sin esto, una Tarjeta que es celda de un grid/flex se
+        // niega a encogerse más que su contenido (default min-width:auto) y
+        // desborda la celda en vez de dejar que @container mida el ancho
+        // real disponible (F4.9).
+        "min-w-0 rounded-tarjeta border border-borde bg-superficie p-5 shadow-tarjeta",
         className,
       )}
       {...props}
