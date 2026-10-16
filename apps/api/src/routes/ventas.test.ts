@@ -75,6 +75,12 @@ describe("Rutas de ventas (venta rápida)", () => {
       data: { empresaId, plataformaId, duracionId, tipoClienteId, precioVenta: "15000", costo: "8000" },
     });
 
+    // El costo real que realizarVenta consulta ya no sale de Precio.costo —
+    // ver CostoPlataforma (lib/ventas.ts, camino del dinero).
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId, duracionId, costo: "8000" },
+    });
+
     await prismaRaw.plantillaMensaje.create({
       data: { empresaId, tipo: "UNIDAD", contenido: "Código {{codigoCompra}} - {{correo}} - {{clave}}" },
     });
@@ -87,6 +93,7 @@ describe("Rutas de ventas (venta rápida)", () => {
     await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.precio.deleteMany({ where: { empresaId } });
     await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
     await prismaRaw.duracion.deleteMany({ where: { empresaId } });
@@ -123,7 +130,7 @@ describe("Rutas de ventas (venta rápida)", () => {
 
   it("R4: un EMPLEADO que vende UNIDAD recibe el mensaje pero NUNCA costo/utilidad; un ADMIN sí los recibe", async () => {
     const respuestaVendedor = await post(
-      { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId },
       cookieVendedor,
     );
     expect(respuestaVendedor.status).toBe(201);
@@ -133,7 +140,7 @@ describe("Rutas de ventas (venta rápida)", () => {
     expect(cuerpoVendedor.venta.utilidad).toBeUndefined();
 
     const respuestaAdmin = await post(
-      { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId },
       cookieAdmin,
     );
     expect(respuestaAdmin.status).toBe(201);
@@ -143,7 +150,7 @@ describe("Rutas de ventas (venta rápida)", () => {
   });
 
   it("sin pantallas libres (ambas ya vendidas por las dos pruebas anteriores), responde 409 INVENTARIO_INSUFICIENTE", async () => {
-    const respuesta = await post({ tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    const respuesta = await post({ tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }, cookieVendedor);
     expect(respuesta.status).toBe(409);
     const cuerpo = (await respuesta.json()) as { error: { codigo: string } };
     expect(cuerpo.error.codigo).toBe("INVENTARIO_INSUFICIENTE");
@@ -155,7 +162,7 @@ describe("Rutas de ventas (venta rápida)", () => {
     });
 
     const respuesta = await post(
-      { tipoVenta: "UNIDAD", plataformaId, duracionId: otraDuracion.id, tipoClienteId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId: otraDuracion.id, tipoClienteId },
       cookieVendedor,
     );
     expect(respuesta.status).toBe(409);
@@ -291,7 +298,7 @@ describe("Rutas de ventas (Saldo) — mensaje de saldo insuficiente y devolució
     // la prueba no pueda confundir un número con otro por coincidencia.
     await prismaRaw.usuario.update({ where: { id: vendedorId }, data: { saldo: "3000" } });
 
-    const respuesta = await post({ tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    const respuesta = await post({ tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }, cookieVendedor);
     expect(respuesta.status).toBe(409);
     const cuerpo = (await respuesta.json()) as { error: { codigo: string; mensaje: string } };
     expect(cuerpo.error.codigo).toBe("SALDO_INSUFICIENTE");
@@ -310,7 +317,7 @@ describe("Rutas de ventas (Saldo) — mensaje de saldo insuficiente y devolució
 
   it("doble anulación concurrente (misma venta, dos peticiones PATCH en paralelo reales): devuelve el saldo exactamente una vez, nunca dos", async () => {
     // Saldo al entrar: 30000. Vende una unidad (10000) -> 20000.
-    const respuestaVenta = await post({ tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    const respuestaVenta = await post({ tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }, cookieVendedor);
     expect(respuestaVenta.status).toBe(201);
     const cuerpoVenta = (await respuestaVenta.json()) as { venta: { id: string } };
     const ventaId = cuerpoVenta.venta.id;
@@ -345,11 +352,11 @@ describe("Rutas de ventas (Saldo) — mensaje de saldo insuficiente y devolució
 
   it("cuadre de ledger a través de venta + anulación: dos ventas más, anular solo una, saldo final == saldo inicial + suma de TODOS los movimientos del vendedor", async () => {
     // Saldo al entrar: 30000 (restaurado al final de la prueba anterior).
-    const respuestaA = await post({ tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    const respuestaA = await post({ tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }, cookieVendedor);
     expect(respuestaA.status).toBe(201);
     const ventaAId = ((await respuestaA.json()) as { venta: { id: string } }).venta.id;
 
-    const respuestaB = await post({ tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    const respuestaB = await post({ tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }, cookieVendedor);
     expect(respuestaB.status).toBe(201);
 
     // 30000 - 10000 - 10000 = 10000.
@@ -382,5 +389,178 @@ describe("Rutas de ventas (Saldo) — mensaje de saldo insuficiente y devolució
     // vivo nunca pueden desincronizarse.
     const ultimo = todosLosMovimientos[todosLosMovimientos.length - 1]!;
     expect(new Prisma.Decimal(ultimo.saldoResultante).equals(usuarioFinal.saldo)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F4.4 Parte 3 — ajuste manual del precio final. R4: la validación de rol y
+// de "2+ renglones" vive en el servidor (routes/ventas.ts), nunca solo en el
+// frontend. Las pruebas de 403/409 fallan ANTES de tocar inventario, así que
+// comparten las mismas plataformas; las que sí completan la venta (ausente,
+// recargo) usan plataformas dedicadas para no pelear por cupo entre sí.
+// ---------------------------------------------------------------------------
+
+describe("Rutas de ventas (F4.4) — descuento manual del precio final", () => {
+  let empresaId: string;
+  let cookieAdmin: string;
+  let cookieEmpleado: string;
+  let cookieVendedor: string;
+  let duracionId: string;
+  let tipoClienteId: string;
+
+  let plataformaAId: string;
+  let plataformaBId: string;
+  let plataformaUnicaId: string;
+  let plataformaAusenteAId: string;
+  let plataformaAusenteBId: string;
+  let plataformaRecargoAId: string;
+  let plataformaRecargoBId: string;
+
+  async function crearPlataformaConCupo(nombre: string, precioVenta: string, costo: string) {
+    const plataforma = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre, capacidadPantallas: 1, usaPerfilPin: false },
+    });
+    const slug = nombre.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const cuenta = await prismaRaw.cuenta.create({
+      data: { empresaId, plataformaId: plataforma.id, correo: `${slug}@test.local`, password: cifrar("clave"), capacidadPantallas: 1 },
+    });
+    await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuenta.id, numero: 1 } });
+    await prismaRaw.precio.create({
+      data: { empresaId, plataformaId: plataforma.id, duracionId, tipoClienteId, precioVenta, costo },
+    });
+    await prismaRaw.costoPlataforma.create({ data: { empresaId, plataformaId: plataforma.id, duracionId, costo } });
+    return plataforma.id;
+  }
+
+  beforeAll(async () => {
+    const hash = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
+
+    const empresa = await prismaRaw.empresa.create({
+      data: { nombre: "Empresa ventas-descuento-ruta (ventas.test)", prefijoCodigo: "VDR" },
+    });
+    empresaId = empresa.id;
+
+    const adminEmail = `admin-ventas-descuento-ruta-${randomUUID()}@test.local`;
+    await prismaRaw.usuario.create({ data: { empresaId, email: adminEmail, passwordHash: hash, nombre: "Admin", rol: "ADMIN" } });
+    cookieAdmin = await iniciarSesion(adminEmail);
+
+    const empleadoEmail = `empleado-ventas-descuento-ruta-${randomUUID()}@test.local`;
+    await prismaRaw.usuario.create({ data: { empresaId, email: empleadoEmail, passwordHash: hash, nombre: "Empleado", rol: "EMPLEADO" } });
+    cookieEmpleado = await iniciarSesion(empleadoEmail);
+
+    const vendedorEmail = `vendedor-ventas-descuento-ruta-${randomUUID()}@test.local`;
+    await prismaRaw.usuario.create({ data: { empresaId, email: vendedorEmail, passwordHash: hash, nombre: "Vendedor", rol: "VENDEDOR" } });
+    cookieVendedor = await iniciarSesion(vendedorEmail);
+
+    const duracion = await prismaRaw.duracion.create({
+      data: { empresaId, nombre: "30 días (ventas-descuento-ruta.test)", cantidad: 30, unidad: "DIAS" },
+    });
+    duracionId = duracion.id;
+
+    const tipoCliente = await prismaRaw.tipoCliente.create({ data: { empresaId, nombre: "Nuevo (ventas-descuento-ruta.test)" } });
+    tipoClienteId = tipoCliente.id;
+
+    // 403/409 fallan antes de tocar inventario: estas dos se reutilizan en
+    // varias pruebas sin agotarse.
+    plataformaAId = await crearPlataformaConCupo("Netflix (ventas-descuento-ruta.test)", "15000", "8000");
+    plataformaBId = await crearPlataformaConCupo("Disney+ (ventas-descuento-ruta.test)", "12000", "5000");
+    plataformaUnicaId = await crearPlataformaConCupo("HBO (ventas-descuento-ruta.test)", "10000", "4000");
+
+    plataformaAusenteAId = await crearPlataformaConCupo("Netflix ausente (ventas-descuento-ruta.test)", "15000", "8000");
+    plataformaAusenteBId = await crearPlataformaConCupo("Disney+ ausente (ventas-descuento-ruta.test)", "12000", "5000");
+
+    plataformaRecargoAId = await crearPlataformaConCupo("Netflix recargo (ventas-descuento-ruta.test)", "15000", "8000");
+    plataformaRecargoBId = await crearPlataformaConCupo("Disney+ recargo (ventas-descuento-ruta.test)", "12000", "5000");
+
+    await prismaRaw.plantillaMensaje.create({
+      data: { empresaId, tipo: "UNIDAD", contenido: "Código {{codigoCompra}} - {{correo}} - {{clave}}" },
+    });
+    await prismaRaw.plantillaMensaje.create({
+      data: { empresaId, tipo: "PAQUETE", contenido: "Código {{codigoCompra}}\n{{listaCuentas}}" },
+    });
+  });
+
+  afterAll(async () => {
+    await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
+    await prismaRaw.venta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.precio.deleteMany({ where: { empresaId } });
+    await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
+    await prismaRaw.duracion.deleteMany({ where: { empresaId } });
+    await prismaRaw.pantalla.deleteMany({ where: { empresaId } });
+    await prismaRaw.cuenta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.usuario.deleteMany({ where: { empresaId } });
+    await prismaRaw.empresa.delete({ where: { id: empresaId } });
+  });
+
+  async function post(body: unknown, cookie: string) {
+    return ventas.handle(
+      new Request("http://local/ventas", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  it("403 DESCUENTO_NO_PERMITIDO: un VENDEDOR no puede ajustar el precio final, ni en una venta de 2 renglones", async () => {
+    const respuesta = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaAId, plataformaBId], duracionId, tipoClienteId, precioFinal: "20000" },
+      cookieVendedor,
+    );
+    expect(respuesta.status).toBe(403);
+    const cuerpo = (await respuesta.json()) as { error: { codigo: string } };
+    expect(cuerpo.error.codigo).toBe("DESCUENTO_NO_PERMITIDO");
+
+    // La venta nunca se intentó: nada quedó consumido.
+    const detalles = await prismaRaw.ventaDetalle.findMany({ where: { empresaId, plataformaId: plataformaAId } });
+    expect(detalles).toHaveLength(0);
+  });
+
+  it("409 DESCUENTO_SOLO_MULTIPRODUCTO: un EMPLEADO no puede ajustar el precio final de una venta de un solo renglón", async () => {
+    const respuesta = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaUnicaId], duracionId, tipoClienteId, precioFinal: "5000" },
+      cookieEmpleado,
+    );
+    expect(respuesta.status).toBe(409);
+    const cuerpo = (await respuesta.json()) as { error: { codigo: string } };
+    expect(cuerpo.error.codigo).toBe("DESCUENTO_SOLO_MULTIPRODUCTO");
+
+    const detalles = await prismaRaw.ventaDetalle.findMany({ where: { empresaId, plataformaId: plataformaUnicaId } });
+    expect(detalles).toHaveLength(0);
+  });
+
+  it("409 PRECIO_FINAL_INVALIDO: un precioFinal <= 0 se rechaza, aunque el rol y el número de renglones sean válidos", async () => {
+    const respuesta = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaAId, plataformaBId], duracionId, tipoClienteId, precioFinal: "0" },
+      cookieAdmin,
+    );
+    expect(respuesta.status).toBe(409);
+    const cuerpo = (await respuesta.json()) as { error: { codigo: string } };
+    expect(cuerpo.error.codigo).toBe("PRECIO_FINAL_INVALIDO");
+  });
+
+  it("precioFinal ausente: se cobra el precio sugerido (suma de catálogo), sin que nadie tenga que mandarlo explícito", async () => {
+    const respuesta = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaAusenteAId, plataformaAusenteBId], duracionId, tipoClienteId },
+      cookieEmpleado,
+    );
+    expect(respuesta.status).toBe(201);
+    const cuerpo = (await respuesta.json()) as { venta: { precioVenta: string; precioSugerido: string } };
+    expect(cuerpo.venta.precioSugerido).toBe("27000"); // 15000 + 12000
+    expect(cuerpo.venta.precioVenta).toBe("27000");
+  });
+
+  it("recargo: un precioFinal por encima del sugerido se acepta igual, lo cobra tal cual lo mandó el EMPLEADO", async () => {
+    const respuesta = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaRecargoAId, plataformaRecargoBId], duracionId, tipoClienteId, precioFinal: "40000" },
+      cookieEmpleado,
+    );
+    expect(respuesta.status).toBe(201);
+    const cuerpo = (await respuesta.json()) as { venta: { precioVenta: string; precioSugerido: string } };
+    expect(cuerpo.venta.precioSugerido).toBe("27000");
+    expect(cuerpo.venta.precioVenta).toBe("40000");
   });
 });

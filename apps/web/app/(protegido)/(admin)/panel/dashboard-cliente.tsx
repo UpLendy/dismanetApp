@@ -6,7 +6,8 @@ import { es } from "date-fns/locale";
 import { format, isSameDay, startOfDay, subDays } from "date-fns";
 import { Receipt, Wallet, TrendingUp, MonitorPlay, ShoppingCart, CircleDollarSign, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import { AVISO_COSTO_CERO_TITULO, avisoCostoCeroTexto, contarPreciosConCostoCero } from "@/lib/costo-cero";
+import { contarCostosFaltantes, type CostosFaltantes } from "@/lib/costo-cero";
+import { AvisoCostoFaltante } from "@/components/aviso-costo-faltante";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { TileDato } from "@/components/ui/tile-dato";
 import { TarjetaAcceso } from "@/components/ui/tarjeta-acceso";
@@ -43,11 +44,14 @@ export default function DashboardClientePanel() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [totalesHoy, setTotalesHoy] = useState<{ numeroVentas: number; ingresos: string; utilidad: string } | null>(
-    null,
-  );
+  const [totalesHoy, setTotalesHoy] = useState<{
+    numeroVentas: number;
+    ingresos: string;
+    utilidad: string;
+    perdidaGarantias: string;
+  } | null>(null);
   const [pantallasLibres, setPantallasLibres] = useState(0);
-  const [costoCeroCantidad, setCostoCeroCantidad] = useState(0);
+  const [costosFaltantes, setCostosFaltantes] = useState<CostosFaltantes | null>(null);
   const [ventas7Dias, setVentas7Dias] = useState<VentaAdmin[]>([]);
 
   const cargar = useCallback(async () => {
@@ -56,11 +60,11 @@ export default function DashboardClientePanel() {
 
     const desde = startOfDay(subDays(new Date(), 6)).toISOString();
 
-    const [resTotales, resDisponibilidad, resListado, totalCeros] = await Promise.all([
+    const [resTotales, resDisponibilidad, resListado, costosFaltantesCargados] = await Promise.all([
       api.ventas.totales.get(),
       api.disponibilidad.get(),
       api.ventas.listado.get({ query: { desde } }),
-      contarPreciosConCostoCero(),
+      contarCostosFaltantes(),
     ]);
 
     if (resTotales.error || !resTotales.data) {
@@ -82,7 +86,7 @@ export default function DashboardClientePanel() {
     setTotalesHoy(resTotales.data.hoy);
     setPantallasLibres(resDisponibilidad.data.disponibilidad.reduce((acc, p) => acc + p.libres, 0));
     setVentas7Dias(resListado.data.ventas);
-    setCostoCeroCantidad(totalCeros);
+    setCostosFaltantes(costosFaltantesCargados);
 
     setCargando(false);
   }, []);
@@ -127,16 +131,21 @@ export default function DashboardClientePanel() {
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <TileDato etiqueta="Ventas de hoy" valor={totalesHoy?.numeroVentas ?? 0} icono={Receipt} />
           <TileDato etiqueta="Ingresos de hoy" valor={formatearPesos(totalesHoy?.ingresos ?? "0")} icono={Wallet} />
-          <TileDato etiqueta="Utilidad de hoy" valor={formatearPesos(totalesHoy?.utilidad ?? "0")} icono={TrendingUp} />
+          <TileDato
+          etiqueta="Utilidad de hoy"
+          valor={formatearPesos(totalesHoy?.utilidad ?? "0")}
+          icono={TrendingUp}
+          subInfo={
+            totalesHoy && Number(totalesHoy.perdidaGarantias) > 0
+              ? `Pérdida por garantías: ${formatearPesos(totalesHoy.perdidaGarantias)}`
+              : null
+          }
+        />
           <TileDato etiqueta="Pantallas disponibles" valor={pantallasLibres} icono={MonitorPlay} />
         </div>
       )}
 
-      {!cargando && costoCeroCantidad > 0 ? (
-        <Aviso variante="aviso" titulo={AVISO_COSTO_CERO_TITULO}>
-          {avisoCostoCeroTexto(costoCeroCantidad)}
-        </Aviso>
-      ) : null}
+      {!cargando ? <AvisoCostoFaltante datos={costosFaltantes} /> : null}
 
       {cargando ? (
         <CargandoTarjeta />

@@ -67,6 +67,14 @@ Anular una venta la marca con `anulada = true` y libera todas sus pantallas. No 
 
 Las entidades de catálogo (plataformas, duraciones, tipos de cliente, paquetes, cuentas) se desactivan, no se borran: hay ventas históricas que las referencian.
 
+**Excepción fechada — 2026-10-10, `reparar-costos-historicos.ts` (camino del dinero, punto 7).** Antes de que `CostoPlataforma` existiera, toda venta sin costo cargado se registró con `costo = "0"` — no porque el costo fuera cero, sino porque el dato todavía no existía. Eso no es un hecho histórico que R3 proteja, es un error de registro. Una vez que el cliente carga sus costos reales en la matriz de precios, `apps/api/prisma/reparar-costos-historicos.ts` corre **una sola vez**, en modo simulación por defecto (solo escribe con `--aplicar`), y:
+- solo toca `Venta` con `costo = 0` — nunca una que ya tenga costo real, ni siquiera parcial;
+- para `UNIDAD` recalcula desde `CostoPlataforma(plataformaId, duracionId)` de la venta; para `PAQUETE`/promoción, desde las filas `VentaDetalle` que esa venta de verdad entregó (no desde la composición actual del paquete, que puede haber cambiado);
+- si el costo sigue sin poderse determinar, deja la venta intacta y la reporta;
+- usa el costo de HOY como aproximación — no hay recuperación real del costo histórico, porque ese dato nunca se cargó.
+
+Esto **no es un precedente**. Cualquier otra reescritura del histórico (de `Venta`, `VentaDetalle` o cualquier otro campo marcado inmutable arriba) se discute con el equipo antes de construirse, igual que esta.
+
 ### R4 — Permisos en el servidor
 
 Cada endpoint valida el rol antes de ejecutar. Ocultar un botón en el frontend no es control de acceso.
@@ -115,6 +123,8 @@ Un combo puede tener vencimientos distintos por plataforma: "Básico 1" vendido 
   La prueba que lo vigila no es "el dato quedó bien", es **"una entidad creada mañana nace bien"**.
 
 - **Validar antes no reemplaza manejar P2002.** Comprobar que un nombre no existe y luego insertarlo es una condición de carrera: dos peticiones simultáneas pasan ambas la validación y una revienta contra la restricción. Toda ruta que inserte sobre una restricción única debe manejar además el P2002 con `restriccionViolada()`.
+
+- **`mock.module` en Bun es global al proceso, no al archivo.** Dos archivos de prueba que mockean el mismo módulo comparten el mock: el último en cargarse gana, y un archivo que solo mockea `useRouter` deja a otro sin `useSearchParams` con un `SyntaxError` que no apunta a la causa. Todo mock de un módulo compartido debe exponer **la superficie completa** que cualquier prueba del repo use de ese módulo, no solo lo que usa el archivo que lo escribe.
 
 ---
 

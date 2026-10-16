@@ -7,31 +7,43 @@ import { Prisma } from "../generated/prisma/client.ts";
 // modelo que esta función necesita.
 type ClienteEmpresa = Prisma.TransactionClient;
 
-/** A, B, C... — perfil propuesto para la pantalla número `indice + 1` de una cuenta. */
-export function letraPerfil(indice: number): string {
-  return String.fromCharCode(65 + indice);
-}
-
-/** PIN de 4 dígitos propuesto para una pantalla nueva. */
+/** PIN de 4 dígitos propuesto para una pantalla nueva (dentro del rango 4-6 de PIN_PATRON). */
 export function pinAleatorio(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
 /**
- * `cantidad` PINes de 4 dígitos, distintos entre sí y de los de `excluir`
- * (ej. los que el ADMIN ya fijó a mano). Evita que dos pantallas de la
- * misma cuenta, generadas en el mismo lote, terminen con el mismo PIN.
+ * Un PIN por perfil DISTINTO en `perfiles`, reutilizado en cada repetición
+ * (F4.2, parte 2.2): mismo perfil ⇒ mismo PIN, siempre — dos pantallas con
+ * perfil "B" nunca pueden entregar PINes distintos, porque abren la misma
+ * puerta. `perfil = null` no cuenta como repetido: cada fila sin perfil
+ * recibe su propio PIN independiente. `excluir` son PINes que no se deben
+ * reutilizar (ej. los que el ADMIN ya fijó a mano en otras filas).
  */
-export function pinesDistintos(cantidad: number, excluir: ReadonlySet<string> = new Set()): string[] {
+export function pinesPorPerfil(
+  perfiles: readonly (string | null)[],
+  excluir: ReadonlySet<string> = new Set(),
+): (string | null)[] {
   const usados = new Set(excluir);
-  const resultado: string[] = [];
-  while (resultado.length < cantidad) {
-    const candidato = pinAleatorio();
-    if (usados.has(candidato)) continue;
+  const pinPorPerfil = new Map<string, string>();
+
+  function pinNuevo(): string {
+    let candidato: string;
+    do {
+      candidato = pinAleatorio();
+    } while (usados.has(candidato));
     usados.add(candidato);
-    resultado.push(candidato);
+    return candidato;
   }
-  return resultado;
+
+  return perfiles.map((perfil) => {
+    if (perfil === null) return pinNuevo();
+    const existente = pinPorPerfil.get(perfil);
+    if (existente) return existente;
+    const nuevo = pinNuevo();
+    pinPorPerfil.set(perfil, nuevo);
+    return nuevo;
+  });
 }
 
 export interface EstadoPantalla {
@@ -43,6 +55,12 @@ export interface EstadoPantalla {
   libre: boolean;
   ocupadaHasta: Date | null;
   ventaId: string | null;
+  // F4.7, arreglo 6 — el cliente sobrevende a propósito: una pantalla puede
+  // tener más de un VentaDetalle vigente a la vez. Antes esta función solo
+  // traía el más reciente (`take: 1`), así que el ADMIN confirmaba un 409
+  // viendo un único código sin saber que existía un segundo comprador.
+  // Todas las ventas vigentes, no solo la última.
+  codigosCompraAfectados: string[];
 }
 
 /**
@@ -72,25 +90,26 @@ async function estadoDePantallas(
       activa: true,
       ventaDetalles: {
         where: { fechaVencimiento: { gt: ahora }, venta: { anulada: false } },
-        select: { fechaVencimiento: true, ventaId: true },
+        select: { fechaVencimiento: true, ventaId: true, venta: { select: { codigoCompra: true } } },
         orderBy: { fechaVencimiento: "desc" },
-        take: 1,
       },
     },
     orderBy: { numero: "asc" },
   });
 
   return pantallas.map((p) => {
-    const ocupacion = p.ventaDetalles[0];
+    const ocupaciones = p.ventaDetalles;
+    const masReciente = ocupaciones[0];
     return {
       id: p.id,
       cuentaId: p.cuentaId,
       numero: p.numero,
       perfil: p.perfil,
       activa: p.activa,
-      libre: !ocupacion,
-      ocupadaHasta: ocupacion?.fechaVencimiento ?? null,
-      ventaId: ocupacion?.ventaId ?? null,
+      libre: ocupaciones.length === 0,
+      ocupadaHasta: masReciente?.fechaVencimiento ?? null,
+      ventaId: masReciente?.ventaId ?? null,
+      codigosCompraAfectados: ocupaciones.map((o) => o.venta.codigoCompra),
     };
   });
 }
@@ -162,6 +181,35 @@ export async function plataformasDisponibles(
         const estados = await pantallasDisponibles(cliente, plataforma.id);
         return { ...plataforma, pantallasLibres: estados.filter((e) => e.libre).length };
       }),
+  );
+
+  return conDisponibilidad.filter((plataforma) => plataforma.pantallasLibres > 0);
+}
+
+export interface PlataformaConInventario {
+  id: string;
+  nombre: string;
+  condiciones: string | null;
+  pantallasLibres: number;
+}
+
+/**
+ * F4.3 — catálogo para registrar una garantía externa: plataformas activas
+ * con al menos una pantalla libre (R5). A diferencia de plataformasDisponibles,
+ * no depende de Precio: una garantía externa no fija un precio de venta, no
+ * hay tipoCliente ni duración que buscar en la matriz de precios.
+ */
+export async function plataformasConInventario(cliente: ClienteEmpresa): Promise<PlataformaConInventario[]> {
+  const plataformas = await cliente.plataforma.findMany({
+    where: { activa: true },
+    select: { id: true, nombre: true, condiciones: true },
+  });
+
+  const conDisponibilidad = await Promise.all(
+    plataformas.map(async (plataforma) => {
+      const estados = await pantallasDisponibles(cliente, plataforma.id);
+      return { ...plataforma, pantallasLibres: estados.filter((e) => e.libre).length };
+    }),
   );
 
   return conDisponibilidad.filter((plataforma) => plataforma.pantallasLibres > 0);

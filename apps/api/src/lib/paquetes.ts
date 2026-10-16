@@ -135,53 +135,88 @@ export async function paquetesDisponibles(
     .map((paquete) => ({ id: paquete.id, nombre: paquete.nombre, esPromocion: paquete.esPromocion }));
 }
 
+export interface DetalleComponenteCosto {
+  plataformaId: string;
+  nombrePlataforma: string;
+  cantidadPantallas: number;
+  // null si CostoPlataforma no tiene fila para este componente en su
+  // duración real — es lo que hace que el componente aparezca en `faltantes`.
+  costoUnitario: Prisma.Decimal | null;
+  // costoUnitario * cantidadPantallas; null en los mismos casos que costoUnitario.
+  subtotal: Prisma.Decimal | null;
+}
+
 export interface CostoComponentes {
-  // null cuando falta el precio de al menos un componente: no se puede
-  // calcular la suma, no que la suma sea cero.
-  suma: Prisma.Decimal | null;
+  // Suma de los componentes que SÍ tienen costo registrado — parcial
+  // cuando faltantes no está vacío, nunca null: una venta con un costo
+  // parcial se registra igual (no se bloquea por un dato de configuración
+  // faltante, ver lib/ventas.ts). `faltantes` es lo que señala que esta
+  // suma no es la cifra completa.
+  suma: Prisma.Decimal;
   faltantes: string[];
+  // Desglose por componente — lo que la matriz de precios muestra en vez del
+  // campo de costo manual que paquetes ya no tiene (punto 6, camino del dinero).
+  detalle: DetalleComponenteCosto[];
 }
 
 /**
  * Salvaguarda de costo para la matriz de precios de paquetes (mitiga D12
  * del PRD): cuánto deberían sumar los costos de las plataformas
- * componentes para una duración vendida y un tipo de cliente dados, cada
- * una a SU duración real (ver resolverComposicionDePaquete) — "Básico 1"
- * vendido a 30 días suma el costo de Netflix a 28 días, no a 30.
+ * componentes para una duración vendida dada, cada una a SU duración real
+ * (ver resolverComposicionDePaquete) — "Básico 1" vendido a 30 días suma el
+ * costo de Netflix a 28 días, no a 30. El costo no depende del tipo de
+ * cliente (a diferencia del precio de venta), por eso no recibe
+ * tipoClienteId — ver CostoPlataforma en el esquema.
  *
- * Si falta el precio activo de algún componente para su duración real y
- * el tipo de cliente dado, la suma no es calculable (`suma: null`) y
- * `faltantes` nombra qué plataforma falta.
+ * Cada componente pesa por su cantidadPantallas: un paquete con 2 pantallas
+ * de Netflix suma el costo de Netflix DOS veces, no una.
+ *
+ * Si falta el costo registrado de algún componente para su duración real,
+ * `suma` queda como la suma PARCIAL de lo que sí se conoce y `faltantes`
+ * nombra qué plataforma falta — nunca null (ver CostoComponentes).
  */
 export async function costoComponentesPaquete(
   cliente: ClienteEmpresa,
   paqueteId: string,
   duracionVendidaId: string,
-  tipoClienteId: string,
 ): Promise<CostoComponentes> {
   const composicion = await resolverComposicionDePaquete(cliente, paqueteId, duracionVendidaId);
-  if (composicion.length === 0) return { suma: new Prisma.Decimal(0), faltantes: [] };
+  if (composicion.length === 0) return { suma: new Prisma.Decimal(0), faltantes: [], detalle: [] };
 
-  const precios = await cliente.precio.findMany({
+  const costos = await cliente.costoPlataforma.findMany({
     where: {
-      activo: true,
-      tipoClienteId,
       plataformaId: { in: composicion.map((c) => c.plataformaId) },
     },
     select: { plataformaId: true, duracionId: true, costo: true },
   });
-  const costoPorClave = new Map(precios.map((p) => [`${p.plataformaId}|${p.duracionId}`, p.costo]));
+  const costoPorClave = new Map(costos.map((c) => [`${c.plataformaId}|${c.duracionId}`, c.costo]));
 
   let suma = new Prisma.Decimal(0);
   const faltantes: string[] = [];
+  const detalle: DetalleComponenteCosto[] = [];
   for (const componente of composicion) {
     const costo = costoPorClave.get(`${componente.plataformaId}|${componente.duracionId}`);
     if (costo === undefined) {
       faltantes.push(componente.nombrePlataforma);
+      detalle.push({
+        plataformaId: componente.plataformaId,
+        nombrePlataforma: componente.nombrePlataforma,
+        cantidadPantallas: componente.cantidadPantallas,
+        costoUnitario: null,
+        subtotal: null,
+      });
     } else {
-      suma = suma.plus(costo);
+      const subtotal = costo.times(componente.cantidadPantallas);
+      suma = suma.plus(subtotal);
+      detalle.push({
+        plataformaId: componente.plataformaId,
+        nombrePlataforma: componente.nombrePlataforma,
+        cantidadPantallas: componente.cantidadPantallas,
+        costoUnitario: costo,
+        subtotal,
+      });
     }
   }
 
-  return { suma: faltantes.length > 0 ? null : suma, faltantes };
+  return { suma, faltantes, detalle };
 }

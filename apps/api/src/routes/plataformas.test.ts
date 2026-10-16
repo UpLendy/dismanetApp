@@ -37,11 +37,10 @@ async function peticion(metodo: string, ruta: string, cookie: string, cuerpo?: u
 
 const datosPlataforma = {
   nombre: "Netflix",
-  capacidadPantallas: 4,
   usaPerfilPin: false,
 };
 
-describe("Plataformas — catálogo (b, c, d, g)", () => {
+describe("Plataformas — catálogo (b, c, d)", () => {
   let empresaAId: string;
   let adminAEmail: string;
   let cookieAdminA: string;
@@ -127,13 +126,105 @@ describe("Plataformas — catálogo (b, c, d, g)", () => {
     expect(nombresB).toContain(nombre);
   });
 
-  it("g) capacidadPantallas = 0 es rechazado por la validación del servidor", async () => {
-    const { status } = await peticion("POST", "/plataformas", cookieAdminA, {
+  it("capacidadPantallas no se acepta en el body: la plataforma nace en 0 y se ignora lo que llegue", async () => {
+    const { status, cuerpo } = await peticion("POST", "/plataformas", cookieAdminA, {
       ...datosPlataforma,
-      nombre: `Capacidad cero ${randomUUID()}`,
-      capacidadPantallas: 0,
+      nombre: `Capacidad ignorada ${randomUUID()}`,
+      capacidadPantallas: 999,
     });
-    expect(status).toBe(422);
+    expect(status).toBe(201);
+    expect(cuerpo.plataforma.capacidadPantallas).toBe(0);
+  });
+
+  it("e) POST sin los 4 campos de acceso nace con el default de Prisma (usaCorreo true, el resto false)", async () => {
+    const { status, cuerpo } = await peticion("POST", "/plataformas", cookieAdminA, {
+      ...datosPlataforma,
+      nombre: `Defaults de campos ${randomUUID()}`,
+    });
+    expect(status).toBe(201);
+    expect(cuerpo.plataforma.usaCorreo).toBe(true);
+    expect(cuerpo.plataforma.usaUsuario).toBe(false);
+    expect(cuerpo.plataforma.usaCodigo).toBe(false);
+    expect(cuerpo.plataforma.usaEnlace).toBe(false);
+  });
+
+  it("f) POST con los 4 campos de acceso explícitos los refleja tal cual en la respuesta", async () => {
+    const { status, cuerpo } = await peticion("POST", "/plataformas", cookieAdminA, {
+      ...datosPlataforma,
+      nombre: `Campos explícitos ${randomUUID()}`,
+      usaCorreo: false,
+      usaUsuario: true,
+      usaCodigo: true,
+      usaEnlace: true,
+    });
+    expect(status).toBe(201);
+    expect(cuerpo.plataforma.usaCorreo).toBe(false);
+    expect(cuerpo.plataforma.usaUsuario).toBe(true);
+    expect(cuerpo.plataforma.usaCodigo).toBe(true);
+    expect(cuerpo.plataforma.usaEnlace).toBe(true);
+  });
+
+  it("g) PATCH que omite los 4 campos de acceso deja los valores existentes intactos", async () => {
+    const creada = await peticion("POST", "/plataformas", cookieAdminA, {
+      ...datosPlataforma,
+      nombre: `Editar sin tocar campos ${randomUUID()}`,
+      usaUsuario: true,
+      usaCodigo: true,
+    });
+    const id = creada.cuerpo.plataforma.id;
+
+    const editada = await peticion("PATCH", `/plataformas/${id}`, cookieAdminA, {
+      nombre: creada.cuerpo.plataforma.nombre,
+      usaPerfilPin: false,
+    });
+    expect(editada.status).toBe(200);
+    expect(editada.cuerpo.plataforma.usaUsuario).toBe(true);
+    expect(editada.cuerpo.plataforma.usaCodigo).toBe(true);
+    expect(editada.cuerpo.plataforma.usaCorreo).toBe(true);
+    expect(editada.cuerpo.plataforma.usaEnlace).toBe(false);
+  });
+
+  it("h) PATCH que envía los 4 campos de acceso los sobrescribe", async () => {
+    const creada = await peticion("POST", "/plataformas", cookieAdminA, {
+      ...datosPlataforma,
+      nombre: `Editar apagando campos ${randomUUID()}`,
+      usaUsuario: true,
+      usaCodigo: true,
+    });
+    const id = creada.cuerpo.plataforma.id;
+
+    const editada = await peticion("PATCH", `/plataformas/${id}`, cookieAdminA, {
+      nombre: creada.cuerpo.plataforma.nombre,
+      usaPerfilPin: false,
+      usaCorreo: false,
+      usaUsuario: false,
+      usaCodigo: false,
+      usaEnlace: true,
+    });
+    expect(editada.status).toBe(200);
+    expect(editada.cuerpo.plataforma.usaCorreo).toBe(false);
+    expect(editada.cuerpo.plataforma.usaUsuario).toBe(false);
+    expect(editada.cuerpo.plataforma.usaCodigo).toBe(false);
+    expect(editada.cuerpo.plataforma.usaEnlace).toBe(true);
+  });
+
+  it("i) PATCH que choca con el nombre de otra plataforma activa falla con error de negocio, no 500 (P2002)", async () => {
+    const nombreOcupado = `Nombre ocupado ${randomUUID()}`;
+    const primera = await peticion("POST", "/plataformas", cookieAdminA, { ...datosPlataforma, nombre: nombreOcupado });
+    expect(primera.status).toBe(201);
+
+    const segunda = await peticion("POST", "/plataformas", cookieAdminA, {
+      ...datosPlataforma,
+      nombre: `A renombrar ${randomUUID()}`,
+    });
+    expect(segunda.status).toBe(201);
+
+    const editada = await peticion("PATCH", `/plataformas/${segunda.cuerpo.plataforma.id}`, cookieAdminA, {
+      nombre: nombreOcupado,
+      usaPerfilPin: false,
+    });
+    expect(editada.status).toBe(409);
+    expect(editada.cuerpo.error.codigo).toBe("NOMBRE_EN_USO");
   });
 });
 
@@ -188,7 +279,6 @@ describe("Plataformas — plantilla de pantallas (/plataformas/:id/pantallas)", 
   it("GET de una plataforma recién creada devuelve la plantilla vacía", async () => {
     const creada = await peticion("POST", "/plataformas", cookieAdminA, {
       nombre: `Sin plantilla ${randomUUID()}`,
-      capacidadPantallas: 4,
       usaPerfilPin: true,
     });
     const { status, cuerpo } = await peticion("GET", `/plataformas/${creada.cuerpo.plataforma.id}/pantallas`, cookieAdminA);
@@ -200,7 +290,6 @@ describe("Plataformas — plantilla de pantallas (/plataformas/:id/pantallas)", 
   it("PUT define la plantilla con perfil y pin, y el GET posterior la devuelve descifrada", async () => {
     const creada = await peticion("POST", "/plataformas", cookieAdminA, {
       nombre: `Con perfil y pin ${randomUUID()}`,
-      capacidadPantallas: 4,
       usaPerfilPin: true,
     });
     const id = creada.cuerpo.plataforma.id;
@@ -230,7 +319,6 @@ describe("Plataformas — plantilla de pantallas (/plataformas/:id/pantallas)", 
   it("si la plataforma no usa perfil/pin, se ignoran aunque lleguen en el body", async () => {
     const creada = await peticion("POST", "/plataformas", cookieAdminA, {
       nombre: `Sin perfil/pin ${randomUUID()}`,
-      capacidadPantallas: 4,
       usaPerfilPin: false,
     });
     const id = creada.cuerpo.plataforma.id;
@@ -245,7 +333,6 @@ describe("Plataformas — plantilla de pantallas (/plataformas/:id/pantallas)", 
   it("bajar la cantidad de filas borra solo las de la plantilla que sobran", async () => {
     const creada = await peticion("POST", "/plataformas", cookieAdminA, {
       nombre: `Baja de plantilla ${randomUUID()}`,
-      capacidadPantallas: 4,
       usaPerfilPin: true,
     });
     const id = creada.cuerpo.plataforma.id;
@@ -279,7 +366,6 @@ describe("Plataformas — plantilla de pantallas (/plataformas/:id/pantallas)", 
   it("aislamiento entre empresas: el admin de la empresa B no puede ver ni editar la plantilla de una plataforma de A", async () => {
     const creada = await peticion("POST", "/plataformas", cookieAdminA, {
       nombre: `Solo de A ${randomUUID()}`,
-      capacidadPantallas: 4,
       usaPerfilPin: true,
     });
     const id = creada.cuerpo.plataforma.id;
@@ -291,5 +377,74 @@ describe("Plataformas — plantilla de pantallas (/plataformas/:id/pantallas)", 
       pantallas: [{ perfil: "A", pin: "1234" }],
     });
     expect(put.status).toBe(404);
+  });
+
+  // F4.2 parte 2.1 — el pin acepta 4 a 6 dígitos (PIN_PATRON de @dismanet/shared),
+  // no el largo fijo de 4 que regía antes de esta entrega.
+  it("PUT acepta un pin de 5 y de 6 dígitos (el rango completo de PIN_PATRON)", async () => {
+    const creada = await peticion("POST", "/plataformas", cookieAdminA, {
+      nombre: `Pin largo ${randomUUID()}`,
+      usaPerfilPin: true,
+    });
+    const id = creada.cuerpo.plataforma.id;
+
+    const cinco = await peticion("PUT", `/plataformas/${id}/pantallas`, cookieAdminA, {
+      pantallas: [{ perfil: "A", pin: "12345" }],
+    });
+    expect(cinco.status).toBe(200);
+    expect(cinco.cuerpo.pantallas).toEqual([{ numero: 1, perfil: "A", pin: "12345" }]);
+
+    const seis = await peticion("PUT", `/plataformas/${id}/pantallas`, cookieAdminA, {
+      pantallas: [{ perfil: "A", pin: "123456" }],
+    });
+    expect(seis.status).toBe(200);
+    expect(seis.cuerpo.pantallas).toEqual([{ numero: 1, perfil: "A", pin: "123456" }]);
+  });
+
+  it("PUT rechaza un pin fuera de 4-6 dígitos con error de validación, no lo guarda", async () => {
+    const creada = await peticion("POST", "/plataformas", cookieAdminA, {
+      nombre: `Pin fuera de rango ${randomUUID()}`,
+      usaPerfilPin: true,
+    });
+    const id = creada.cuerpo.plataforma.id;
+
+    const corto = await peticion("PUT", `/plataformas/${id}/pantallas`, cookieAdminA, {
+      pantallas: [{ perfil: "A", pin: "123" }],
+    });
+    expect(corto.status).toBe(422);
+
+    const largo = await peticion("PUT", `/plataformas/${id}/pantallas`, cookieAdminA, {
+      pantallas: [{ perfil: "A", pin: "1234567" }],
+    });
+    expect(largo.status).toBe(422);
+
+    const filas = await prismaRaw.plataformaPantalla.findMany({ where: { plataformaId: id } });
+    expect(filas).toHaveLength(0);
+  });
+
+  // F4.2 parte 2.2 — mismo perfil ⇒ mismo pin, nunca se rechaza, se propaga.
+  // Esto también aplica al definir la plantilla, no solo al PATCH de una
+  // pantalla ya creada (ver PATCH /cuentas/:id/pantallas/:pantallaId).
+  it("PUT con dos filas del mismo perfil y pines distintos propaga el pin de la primera fila y lo reporta en filasConPinPropagado", async () => {
+    const creada = await peticion("POST", "/plataformas", cookieAdminA, {
+      nombre: `Mismo perfil distinto pin ${randomUUID()}`,
+      usaPerfilPin: true,
+    });
+    const id = creada.cuerpo.plataforma.id;
+
+    const puesta = await peticion("PUT", `/plataformas/${id}/pantallas`, cookieAdminA, {
+      pantallas: [
+        { perfil: "A", pin: "1111" },
+        { perfil: "A", pin: "2222" },
+        { perfil: "B", pin: "3333" },
+      ],
+    });
+    expect(puesta.status).toBe(200);
+    expect(puesta.cuerpo.filasConPinPropagado).toEqual([2]);
+    expect(puesta.cuerpo.pantallas).toEqual([
+      { numero: 1, perfil: "A", pin: "1111" },
+      { numero: 2, perfil: "A", pin: "1111" },
+      { numero: 3, perfil: "B", pin: "3333" },
+    ]);
   });
 });

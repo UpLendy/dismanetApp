@@ -9,16 +9,18 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 // a fallar, y verifican que el texto siga visible después de que el
 // refresco posterior (con su propio llamado a la API) haya terminado.
 
+const mockPerfilGet = mock(() => Promise.resolve<any>({}));
 const mockSaldoGet = mock(() => Promise.resolve<any>({}));
 const mockTiposClienteGet = mock(() => Promise.resolve<any>({}));
 const mockDuracionesGet = mock(() => Promise.resolve<any>({}));
 const mockPlataformasGet = mock(() => Promise.resolve<any>({}));
 const mockPaquetesGet = mock(() => Promise.resolve<any>({}));
 const mockVentasPost = mock(() => Promise.resolve<any>({}));
+const mockPush = mock(() => {});
 
 mock.module("@/lib/api", () => ({
   api: {
-    perfil: { saldo: { get: mockSaldoGet } },
+    perfil: { get: mockPerfilGet, saldo: { get: mockSaldoGet } },
     ventas: {
       "tipos-cliente": { get: mockTiposClienteGet },
       duraciones: { get: mockDuracionesGet },
@@ -29,9 +31,23 @@ mock.module("@/lib/api", () => ({
   },
 }));
 
+// mock.module("next/navigation", ...) reemplaza el módulo para TODO el
+// proceso de bun test, no solo este archivo — si otro archivo de prueba
+// (pantallas-vendidas-contenido.test.tsx) registra su propio mock de
+// "next/navigation" sin esta exportación, cualquiera de los dos que quede
+// activo debe seguir sirviendo lo que el otro necesita. Por eso incluye
+// también useSearchParams, aunque esta página no lo use.
+mock.module("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 const { default: PaginaVender } = await import("./page");
 
 beforeEach(() => {
+  mockPerfilGet
+    .mockReset()
+    .mockResolvedValue({ data: { usuario: { id: "u1", nombre: "Admin", email: "admin@test.local", rol: "ADMIN" } }, error: null });
   mockSaldoGet.mockReset().mockResolvedValue({ data: { usaSaldo: false, saldo: null }, error: null });
   mockTiposClienteGet
     .mockReset()
@@ -49,6 +65,7 @@ beforeEach(() => {
   });
   mockPaquetesGet.mockReset().mockResolvedValue({ data: { paquetes: [] }, error: null });
   mockVentasPost.mockReset();
+  mockPush.mockReset();
 });
 
 afterEach(() => {
@@ -170,5 +187,101 @@ describe("vender() — aviso de plantilla no configurada", () => {
 
     await screen.findByText("Venta registrada");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// F4.6 — Garantía como una operación más de Vender: ausente para VENDEDOR
+// (no deshabilitado), navega por parámetros a /pantallas-vendidas sin abrir
+// ningún formulario ni diálogo nuevo dentro de Vender.
+describe("Garantía (F4.6)", () => {
+  test("rol EMPLEADO ve el tile de Garantía", async () => {
+    mockPerfilGet.mockReset().mockResolvedValue({
+      data: { usuario: { id: "u1", nombre: "Empleado", email: "empleado@test.local", rol: "EMPLEADO" } },
+      error: null,
+    });
+
+    render(<PaginaVender />);
+
+    await screen.findByRole("button", { name: /Garantía/ });
+  });
+
+  test("rol VENDEDOR no tiene el tile de Garantía en el árbol renderizado", async () => {
+    mockPerfilGet.mockReset().mockResolvedValue({
+      data: { usuario: { id: "u2", nombre: "Vendedor", email: "vendedor@test.local", rol: "VENDEDOR" } },
+      error: null,
+    });
+
+    render(<PaginaVender />);
+
+    // Esperar a que el efecto que trae tipos de cliente (misma tanda de
+    // promesas que trae el rol) haya resuelto, para no afirmar una ausencia
+    // que en realidad es solo "todavía no cargó".
+    const selectTipoCliente = await screen.findByLabelText("Tipo de cliente");
+    await waitFor(() => expect(selectTipoCliente.querySelector('option[value="tc1"]')).toBeTruthy());
+
+    expect(screen.queryByRole("button", { name: /Garantía/ })).toBeNull();
+    // Vender sigue funcionando igual para VENDEDOR.
+    expect(screen.getByRole("button", { name: "Vender" })).toBeTruthy();
+  });
+
+  test("elegir 'Sí' con un código de compra navega a pantallas-vendidas con ese codigoCompra", async () => {
+    render(<PaginaVender />); // rol ADMIN por defecto (beforeEach) — satisface EMPLEADO
+
+    const botonGarantia = await screen.findByRole("button", { name: /Garantía/ });
+    fireEvent.click(botonGarantia);
+
+    const botonSi = await screen.findByRole("button", { name: "Sí" });
+    fireEvent.click(botonSi);
+
+    const input = await screen.findByLabelText("Código de compra o correo de la cuenta");
+    fireEvent.change(input, { target: { value: "DIS995865" } });
+    fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+
+    expect(mockPush).toHaveBeenCalledWith("/pantallas-vendidas?codigoCompra=DIS995865");
+  });
+
+  test("elegir 'Sí' con un correo navega a pantallas-vendidas con ese correoCuenta", async () => {
+    render(<PaginaVender />);
+
+    const botonGarantia = await screen.findByRole("button", { name: /Garantía/ });
+    fireEvent.click(botonGarantia);
+
+    const botonSi = await screen.findByRole("button", { name: "Sí" });
+    fireEvent.click(botonSi);
+
+    const input = await screen.findByLabelText("Código de compra o correo de la cuenta");
+    fireEvent.change(input, { target: { value: "cuenta@correo.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+
+    expect(mockPush).toHaveBeenCalledWith("/pantallas-vendidas?correoCuenta=cuenta%40correo.com");
+  });
+
+  test("elegir 'fue una venta hecha por fuera' navega con garantiaExterna=1", async () => {
+    render(<PaginaVender />);
+
+    const botonGarantia = await screen.findByRole("button", { name: /Garantía/ });
+    fireEvent.click(botonGarantia);
+
+    const botonFuera = await screen.findByRole("button", { name: /fue una venta hecha por fuera/ });
+    fireEvent.click(botonFuera);
+
+    expect(mockPush).toHaveBeenCalledWith("/pantallas-vendidas?garantiaExterna=1");
+  });
+
+  test("cerrar el tile (segundo clic) limpia la respuesta anterior", async () => {
+    render(<PaginaVender />);
+
+    const botonGarantia = await screen.findByRole("button", { name: /Garantía/ });
+    fireEvent.click(botonGarantia);
+    fireEvent.click(await screen.findByRole("button", { name: "Sí" }));
+    await screen.findByLabelText("Código de compra o correo de la cuenta");
+
+    // Cerrar y volver a abrir: la pregunta vuelve a su estado inicial, no
+    // queda en el paso del campo de texto.
+    fireEvent.click(botonGarantia);
+    fireEvent.click(botonGarantia);
+
+    await screen.findByRole("button", { name: "Sí" });
+    expect(screen.queryByLabelText("Código de compra o correo de la cuenta")).toBeNull();
   });
 });

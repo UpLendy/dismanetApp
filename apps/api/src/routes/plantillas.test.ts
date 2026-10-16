@@ -88,6 +88,7 @@ describe("PUT /plantillas/:tipo — inmutabilidad del histórico (R3)", () => {
         unidadDuracion: "DIAS",
         nombreTipoCliente: "Nuevo",
         precioVenta: "15000",
+        precioSugerido: "15000",
         costo: "8000",
         utilidad: "7000",
         fechaVencimientoMax: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),

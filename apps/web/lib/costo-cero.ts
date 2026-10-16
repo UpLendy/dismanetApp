@@ -1,15 +1,22 @@
 import { api } from "./api";
 
-export const AVISO_COSTO_CERO_TITULO = "Hay precios con costo en cero";
-
-export function avisoCostoCeroTexto(cantidad: number): string {
-  return `${cantidad} celda(s) de precio no tienen costo registrado — la utilidad mostrada en esos casos no es real. Revisa la matriz de precios.`;
+export interface CostosFaltantes {
+  // Combinaciones plataforma+duración en uso (con precio activo) sin
+  // CostoPlataforma registrado.
+  combinacionesSinCosto: number;
+  // Renglones de duración de un paquete cuyos componentes no tienen costo
+  // completo.
+  paquetesSinCostoCompleto: number;
 }
 
-// Mismo cálculo que usa /panel: suma avisoCostoCero.cantidad de cada
-// plataforma y paquete activos. Centralizado aquí para que /panel y /ventas
-// muestren siempre la misma redacción con el mismo número.
-export async function contarPreciosConCostoCero(): Promise<number> {
+export const AVISO_COSTO_FALTANTE_TITULO = "Hay costos sin registrar";
+
+// Punto 5, camino del dinero: ya no cuenta "celdas de precio con costo en
+// cero" — cuenta combinaciones plataforma+duración sin costo registrado y
+// paquetes cuyos componentes no tienen costo completo, por separado.
+// Centralizado aquí para que /panel y /ventas muestren siempre la misma
+// redacción con los mismos números.
+export async function contarCostosFaltantes(): Promise<CostosFaltantes> {
   const [resPlataformas, resPaquetes] = await Promise.all([api.plataformas.get(), api.paquetes.get()]);
   const plataformasActivas = resPlataformas.data?.plataformas.filter((p) => p.activa) ?? [];
   const paquetesActivos = resPaquetes.data?.paquetes.filter((p) => p.activo) ?? [];
@@ -19,8 +26,8 @@ export async function contarPreciosConCostoCero(): Promise<number> {
     Promise.all(paquetesActivos.map((p) => api.precios.paquetes.get({ query: { paqueteId: p.id } }))),
   ]);
 
-  return (
-    avisosUnidades.reduce((acc, r) => acc + (r.data?.avisoCostoCero.cantidad ?? 0), 0) +
-    avisosPaquetes.reduce((acc, r) => acc + (r.data?.avisoCostoCero.cantidad ?? 0), 0)
-  );
+  return {
+    combinacionesSinCosto: avisosUnidades.reduce((acc, r) => acc + (r.data?.avisoCostoCero.cantidad ?? 0), 0),
+    paquetesSinCostoCompleto: avisosPaquetes.reduce((acc, r) => acc + (r.data?.avisoCostoCero.cantidad ?? 0), 0),
+  };
 }

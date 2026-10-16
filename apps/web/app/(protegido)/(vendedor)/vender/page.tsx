@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Copy, Wallet } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Check, Copy, Plus, ShieldAlert, Trash2, Wallet } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { satisfaceRol, type Rol } from "@/lib/rol";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta } from "@/components/ui/tarjeta";
-import { Campo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
+import { Campo, EntradaCampo, SelectCampo, idUnico } from "@/components/ui/campo";
 import { Aviso } from "@/components/ui/aviso";
 import { Pastilla } from "@/components/ui/pastilla";
 import { EVENTO_SALDO_ACTUALIZADO } from "@/lib/eventos";
@@ -50,6 +52,18 @@ interface VentaRealizada {
 
 type Modo = "UNIDAD" | "PAQUETE" | "PROMOCION";
 
+// Una fila = un servicio dentro de una venta UNIDAD (F4.4). Repetir la misma
+// plataformaId en dos filas es válido (pide dos pantallas de esa
+// plataforma) — por eso se identifican por `key`, no por `plataformaId`.
+interface FilaUnidad {
+  key: string;
+  plataformaId: string;
+}
+
+function filaVacia(): FilaUnidad {
+  return { key: idUnico("fila"), plataformaId: "" };
+}
+
 // Validación suave (CLAUDE.md Entrega 10, punto 2): dígitos, espacios y '+',
 // entre 7 y 15 caracteres. Solo avisa — nunca bloquea el botón VENDER.
 const CELULAR_VALIDO = /^[\d\s+]{7,15}$/;
@@ -65,6 +79,22 @@ function formatearPesos(valor: string): string {
   const [entero, decimal] = valor.split(".");
   const conPuntos = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   return decimal ? `$${conPuntos},${decimal}` : `$${conPuntos}`;
+}
+
+// Suma de precios en centavos (BigInt), nunca Number: dos decimales de
+// redondeo flotante en una suma visible de varios servicios sería un bug de
+// plata, no solo de estética (CLAUDE.md — dinero nunca number flotante).
+function centavos(valor: string): bigint {
+  const [entero, decimal = ""] = valor.split(".");
+  const decimalCentavos = (decimal + "00").slice(0, 2) || "00";
+  return BigInt(entero || "0") * BigInt(100) + BigInt(decimalCentavos);
+}
+
+function sumarPesos(valores: string[]): string {
+  const totalCentavos = valores.reduce((suma, valor) => suma + centavos(valor), BigInt(0));
+  const enteroTotal = totalCentavos / BigInt(100);
+  const decimalTotal = (totalCentavos % BigInt(100)).toString().padStart(2, "0");
+  return decimalTotal === "00" ? enteroTotal.toString() : `${enteroTotal.toString()}.${decimalTotal}`;
 }
 
 function PestanaModo({
@@ -105,6 +135,8 @@ function PestanaModo({
 }
 
 export default function PaginaVender() {
+  const router = useRouter();
+
   // Arranca en UNIDAD: es la pantalla de más prisa del sistema y abrir sin
   // modo deja al vendedor viendo tres pestañas, ningún formulario y un botón
   // muerto. Con dos pestañas venía seleccionado; se perdió al entrar la
@@ -116,6 +148,11 @@ export default function PaginaVender() {
   const [duracionId, setDuracionId] = useState("");
   const [productoId, setProductoId] = useState("");
 
+  // F4.4: solo para modo UNIDAD. Paquete y Promoción siguen con un único
+  // producto (productoId) — esa parte del formulario no cambia.
+  const [filasUnidad, setFilasUnidad] = useState<FilaUnidad[]>(() => [filaVacia()]);
+  const [precioFinalTexto, setPrecioFinalTexto] = useState("");
+
   const [productos, setProductos] = useState<ProductoDisponible[]>([]);
   const [cargandoOpciones, setCargandoOpciones] = useState(false);
 
@@ -125,6 +162,19 @@ export default function PaginaVender() {
   const [avisoVenta, setAvisoVenta] = useState<string | null>(null);
   const [copiado, setCopiado] = useState(false);
   const [celularCliente, setCelularCliente] = useState("");
+
+  // Rol propio (F4.4 Parte 3): el precio final solo se ofrece a EMPLEADO+.
+  // R4 — esto es solo UX; el servidor rechaza con 403 igual si alguien
+  // manda el campo a mano sin el rol, ocultar el input no es el control.
+  const [rol, setRol] = useState<Rol | null>(null);
+
+  // F4.6: Garantía es una operación, no un producto — NO entra en `Modo`
+  // (ese tipo significa "qué categoría de producto"). Vive en su propio
+  // estado: abierta/cerrada, la respuesta a "¿está en el sistema?" (null =
+  // sin responder) y el valor del campo de búsqueda.
+  const [garantiaAbierta, setGarantiaAbierta] = useState(false);
+  const [garantiaEnSistema, setGarantiaEnSistema] = useState<boolean | null>(null);
+  const [garantiaValor, setGarantiaValor] = useState("");
 
   // Saldo propio del revendedor (null si usaSaldo es false): visible antes
   // de confirmar la venta, no solo en la barra superior.
@@ -147,6 +197,9 @@ export default function PaginaVender() {
     });
     api.ventas.duraciones.get().then(({ data }) => {
       if (data) setDuraciones(data.duraciones);
+    });
+    api.perfil.get().then(({ data }) => {
+      if (data) setRol(data.usuario.rol);
     });
     cargarSaldoPropio();
   }, [cargarSaldoPropio]);
@@ -188,6 +241,8 @@ export default function PaginaVender() {
   useEffect(() => {
     setProductos([]);
     setProductoId("");
+    setFilasUnidad([filaVacia()]);
+    setPrecioFinalTexto("");
     setError(null);
     cargarOpciones();
   }, [cargarOpciones]);
@@ -199,12 +254,45 @@ export default function PaginaVender() {
     const mismaCategoria = modo !== null && modo !== "UNIDAD" && nuevoModo !== "UNIDAD";
     setModo(nuevoModo);
     setProductoId("");
+    setFilasUnidad([filaVacia()]);
+    setPrecioFinalTexto("");
     setError(null);
     if (!mismaCategoria) {
       setTipoClienteId("");
       setDuracionId("");
       setProductos([]);
     }
+  }
+
+  // F4.6 — abre/cierra el tile de Garantía sin tocar `modo`: es una
+  // operación distinta, no una cuarta pestaña de producto. Cerrarlo
+  // (segundo clic) limpia la respuesta y el campo para la próxima vez.
+  function alternarGarantia() {
+    setGarantiaAbierta((abierta) => {
+      const siguiente = !abierta;
+      if (!siguiente) {
+        setGarantiaEnSistema(null);
+        setGarantiaValor("");
+      }
+      return siguiente;
+    });
+  }
+
+  // La venta fue hecha por fuera del sistema: no hay fila que buscar, abre
+  // directo el diálogo de garantía externa en /pantallas-vendidas.
+  function elegirGarantiaExterna() {
+    router.push("/pantallas-vendidas?garantiaExterna=1");
+  }
+
+  // Un solo campo para código de compra o correo de cuenta (spec F4.6): se
+  // decide cuál enviar por la forma del valor, un correo siempre tiene '@'
+  // y un código de compra nunca lo tiene. routes/garantias.ts ya acepta
+  // ambos por `contains` insensible a mayúsculas.
+  function continuarGarantiaEnSistema() {
+    const valor = garantiaValor.trim();
+    if (!valor) return;
+    const parametro = valor.includes("@") ? "correoCuenta" : "codigoCompra";
+    router.push(`/pantallas-vendidas?${parametro}=${encodeURIComponent(valor)}`);
   }
 
   // Un paquete aparece en una sola pestaña: Paquete lista esPromocion=false,
@@ -239,20 +327,80 @@ export default function PaginaVender() {
     productos.some((p) => !esPlataforma(p)) &&
     !productos.some((p) => !esPlataforma(p) && !p.esPromocion);
 
-  const productoSeleccionado = productosVisibles.find((p) => p.id === productoId) ?? null;
+  // F4.4: "renglón" cuenta cada fila elegida, repetidos incluidos — es la
+  // misma cuenta que hace el servidor para decidir plantilla UNIDAD vs
+  // PAQUETE y para exigir 2+ antes de aceptar un precio final.
+  const filasCompletas = filasUnidad.filter((f) => f.plataformaId !== "");
+  const esMultiProducto = modo === "UNIDAD" && filasCompletas.length >= 2;
+  const puedeDescuento = rol !== null && satisfaceRol(rol, "EMPLEADO");
+
+  // F4.6: mismo mecanismo que puedeDescuento (ya trae el rol del vendedor
+  // vía api.perfil.get) — nombre propio porque es una decisión distinta
+  // (mostrar el tile de Garantía, no el campo de precio final). Ausente
+  // para VENDEDOR, no deshabilitado: las garantías son requiereRol(EMPLEADO)
+  // en el servidor (R4), esto es solo ocultar lo que ya rechazaría un 403.
+  const puedeGarantia = rol !== null && satisfaceRol(rol, "EMPLEADO");
+
+  function plataformaPorId(id: string): PlataformaDisponible | undefined {
+    const p = productos.find((prod) => prod.id === id);
+    return p && esPlataforma(p) ? p : undefined;
+  }
+
+  const totalSugeridoTexto = sumarPesos(filasCompletas.map((f) => plataformaPorId(f.plataformaId)?.precioVenta ?? "0"));
+
+  // Vista de un solo producto: la misma tarjeta de siempre, ya sea un único
+  // servicio en modo Unidad, un paquete o una promoción. En 2+ renglones de
+  // Unidad no hay "un" producto que mostrar — ver el resumen más abajo.
+  const productoSeleccionado: ProductoDisponible | null =
+    modo === "UNIDAD"
+      ? filasCompletas.length === 1
+        ? productosVisibles.find((p) => p.id === filasCompletas[0]!.plataformaId) ?? null
+        : null
+      : (productosVisibles.find((p) => p.id === productoId) ?? null);
+
+  const listoParaVender =
+    modo === "UNIDAD" ? filasUnidad.length > 0 && filasUnidad.every((f) => f.plataformaId !== "") : !!productoSeleccionado;
+
+  function agregarFila() {
+    setFilasUnidad((filas) => [...filas, filaVacia()]);
+  }
+
+  function quitarFila(key: string) {
+    // Nunca deja la lista en cero: siempre hay al menos una fila que llenar.
+    setFilasUnidad((filas) => (filas.length > 1 ? filas.filter((f) => f.key !== key) : filas));
+  }
+
+  function actualizarFila(key: string, plataformaId: string) {
+    setFilasUnidad((filas) => filas.map((f) => (f.key === key ? { ...f, plataformaId } : f)));
+  }
 
   async function vender() {
-    if (enviandoRef.current || !productoSeleccionado) return;
+    if (enviandoRef.current || !listoParaVender) return;
     enviandoRef.current = true;
     setVendiendo(true);
     setError(null);
 
-    const item = productoSeleccionado;
     const celular = celularCliente.trim() || undefined;
+    const precioFinalRecortado = precioFinalTexto.trim();
+    const incluirPrecioFinal = esMultiProducto && puedeDescuento && precioFinalRecortado !== "";
+
     const { data, error: errorRespuesta } =
       modo === "UNIDAD"
-        ? await api.ventas.post({ tipoVenta: "UNIDAD", plataformaId: item.id, duracionId, tipoClienteId, celularCliente: celular })
-        : await api.ventas.post({ tipoVenta: "PAQUETE", paqueteId: item.id, duracionId, tipoClienteId, celularCliente: celular });
+        ? await api.ventas.post({
+            tipoVenta: "UNIDAD",
+            plataformas: filasCompletas.map((f) => f.plataformaId),
+            duracionId,
+            tipoClienteId,
+            celularCliente: celular,
+            ...(incluirPrecioFinal ? { precioFinal: precioFinalRecortado } : {}),
+          })
+        : await api.ventas.post({
+            tipoVenta: "PAQUETE",
+            paqueteId: (productoSeleccionado as PaqueteDisponible).id,
+            duracionId,
+            tipoClienteId,
+            celularCliente: celular,
+          });
 
     enviandoRef.current = false;
     setVendiendo(false);
@@ -288,6 +436,8 @@ export default function PaginaVender() {
     setTipoClienteId("");
     setDuracionId("");
     setProductoId("");
+    setFilasUnidad([filaVacia()]);
+    setPrecioFinalTexto("");
     setProductos([]);
     setError(null);
     setCopiado(false);
@@ -358,7 +508,7 @@ export default function PaginaVender() {
     <div className="mx-auto max-w-xl space-y-6">
       <div>
         <h1 className="titulo-pagina text-ink">Vender</h1>
-        <p className="cuerpo text-ink-muted">El precio no es editable. El celular del cliente final es opcional.</p>
+        <p className="cuerpo text-ink-muted">El celular del cliente final es opcional.</p>
       </div>
 
       <div className="flex gap-2">
@@ -389,56 +539,162 @@ export default function PaginaVender() {
         </p>
       ) : null}
 
+      {/* F4.6 — fila separada, nunca una cuarta pestaña: Unidad/Paquete/
+          Promoción traen plata, Garantía saca inventario y registra
+          pérdida. La distinción va por forma (contorno, nunca el relleno
+          de "Vender"), no por color (DISENO.md §2 reserva los colores de
+          estado). Nota para el futuro: al restaurar F3.3 (grilla de
+          productos nueva), este tile viaja con ella — no se agrega solo
+          a la grilla, se mueve. */}
+      {puedeGarantia ? (
+        <div className="space-y-3 border-t border-borde pt-4">
+          <Boton variante="contorno" type="button" onClick={alternarGarantia} className="w-full sm:w-auto">
+            <ShieldAlert className="size-4" />
+            Garantía
+          </Boton>
+
+          {garantiaAbierta ? (
+            <Tarjeta className="space-y-3">
+              <p className="titulo-tarjeta text-ink">¿La venta está en el sistema?</p>
+              {garantiaEnSistema === null ? (
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Boton variante="contorno" type="button" onClick={() => setGarantiaEnSistema(true)} className="flex-1">
+                    Sí
+                  </Boton>
+                  <Boton variante="contorno" type="button" onClick={elegirGarantiaExterna} className="flex-1">
+                    No, fue una venta hecha por fuera
+                  </Boton>
+                </div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    continuarGarantiaEnSistema();
+                  }}
+                  className="space-y-3"
+                >
+                  <Campo etiqueta="Código de compra o correo de la cuenta">
+                    {(props) => (
+                      <EntradaCampo
+                        {...props}
+                        type="text"
+                        placeholder="DIS995865 o cuenta@correo.com"
+                        value={garantiaValor}
+                        onChange={(e) => setGarantiaValor(e.target.value)}
+                      />
+                    )}
+                  </Campo>
+                  <div className="flex gap-2">
+                    <Boton variante="contorno" type="button" onClick={() => setGarantiaEnSistema(null)}>
+                      Atrás
+                    </Boton>
+                    <Boton variante="secundario" type="submit" disabled={!garantiaValor.trim()} className="flex-1">
+                      Buscar
+                    </Boton>
+                  </div>
+                </form>
+              )}
+            </Tarjeta>
+          ) : null}
+        </div>
+      ) : null}
+
       {modo ? (
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Campo etiqueta="Tipo de cliente">
-            {(props) => (
-              <SelectCampo
-                {...props}
-                value={tipoClienteId}
-                onChange={(e) => setTipoClienteId(e.target.value)}
-              >
-                <option value="">Selecciona…</option>
-                {tiposCliente.map((tc) => (
-                  <option key={tc.id} value={tc.id}>
-                    {tc.nombre}
-                  </option>
-                ))}
-              </SelectCampo>
-            )}
-          </Campo>
+        <div className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Campo etiqueta="Tipo de cliente">
+              {(props) => (
+                <SelectCampo {...props} value={tipoClienteId} onChange={(e) => setTipoClienteId(e.target.value)}>
+                  <option value="">Selecciona…</option>
+                  {tiposCliente.map((tc) => (
+                    <option key={tc.id} value={tc.id}>
+                      {tc.nombre}
+                    </option>
+                  ))}
+                </SelectCampo>
+              )}
+            </Campo>
 
-          <Campo etiqueta="Duración">
-            {(props) => (
-              <SelectCampo {...props} value={duracionId} onChange={(e) => setDuracionId(e.target.value)}>
-                <option value="">Selecciona…</option>
-                {duraciones.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.nombre}
-                  </option>
-                ))}
-              </SelectCampo>
-            )}
-          </Campo>
+            <Campo etiqueta="Duración">
+              {(props) => (
+                <SelectCampo {...props} value={duracionId} onChange={(e) => setDuracionId(e.target.value)}>
+                  <option value="">Selecciona…</option>
+                  {duraciones.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.nombre}
+                    </option>
+                  ))}
+                </SelectCampo>
+              )}
+            </Campo>
+          </div>
 
-          <Campo etiqueta="Producto">
-            {(props) => (
-              <SelectCampo
-                {...props}
-                value={productoId}
+          {modo === "UNIDAD" ? (
+            <div className="space-y-3">
+              {filasUnidad.map((fila, indice) => (
+                <div key={fila.key} className="flex items-end gap-2">
+                  <Campo etiqueta={indice === 0 ? "Producto" : `Servicio ${indice + 1}`} className="flex-1">
+                    {(props) => (
+                      <SelectCampo
+                        {...props}
+                        value={fila.plataformaId}
+                        disabled={!tipoClienteId || !duracionId || cargandoOpciones}
+                        onChange={(e) => actualizarFila(fila.key, e.target.value)}
+                      >
+                        <option value="">{cargandoOpciones ? "Cargando…" : "Selecciona…"}</option>
+                        {productosVisibles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.nombre}
+                            {esPlataforma(p) ? ` — ${p.pantallasLibres} libre(s)` : ""}
+                          </option>
+                        ))}
+                      </SelectCampo>
+                    )}
+                  </Campo>
+                  {filasUnidad.length > 1 ? (
+                    <Boton
+                      variante="contorno"
+                      type="button"
+                      aria-label="Quitar servicio"
+                      onClick={() => quitarFila(fila.key)}
+                      className="h-10 shrink-0 px-3"
+                    >
+                      <Trash2 className="size-4" />
+                    </Boton>
+                  ) : null}
+                </div>
+              ))}
+              <Boton
+                variante="contorno"
+                type="button"
                 disabled={!tipoClienteId || !duracionId || cargandoOpciones}
-                onChange={(e) => setProductoId(e.target.value)}
+                onClick={agregarFila}
+                className="w-full"
               >
-                <option value="">{cargandoOpciones ? "Cargando…" : "Selecciona…"}</option>
-                {productosVisibles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nombre}
-                    {esPlataforma(p) ? ` — ${p.pantallasLibres} libre(s)` : ""}
-                  </option>
-                ))}
-              </SelectCampo>
-            )}
-          </Campo>
+                <Plus className="size-4" />
+                Agregar otro servicio
+              </Boton>
+            </div>
+          ) : (
+            <Campo etiqueta="Producto">
+              {(props) => (
+                <SelectCampo
+                  {...props}
+                  value={productoId}
+                  disabled={!tipoClienteId || !duracionId || cargandoOpciones}
+                  onChange={(e) => setProductoId(e.target.value)}
+                >
+                  <option value="">{cargandoOpciones ? "Cargando…" : "Selecciona…"}</option>
+                  {productosVisibles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nombre}
+                      {esPlataforma(p) ? ` — ${p.pantallasLibres} libre(s)` : ""}
+                    </option>
+                  ))}
+                </SelectCampo>
+              )}
+            </Campo>
+          )}
         </div>
       ) : null}
 
@@ -455,7 +711,56 @@ export default function PaginaVender() {
         </Aviso>
       ) : null}
 
-      {productoSeleccionado ? (
+      {esMultiProducto ? (
+        <Tarjeta className="space-y-3">
+          <ul className="space-y-1">
+            {filasCompletas.map((fila) => {
+              const plataforma = plataformaPorId(fila.plataformaId);
+              if (!plataforma) return null;
+              return (
+                <li key={fila.key} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-ink">{plataforma.nombre}</span>
+                  <span className="tabular-nums text-ink-2">{formatearPesos(plataforma.precioVenta)}</span>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="flex items-center justify-between border-t border-borde pt-3">
+            <p className="etiqueta-dato">Total sugerido</p>
+            <p className="valor-dato text-ink">{formatearPesos(totalSugeridoTexto)}</p>
+          </div>
+          {saldoPropio?.usaSaldo ? (
+            <div className="flex items-center justify-between border-t border-borde pt-3">
+              <span className="flex items-center gap-1.5 text-sm text-ink-2">
+                <Wallet className="size-4" />
+                Tu saldo
+              </span>
+              <span className="tabular-nums text-sm font-medium text-ink">
+                {formatearPesos(saldoPropio.saldo ?? "0")}
+              </span>
+            </div>
+          ) : null}
+          {puedeDescuento ? (
+            <div className="border-t border-borde pt-3">
+              <Campo
+                etiqueta="Precio final (opcional)"
+                ayuda={`Déjalo vacío para cobrar el sugerido, ${formatearPesos(totalSugeridoTexto)}.`}
+              >
+                {(props) => (
+                  <EntradaCampo
+                    {...props}
+                    type="text"
+                    inputMode="decimal"
+                    placeholder={totalSugeridoTexto}
+                    value={precioFinalTexto}
+                    onChange={(e) => setPrecioFinalTexto(e.target.value)}
+                  />
+                )}
+              </Campo>
+            </div>
+          ) : null}
+        </Tarjeta>
+      ) : productoSeleccionado ? (
         <Tarjeta className="space-y-3">
           <div className="flex items-start justify-between gap-3">
             <p className="titulo-tarjeta text-ink">{productoSeleccionado.nombre}</p>
@@ -508,7 +813,7 @@ export default function PaginaVender() {
       <Boton
         variante="principal"
         type="button"
-        disabled={!productoSeleccionado || vendiendo}
+        disabled={!listoParaVender || vendiendo}
         onClick={vender}
         className="h-14 w-full text-base"
       >

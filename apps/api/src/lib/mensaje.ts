@@ -85,6 +85,13 @@ export interface DatosMensajeComunes {
   precioVenta: Prisma.Decimal | number | string;
   /** Celular del comprador final, opcional (R3: copia histórica). */
   celularCliente?: string | null;
+  /**
+   * F4.3 — venta externa: precioVenta es 0 porque no es un ingreso, no
+   * porque el comprador no pagó nada. Mostrar "{{precio}}" como "$ 0" sería
+   * falso, así que el bloque entero se quita (mismo mecanismo que
+   * quitarBloquesDeCamposNoUsados, nunca una sustitución por cadena vacía).
+   */
+  ocultarPrecio?: boolean;
 }
 
 function sustituirMarcadoresComunes(plantilla: string, datos: DatosMensajeComunes): string {
@@ -99,18 +106,32 @@ function sustituirMarcadoresComunes(plantilla: string, datos: DatosMensajeComune
     .replaceAll("{{celular}}", datos.celularCliente ?? "");
 }
 
-export interface DatosMensajeUnidad extends DatosMensajeComunes {
+/** Qué campos de acceso declara la plataforma — mismas 5 banderas de Plataforma (schema.prisma). */
+export interface BanderasCamposAcceso {
+  usaPerfilPin: boolean;
+  usaCorreo: boolean;
+  usaUsuario: boolean;
+  usaCodigo: boolean;
+  usaEnlace: boolean;
+}
+
+export interface DatosMensajeUnidad extends DatosMensajeComunes, BanderasCamposAcceso {
   /** nombreMensaje de la plataforma si existe, si no nombre — ya resuelto por el caller. */
   nombrePlataformaMensaje: string;
-  /** Plataforma.usaPerfilPin — determina si el bloque PERFIL/PIN se incluye. */
-  usaPerfilPin: boolean;
   perfil: string | null;
   pin: string | null;
-  correo: string;
+  correo: string | null;
+  usuario: string | null;
+  codigo: string | null;
+  enlace: string | null;
   /** Ya descifrada. */
   clave: string;
 }
 
+// F4.2, parte 1 — qué campos usa cada plataforma varía (usaPerfilPin,
+// usaCorreo, usaUsuario, usaCodigo, usaEnlace); el mensaje debe adaptarse,
+// no mostrar una etiqueta vacía para un campo que esa plataforma no tiene.
+//
 // La plantilla por defecto (Anexo B) pone la etiqueta y el marcador en líneas
 // distintas — "*PERFIL:*\n{{perfil}}" — así que quitar solo la línea del
 // marcador deja la etiqueta huérfana y vacía, que es exactamente el bug que
@@ -118,32 +139,69 @@ export interface DatosMensajeUnidad extends DatosMensajeComunes {
 // el mismo delimitador que ya usa bloqueListaCuentas entre cuentas) para
 // que la etiqueta se vaya con su marcador sin importar en cuántas líneas
 // esté escrita.
-function quitarBloquesPerfilPin(plantilla: string): string {
+const MARCADORES_POR_BANDERA: Record<keyof BanderasCamposAcceso, readonly string[]> = {
+  usaPerfilPin: ["perfil", "pin"],
+  usaCorreo: ["correo"],
+  usaUsuario: ["usuario"],
+  usaCodigo: ["codigo"],
+  usaEnlace: ["enlace"],
+};
+
+function quitarBloquesPorMarcadores(plantilla: string, marcadores: ReadonlySet<string>): string {
+  if (marcadores.size === 0) return plantilla;
   return plantilla
     .split(/\n{2,}/)
-    .filter((bloque) => !bloque.includes("{{perfil}}") && !bloque.includes("{{pin}}"))
+    .filter((bloque) => ![...marcadores].some((marcador) => bloque.includes(`{{${marcador}}}`)))
     .join("\n\n");
 }
 
+function quitarBloquesDeCamposNoUsados(plantilla: string, banderas: BanderasCamposAcceso): string {
+  const marcadoresNoUsados = new Set<string>();
+  for (const [bandera, marcadores] of Object.entries(MARCADORES_POR_BANDERA) as [
+    keyof BanderasCamposAcceso,
+    readonly string[],
+  ][]) {
+    if (!banderas[bandera]) {
+      for (const marcador of marcadores) marcadoresNoUsados.add(marcador);
+    }
+  }
+
+  return quitarBloquesPorMarcadores(plantilla, marcadoresNoUsados);
+}
+
+/**
+ * F4.3 — venta externa: ocultarPrecio quita el bloque de {{precio}} con el
+ * mismo mecanismo de bloques (ver comentario sobre MARCADORES_POR_BANDERA),
+ * nunca por sustitución de cadena vacía (eso deja la etiqueta huérfana).
+ */
+function quitarBloquePrecioSiAplica(plantilla: string, datos: DatosMensajeComunes): string {
+  return datos.ocultarPrecio ? quitarBloquesPorMarcadores(plantilla, new Set(["precio"])) : plantilla;
+}
+
 export function renderizarMensajeUnidad(plantilla: string, datos: DatosMensajeUnidad): string {
-  const plantillaAjustada = datos.usaPerfilPin ? plantilla : quitarBloquesPerfilPin(plantilla);
+  const plantillaAjustada = quitarBloquePrecioSiAplica(quitarBloquesDeCamposNoUsados(plantilla, datos), datos);
   return sustituirMarcadoresComunes(plantillaAjustada, datos)
     .replaceAll("{{plataforma}}", datos.nombrePlataformaMensaje)
     .replaceAll("{{perfil}}", datos.perfil ?? "")
     .replaceAll("{{pin}}", datos.pin ?? "")
-    .replaceAll("{{correo}}", datos.correo)
+    .replaceAll("{{correo}}", datos.correo ?? "")
+    .replaceAll("{{usuario}}", datos.usuario ?? "")
+    .replaceAll("{{codigo}}", datos.codigo ?? "")
+    .replaceAll("{{enlace}}", datos.enlace ?? "")
     .replaceAll("{{clave}}", datos.clave);
 }
 
-export interface ComponenteMensajePaquete {
+export interface ComponenteMensajePaquete extends BanderasCamposAcceso {
   /** nombreMensaje de la plataforma si existe, si no nombre — ya resuelto por el caller. */
   nombrePlataforma: string;
-  usaPerfilPin: boolean;
   /** Nombre de la duración REAL de este componente (puede diferir de la vendida). */
   nombreDuracionReal: string;
   perfil: string | null;
   pin: string | null;
-  correo: string;
+  correo: string | null;
+  usuario: string | null;
+  codigo: string | null;
+  enlace: string | null;
   /** Ya descifrada. */
   clave: string;
 }
@@ -159,14 +217,18 @@ function bloqueListaCuentas(componente: ComponenteMensajePaquete): string {
     lineas.push(`*PERFIL:* ${componente.perfil ?? ""}`);
     lineas.push(`*PIN:* ${componente.pin ?? ""}`);
   }
-  lineas.push(`*CORREO:* ${componente.correo}`);
+  if (componente.usaCorreo) lineas.push(`*CORREO:* ${componente.correo ?? ""}`);
+  if (componente.usaUsuario) lineas.push(`*USUARIO:* ${componente.usuario ?? ""}`);
+  if (componente.usaCodigo) lineas.push(`*CÓDIGO:* ${componente.codigo ?? ""}`);
+  if (componente.usaEnlace) lineas.push(`*ENLACE:* ${componente.enlace ?? ""}`);
   lineas.push(`*CONTRASEÑA:* ${componente.clave}`);
   return lineas.join("\n");
 }
 
 export function renderizarMensajePaquete(plantilla: string, datos: DatosMensajePaquete): string {
+  const plantillaAjustada = quitarBloquePrecioSiAplica(plantilla, datos);
   const listaCuentas = datos.componentes.map(bloqueListaCuentas).join("\n\n");
-  return sustituirMarcadoresComunes(plantilla, datos)
+  return sustituirMarcadoresComunes(plantillaAjustada, datos)
     .replaceAll("{{paquete}}", datos.nombrePaquete)
     .replaceAll("{{listaCuentas}}", listaCuentas);
 }

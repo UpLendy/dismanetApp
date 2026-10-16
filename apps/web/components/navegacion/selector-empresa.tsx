@@ -66,7 +66,7 @@ export function SelectorEmpresa({ empresaActiva }: { empresaActiva: { id: string
         {empresaActiva ? (
           <button
             type="button"
-            className="flex items-center gap-2 rounded-pastilla bg-secundario-suave py-1.5 pl-3 pr-2 text-sm text-secundario transition-colors hover:bg-secundario-suave/70"
+            className="flex items-center gap-2 rounded-pastilla bg-secundario-suave py-1.5 pl-3 pr-2 text-sm text-secundario-texto transition-colors hover:bg-secundario-suave/70"
           >
             <Building2 className="size-4" />
             <span className="font-bold">{empresaActiva.nombre}</span>

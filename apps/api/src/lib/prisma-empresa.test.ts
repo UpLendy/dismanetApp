@@ -29,6 +29,7 @@ interface FixtureEmpresa {
   paquetePlataformaId: string;
   paqueteDuracionPlataformaId: string;
   precioId: string;
+  costoPlataformaId: string;
   cuentaId: string;
   pantallaId: string;
   ventaId: string;
@@ -114,6 +115,15 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  const costoPlataforma = await prismaRaw.costoPlataforma.create({
+    data: {
+      empresaId: empresa.id,
+      plataformaId: plataforma.id,
+      duracionId: duracionVendida.id,
+      costo: "5000",
+    },
+  });
+
   const cuenta = await prismaRaw.cuenta.create({
     data: {
       empresaId: empresa.id,
@@ -143,6 +153,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
       unidadDuracion: "DIAS",
       nombreTipoCliente: tipoCliente.nombre,
       precioVenta: "10000",
+      precioSugerido: "10000",
       costo: "5000",
       utilidad: "5000",
       fechaVencimientoMax: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -226,6 +237,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     paquetePlataformaId: paquetePlataforma.id,
     paqueteDuracionPlataformaId: paqueteDuracionPlataforma.id,
     precioId: precio.id,
+    costoPlataformaId: costoPlataforma.id,
     cuentaId: cuenta.id,
     pantallaId: pantalla.id,
     ventaId: venta.id,
@@ -246,6 +258,7 @@ async function borrarEmpresaCompleta(empresaId: string) {
   await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
   await prismaRaw.venta.deleteMany({ where: { empresaId } });
   await prismaRaw.precio.deleteMany({ where: { empresaId } });
+  await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.paqueteDuracionPlataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.paquetePlataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.pantalla.deleteMany({ where: { empresaId } });
@@ -274,8 +287,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 16 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(16);
+  it("cubre los 17 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(17);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -287,6 +300,7 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         "PaquetePlataforma",
         "PaqueteDuracionPlataforma",
         "Precio",
+        "CostoPlataforma",
         "Cuenta",
         "Pantalla",
         "Venta",

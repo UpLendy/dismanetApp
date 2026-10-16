@@ -13,7 +13,17 @@ const MARCADORES_COMUNES = [
   "celular",
 ] as const;
 
-const MARCADORES_UNIDAD = [...MARCADORES_COMUNES, "plataforma", "perfil", "pin", "correo", "clave"] as const;
+const MARCADORES_UNIDAD = [
+  ...MARCADORES_COMUNES,
+  "plataforma",
+  "perfil",
+  "pin",
+  "correo",
+  "usuario",
+  "codigo",
+  "enlace",
+  "clave",
+] as const;
 
 const MARCADORES_PAQUETE = [...MARCADORES_COMUNES, "paquete", "listaCuentas"] as const;
 

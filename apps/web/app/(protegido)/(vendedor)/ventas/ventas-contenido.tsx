@@ -3,7 +3,8 @@
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import { Ban, Check, ChevronDown, ChevronUp, Copy, Receipt, Search, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
-import { AVISO_COSTO_CERO_TITULO, avisoCostoCeroTexto, contarPreciosConCostoCero } from "@/lib/costo-cero";
+import { contarCostosFaltantes, type CostosFaltantes } from "@/lib/costo-cero";
+import { AvisoCostoFaltante } from "@/components/aviso-costo-faltante";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { Campo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
@@ -21,7 +22,7 @@ interface DetalleVenta {
   id: string;
   plataformaId: string;
   nombrePlataforma: string;
-  correoCuenta: string;
+  correoCuenta: string | null;
   fechaVencimiento: string;
 }
 
@@ -55,6 +56,7 @@ interface TotalesPeriodo {
   ingresos: string;
   costos: string;
   utilidad: string;
+  perdidaGarantias: string;
 }
 
 interface Totales {
@@ -128,7 +130,7 @@ function DetalleCuentas({ detalles }: { detalles: DetalleVenta[] }) {
       {detalles.map((detalle) => (
         <li key={detalle.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <span className="text-ink">
-            {detalle.nombrePlataforma} · <span className="text-ink-muted">{detalle.correoCuenta}</span>
+            {detalle.nombrePlataforma} · <span className="text-ink-muted">{detalle.correoCuenta ?? "—"}</span>
           </span>
           <span className="text-xs text-ink-muted">Vence {formatearFecha(detalle.fechaVencimiento)}</span>
         </li>
@@ -278,7 +280,7 @@ function VentasAdmin() {
   const [totales, setTotales] = useState<Totales | null>(null);
   const [cargandoTotales, setCargandoTotales] = useState(true);
 
-  const [costoCeroCantidad, setCostoCeroCantidad] = useState(0);
+  const [costosFaltantes, setCostosFaltantes] = useState<CostosFaltantes | null>(null);
 
   const [vendedores, setVendedores] = useState<Opcion[]>([]);
   const [plataformas, setPlataformas] = useState<Opcion[]>([]);
@@ -326,7 +328,7 @@ function VentasAdmin() {
       if (resPlataformas.data) setPlataformas(resPlataformas.data.plataformas);
       if (resPaquetes.data) setPaquetes(resPaquetes.data.paquetes);
     })();
-    contarPreciosConCostoCero().then(setCostoCeroCantidad);
+    contarCostosFaltantes().then(setCostosFaltantes);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -413,6 +415,11 @@ function VentasAdmin() {
                 <div>
                   <p className="etiqueta-dato">Utilidad</p>
                   <p className="valor-dato text-ink">{formatearPesos(totales?.[periodo].utilidad ?? "0")}</p>
+                  {totales && Number(totales[periodo].perdidaGarantias) > 0 ? (
+                    <p className="mt-0.5 text-xs text-critico">
+                      Pérdida por garantías: {formatearPesos(totales[periodo].perdidaGarantias)}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </Tarjeta>
@@ -420,11 +427,7 @@ function VentasAdmin() {
         )}
       </div>
 
-      {costoCeroCantidad > 0 ? (
-        <Aviso variante="aviso" titulo={AVISO_COSTO_CERO_TITULO}>
-          {avisoCostoCeroTexto(costoCeroCantidad)}
-        </Aviso>
-      ) : null}
+      <AvisoCostoFaltante datos={costosFaltantes} />
 
       <Tarjeta>
         <form onSubmit={buscar} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

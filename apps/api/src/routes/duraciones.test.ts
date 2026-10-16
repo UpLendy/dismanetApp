@@ -110,6 +110,7 @@ describe("Duraciones — catálogo (e, g)", () => {
         unidadDuracion: duracionOriginal.unidad,
         nombreTipoCliente: tipoCliente.nombre,
         precioVenta: "20000",
+        precioSugerido: "20000",
         costo: "10000",
         utilidad: "10000",
         fechaVencimientoMax: fechaVencimiento,

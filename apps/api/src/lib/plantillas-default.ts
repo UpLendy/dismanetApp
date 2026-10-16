@@ -19,6 +19,15 @@ export const PLANTILLA_UNIDAD_POR_DEFECTO = `♥️ *{{plataforma}} ({{duracion}
 *CORREO:*
 {{correo}}
 
+*USUARIO:*
+{{usuario}}
+
+*CÓDIGO:*
+{{codigo}}
+
+*ENLACE:*
+{{enlace}}
+
 *CONTRASEÑA:*
 {{clave}}
 
@@ -77,6 +86,13 @@ Perfil: {{perfil}}
 PIN: {{pin}}
 
 Correo: {{correo}}
+
+Usuario: {{usuario}}
+
+Código: {{codigo}}
+
+Enlace: {{enlace}}
+
 Contraseña: {{clave}}`;
 
 export const PLANTILLA_RESPALDO_PAQUETE = `*{{paquete}} — {{duracion}}*

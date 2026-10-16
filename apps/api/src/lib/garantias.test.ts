@@ -6,7 +6,7 @@ import { prismaRaw } from "./prisma.ts";
 import { prismaParaEmpresa } from "./prisma-empresa.ts";
 import { cifrar, descifrar } from "./cifrado.ts";
 import { realizarVenta } from "./ventas.ts";
-import { realizarGarantia, GarantiaYaReemplazadaError } from "./garantias.ts";
+import { realizarGarantia, realizarGarantiaExterna, GarantiaYaReemplazadaError } from "./garantias.ts";
 import { pantallasDisponibles } from "./pantallas.ts";
 
 describe("realizarGarantia", () => {
@@ -75,6 +75,7 @@ describe("realizarGarantia", () => {
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
     await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.precio.deleteMany({ where: { empresaId } });
     // Si una prueba falla antes de llegar a su propia limpieza (ej. PAQUETE),
     // estas filas quedan colgando y el delete de plataforma más abajo choca
@@ -126,7 +127,7 @@ describe("realizarGarantia", () => {
 
     const cliente = prismaParaEmpresa(empresaId);
     const resultado = await cliente.$transaction((tx) =>
-      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
     );
     if (resultado.tipo !== "ok") throw new Error(`esperaba ok, llegó ${resultado.tipo}`);
 
@@ -192,9 +193,27 @@ describe("realizarGarantia", () => {
     const movimientos = await prismaRaw.movimientoSaldo.findMany({ where: { ventaId: detalleOriginal.ventaId } });
     expect(movimientos).toHaveLength(0);
 
-    // Hoy los costos están en cero: la estructura ya queda lista para cuando
-    // el cliente cargue costos reales (Precio.costo = "0" en la fixture).
+    // Sin CostoPlataforma configurado para esta plataforma+duración, el
+    // costo asumido cae a cero (no bloquea la garantía por un dato de
+    // configuración faltante — mismo criterio que una venta).
     expect(resultado.garantia.costoAsumido.toString()).toBe("0");
+  });
+
+  it("costoAsumido viene de CostoPlataforma (plataforma+duración), no de Precio.costo", async () => {
+    const { detalleOriginal, plataformaId } = await crearVentaConUnaPantalla("costo-real");
+    await crearCuentaConPantallaLibre("costo-real", plataformaId);
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId, duracionId, costo: "4500" },
+    });
+
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarGarantia(tx, empresaId, adminId, detalleOriginal.id, "Pantalla con costo real"),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+    expect(resultado.garantia.costoAsumido.toString()).toBe("4500");
   });
 
   it("reemplazo al día 8 de una venta de 30 días conserva el vencimiento original (día 30), no uno recalculado desde hoy", async () => {
@@ -398,5 +417,183 @@ describe("realizarGarantia", () => {
     await prismaRaw.pantalla.deleteMany({ where: { cuentaId: { in: [cuentaNetflixPaquete.id, cuentaDisney.id] } } });
     await prismaRaw.cuenta.deleteMany({ where: { id: { in: [cuentaNetflixPaquete.id, cuentaDisney.id] } } });
     await prismaRaw.plataforma.delete({ where: { id: disney.id } });
+  });
+
+  // -------------------------------------------------------------------------
+  // F4.3 — garantía de una venta hecha fuera del sistema: no hay VentaDetalle
+  // original, así que se crea una Venta mínima `esExterna` en vez de volver
+  // VentaDetalle.ventaId opcional (ver comentario en garantias.ts). Mismo
+  // aislamiento por plataforma que el resto del archivo (crearPlataforma).
+  // -------------------------------------------------------------------------
+  describe("realizarGarantiaExterna", () => {
+    async function crearPlataformaConCosto(sufijo: string, costo: string) {
+      const plataformaId = await crearPlataforma(sufijo);
+      await prismaRaw.costoPlataforma.create({ data: { empresaId, plataformaId, duracionId, costo } });
+      return plataformaId;
+    }
+
+    it("entrega una pantalla del inventario y crea una Venta mínima esExterna: precio/costo/utilidad en cero, sin tipoCliente, Garantia sin VentaDetalle original", async () => {
+      const plataformaId = await crearPlataformaConCosto("externa-ok", "9000");
+      await crearCuentaConPantallaLibre("externa-ok", plataformaId);
+
+      const fechaVencimiento = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const cliente = prismaParaEmpresa(empresaId);
+      const resultado = await cliente.$transaction((tx) =>
+        realizarGarantiaExterna(tx, empresaId, adminId, {
+          plataformaId,
+          duracionId,
+          fechaVencimiento,
+          celularCliente: "3000000000",
+          motivo: "Venta por WhatsApp",
+        }),
+      );
+
+      expect(resultado.tipo).toBe("ok");
+      if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+
+      const venta = await prismaRaw.venta.findUniqueOrThrow({ where: { id: resultado.ventaDetalleReemplazo.ventaId } });
+      expect(venta.esExterna).toBe(true);
+      expect(venta.tipoVenta).toBe("UNIDAD");
+      expect(venta.tipoClienteId).toBeNull();
+      expect(venta.nombreTipoCliente).toBe("Venta externa");
+      expect(venta.precioVenta.toString()).toBe("0");
+      expect(venta.costo.toString()).toBe("0");
+      expect(venta.utilidad.toString()).toBe("0");
+      expect(venta.vendedorId).toBe(adminId);
+
+      expect(resultado.ventaDetalleReemplazo.fechaVencimiento.getTime()).toBe(fechaVencimiento.getTime());
+      expect(resultado.ventaDetalleReemplazo.plataformaId).toBe(plataformaId);
+      expect(descifrar(resultado.ventaDetalleReemplazo.passwordCuenta)).toBe("clave-reemplazo");
+
+      expect(resultado.garantia.esExterna).toBe(true);
+      expect(resultado.garantia.ventaDetalleOriginalId).toBeNull();
+      expect(resultado.garantia.ventaDetalleReemplazoId).toBe(resultado.ventaDetalleReemplazo.id);
+      expect(resultado.garantia.plataformaExternaId).toBe(plataformaId);
+      expect(resultado.garantia.celularExterno).toBe("3000000000");
+      expect(resultado.garantia.motivo).toBe("Venta por WhatsApp");
+      // CostoPlataforma(plataformaId, duracionId) = 9000, no Precio (F4.3
+      // no fija precio de venta) — este es el costo que se asume como
+      // pérdida.
+      expect(resultado.garantia.costoAsumido.toString()).toBe("9000");
+
+      // El mensaje usa la plantilla UNIDAD de esta empresa de prueba (sin
+      // marcador de precio, ver fixture arriba) con el aviso de reemplazo
+      // antepuesto. La prueba de que precioVenta=0 nunca se renderiza como
+      // "$0" vive en mensaje.test.ts (quitarBloquePrecioSiAplica) — aquí
+      // solo se confirma que el camino completo no lo reintroduce.
+      expect(resultado.garantia.mensajeGenerado).toContain("*Reemplazo de pantalla*");
+      expect(resultado.garantia.mensajeGenerado).not.toContain("$0");
+    });
+
+    it("NO desactiva ninguna Pantalla — a diferencia de realizarGarantia normal, la pantalla entregada sigue activa y disponible para su propio ciclo de vencimiento", async () => {
+      const plataformaId = await crearPlataformaConCosto("externa-sin-desactivar", "0");
+      await crearCuentaConPantallaLibre("externa-sin-desactivar", plataformaId);
+
+      const activasAntes = await prismaRaw.pantalla.count({
+        where: { cuenta: { plataformaId }, activa: true },
+      });
+
+      const cliente = prismaParaEmpresa(empresaId);
+      const resultado = await cliente.$transaction((tx) =>
+        realizarGarantiaExterna(tx, empresaId, adminId, {
+          plataformaId,
+          duracionId,
+          fechaVencimiento: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        }),
+      );
+      expect(resultado.tipo).toBe("ok");
+
+      const activasDespues = await prismaRaw.pantalla.count({
+        where: { cuenta: { plataformaId }, activa: true },
+      });
+      expect(activasDespues).toBe(activasAntes);
+    });
+
+    it("sin inventario: no deja ninguna Venta ni VentaDetalle huérfanos (todo o nada)", async () => {
+      const plataformaId = await crearPlataforma("externa-sin-inventario");
+      // Ninguna cuenta/pantalla para esta plataforma: inventario cero.
+
+      const ventasAntes = await prismaRaw.venta.count({ where: { empresaId } });
+      const detallesAntes = await prismaRaw.ventaDetalle.count({ where: { empresaId } });
+
+      const cliente = prismaParaEmpresa(empresaId);
+      const resultado = await cliente.$transaction((tx) =>
+        realizarGarantiaExterna(tx, empresaId, adminId, {
+          plataformaId,
+          duracionId,
+          fechaVencimiento: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        }),
+      );
+
+      expect(resultado.tipo).toBe("sin_inventario");
+
+      const ventasDespues = await prismaRaw.venta.count({ where: { empresaId } });
+      const detallesDespues = await prismaRaw.ventaDetalle.count({ where: { empresaId } });
+      expect(ventasDespues).toBe(ventasAntes);
+      expect(detallesDespues).toBe(detallesAntes);
+    });
+
+    it("plataforma inactiva: no_disponible, sin tocar inventario", async () => {
+      const plataformaId = await crearPlataforma("externa-inactiva");
+      await crearCuentaConPantallaLibre("externa-inactiva", plataformaId);
+      await prismaRaw.plataforma.update({ where: { id: plataformaId }, data: { activa: false } });
+
+      const cliente = prismaParaEmpresa(empresaId);
+      const resultado = await cliente.$transaction((tx) =>
+        realizarGarantiaExterna(tx, empresaId, adminId, {
+          plataformaId,
+          duracionId,
+          fechaVencimiento: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        }),
+      );
+      expect(resultado.tipo).toBe("no_disponible");
+    });
+
+    it("concurrencia (R2): con una sola pantalla libre, dos garantías externas simultáneas — una gana, la otra recibe sin_inventario", async () => {
+      const plataformaId = await crearPlataforma("externa-concurrencia");
+      await crearCuentaConPantallaLibre("externa-concurrencia", plataformaId);
+
+      const cliente = prismaParaEmpresa(empresaId);
+      const entrada = {
+        plataformaId,
+        duracionId,
+        fechaVencimiento: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      };
+      const [resultadoA, resultadoB] = await Promise.all([
+        cliente.$transaction((tx) => realizarGarantiaExterna(tx, empresaId, adminId, entrada)),
+        cliente.$transaction((tx) => realizarGarantiaExterna(tx, empresaId, adminId, entrada)),
+      ]);
+
+      const tipos = [resultadoA.tipo, resultadoB.tipo].sort();
+      expect(tipos).toEqual(["ok", "sin_inventario"]);
+    });
+
+    it("garantía de la garantía: la pantalla entregada por una garantía externa se puede reemplazar con realizarGarantia normal", async () => {
+      const plataformaId = await crearPlataformaConCosto("externa-garantia-de-garantia", "0");
+      await crearCuentaConPantallaLibre("externa-garantia-de-garantia-1", plataformaId);
+
+      const cliente = prismaParaEmpresa(empresaId);
+      const externa = await cliente.$transaction((tx) =>
+        realizarGarantiaExterna(tx, empresaId, adminId, {
+          plataformaId,
+          duracionId,
+          fechaVencimiento: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        }),
+      );
+      expect(externa.tipo).toBe("ok");
+      if (externa.tipo !== "ok") throw new Error("esperaba ok");
+
+      await crearCuentaConPantallaLibre("externa-garantia-de-garantia-2", plataformaId);
+      const resultado = await cliente.$transaction((tx) =>
+        realizarGarantia(tx, empresaId, adminId, externa.ventaDetalleReemplazo.id, "Pantalla fallida de nuevo"),
+      );
+
+      expect(resultado.tipo).toBe("ok");
+      if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+      expect(resultado.ventaDetalleReemplazo.ventaId).toBe(externa.ventaDetalleReemplazo.ventaId);
+      expect(resultado.ventaDetalleReemplazo.fechaVencimiento.getTime()).toBe(
+        externa.ventaDetalleReemplazo.fechaVencimiento.getTime(),
+      );
+    });
   });
 });

@@ -103,7 +103,7 @@ describe("Precios — matriz de Unidades (e, g)", () => {
 
   it("(e) llenar una celda la agrega; limpiarla la quita sin borrar la fila; rellenarla la reactiva sin violar la restricción única", async () => {
     // Llenar.
-    const llenar = await putUnidades([{ duracionId, tipoClienteId, precioVenta: "10000", costo: "5000" }]);
+    const llenar = await putUnidades([{ duracionId, tipoClienteId, precioVenta: "10000" }]);
     expect(llenar.status).toBe(200);
 
     let { celdas } = await getUnidades();
@@ -127,7 +127,7 @@ describe("Precios — matriz de Unidades (e, g)", () => {
 
     // Rellenar: reactiva la MISMA fila (misma id), no crea una segunda —
     // si violara la restricción única, este PUT fallaría con 500 en vez de 200.
-    const rellenar = await putUnidades([{ duracionId, tipoClienteId, precioVenta: "11000", costo: "6000" }]);
+    const rellenar = await putUnidades([{ duracionId, tipoClienteId, precioVenta: "11000" }]);
     expect(rellenar.status).toBe(200);
 
     ({ celdas } = await getUnidades());
@@ -142,5 +142,178 @@ describe("Precios — matriz de Unidades (e, g)", () => {
   it("(g) una segunda combinación nunca llenada tampoco aparece, aunque la plataforma ya tenga otras celdas activas", async () => {
     const { celdas } = await getUnidades();
     expect(celdas.find((c) => c.duracionId === otraDuracionId && c.tipoClienteId === tipoClienteId)).toBeUndefined();
+  });
+
+  it("el costo se pide una sola vez por duración (CostoPlataforma), no por celda de tipoCliente — punto 6", async () => {
+    const guardar = await precios.handle(
+      new Request("http://local/precios/unidades/costo", {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie: cookieAdmin },
+        body: JSON.stringify({ plataformaId, duracionId, costo: "7000" }),
+      }),
+    );
+    expect(guardar.status).toBe(200);
+    expect(((await guardar.json()) as { costo: string }).costo).toBe("7000");
+
+    const respuesta = await precios.handle(
+      new Request(`http://local/precios/unidades?plataformaId=${plataformaId}`, { headers: { cookie: cookieAdmin } }),
+    );
+    const cuerpo = (await respuesta.json()) as {
+      costos: { duracionId: string; costo: string }[];
+    };
+    expect(cuerpo.costos.find((c) => c.duracionId === duracionId)?.costo).toBe("7000");
+    // otraDuracionId nunca tuvo costo registrado: sigue en cero.
+    expect(cuerpo.costos.find((c) => c.duracionId === otraDuracionId)?.costo).toBe("0");
+
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId, plataformaId, duracionId } });
+  });
+
+  it("avisoCostoCero cuenta combinaciones plataforma+duración EN USO (con precio activo) sin costo registrado", async () => {
+    // duracionId ya tiene un precio activo (test "e" lo dejó lleno) pero sin
+    // CostoPlataforma: cuenta en el aviso. otraDuracionId nunca tuvo precio
+    // activo: no cuenta, aunque también le falte el costo.
+    const respuesta = await precios.handle(
+      new Request(`http://local/precios/unidades?plataformaId=${plataformaId}`, { headers: { cookie: cookieAdmin } }),
+    );
+    const cuerpo = (await respuesta.json()) as { avisoCostoCero: { cantidad: number } };
+    expect(cuerpo.avisoCostoCero.cantidad).toBe(1);
+
+    await prismaRaw.costoPlataforma.create({ data: { empresaId, plataformaId, duracionId, costo: "7000" } });
+    const trasRegistrar = await precios.handle(
+      new Request(`http://local/precios/unidades?plataformaId=${plataformaId}`, { headers: { cookie: cookieAdmin } }),
+    );
+    expect(((await trasRegistrar.json()) as { avisoCostoCero: { cantidad: number } }).avisoCostoCero.cantidad).toBe(0);
+
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId, plataformaId, duracionId } });
+  });
+});
+
+describe("Precios — matriz de Paquetes (costo calculado, no manual)", () => {
+  let empresaId: string;
+  let cookieAdmin: string;
+  let paqueteId: string;
+  let netflixId: string;
+  let disneyId: string;
+  let duracionId: string;
+  let tipoClienteId: string;
+
+  beforeAll(async () => {
+    const hash = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
+
+    const empresa = await prismaRaw.empresa.create({
+      data: { nombre: "Empresa precios-paquetes (precios.test)", prefijoCodigo: "PRQ" },
+    });
+    empresaId = empresa.id;
+
+    const adminEmail = `admin-precios-paquetes-${randomUUID()}@test.local`;
+    await prismaRaw.usuario.create({
+      data: { empresaId, email: adminEmail, passwordHash: hash, nombre: "Admin", rol: "ADMIN" },
+    });
+    cookieAdmin = await iniciarSesion(adminEmail);
+
+    const netflix = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "Netflix (precios-paquetes.test)", capacidadPantallas: 1, usaPerfilPin: false },
+    });
+    netflixId = netflix.id;
+
+    const disney = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "Disney+ (precios-paquetes.test)", capacidadPantallas: 1, usaPerfilPin: false },
+    });
+    disneyId = disney.id;
+
+    const duracion = await prismaRaw.duracion.create({
+      data: { empresaId, nombre: "30 días (precios-paquetes.test)", cantidad: 30, unidad: "DIAS" },
+    });
+    duracionId = duracion.id;
+
+    const tipoCliente = await prismaRaw.tipoCliente.create({
+      data: { empresaId, nombre: "Normal (precios-paquetes.test)" },
+    });
+    tipoClienteId = tipoCliente.id;
+
+    const paquete = await prismaRaw.paquete.create({
+      data: { empresaId, nombre: "Básico 1 (precios-paquetes.test)" },
+    });
+    paqueteId = paquete.id;
+
+    await prismaRaw.paquetePlataforma.create({
+      data: { empresaId, paqueteId, plataformaId: netflixId, cantidadPantallas: 1 },
+    });
+    await prismaRaw.paquetePlataforma.create({
+      data: { empresaId, paqueteId, plataformaId: disneyId, cantidadPantallas: 1 },
+    });
+
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: netflixId, duracionId, costo: "4000" },
+    });
+    // Disney+ no tiene CostoPlataforma registrado a propósito: deja el
+    // paquete con costo incompleto.
+
+    await prismaRaw.precio.create({
+      data: { empresaId, paqueteId, duracionId, tipoClienteId, precioVenta: "20000", costo: "0" },
+    });
+  });
+
+  afterAll(async () => {
+    await prismaRaw.precio.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.paquetePlataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.paquete.deleteMany({ where: { empresaId } });
+    await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
+    await prismaRaw.duracion.deleteMany({ where: { empresaId } });
+    await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.usuario.deleteMany({ where: { empresaId } });
+    await prismaRaw.empresa.delete({ where: { id: empresaId } });
+  });
+
+  async function getPaquetes() {
+    const respuesta = await precios.handle(
+      new Request(`http://local/precios/paquetes?paqueteId=${paqueteId}`, { headers: { cookie: cookieAdmin } }),
+    );
+    return (await respuesta.json()) as {
+      celdas: {
+        duracionId: string;
+        tipoClienteId: string;
+        costoCalculado: string | null;
+        detalle: { plataformaId: string; costoUnitario: string | null; subtotal: string | null }[];
+      }[];
+      avisoCostoCero: { cantidad: number };
+    };
+  }
+
+  it("el campo de costo manual desapareció: PUT no lo acepta y GET nunca lo devuelve", async () => {
+    const respuesta = await getPaquetes();
+    const celda = respuesta.celdas.find((c) => c.duracionId === duracionId && c.tipoClienteId === tipoClienteId);
+    expect(celda).toBeDefined();
+    expect(celda).not.toHaveProperty("costo");
+  });
+
+  it("costoCalculado es null mientras falte el costo de un componente, con el desglose señalando cuál", async () => {
+    const { celdas, avisoCostoCero } = await getPaquetes();
+    const celda = celdas.find((c) => c.duracionId === duracionId && c.tipoClienteId === tipoClienteId);
+    expect(celda?.costoCalculado).toBeNull();
+
+    const netflix = celda?.detalle.find((d) => d.plataformaId === netflixId);
+    expect(netflix?.costoUnitario).toBe("4000");
+    const disney = celda?.detalle.find((d) => d.plataformaId === disneyId);
+    expect(disney?.costoUnitario).toBeNull();
+
+    // Un renglón de duración incompleto cuenta una sola vez en el aviso,
+    // sin importar cuántos tipos de cliente tenga la matriz.
+    expect(avisoCostoCero.cantidad).toBe(1);
+  });
+
+  it("al completar el costo del componente faltante, costoCalculado se calcula y el aviso baja a cero", async () => {
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: disneyId, duracionId, costo: "2000" },
+    });
+
+    const { celdas, avisoCostoCero } = await getPaquetes();
+    const celda = celdas.find((c) => c.duracionId === duracionId && c.tipoClienteId === tipoClienteId);
+    // 4000 (Netflix) + 2000 (Disney+) = 6000.
+    expect(celda?.costoCalculado).toBe("6000");
+    expect(avisoCostoCero.cantidad).toBe(0);
+
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId, plataformaId: disneyId, duracionId } });
   });
 });

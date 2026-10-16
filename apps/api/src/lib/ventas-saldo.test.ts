@@ -90,7 +90,7 @@ describe("realizarVenta (Saldo) — concurrencia: varias ventas simultáneas, mi
     const resultados = await Promise.all(
       Array.from({ length: 5 }, () =>
         prismaParaEmpresa(empresaId).$transaction((tx) =>
-          realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+          realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
         ),
       ),
     );
@@ -326,7 +326,7 @@ describe("realizarVenta (Saldo) — rollback: falla de inventario después de pa
   it("saldo suficiente pero sin pantallas libres: inventario_insuficiente, saldo intacto, sin movimiento huérfano", async () => {
     const cliente = prismaParaEmpresa(empresaId);
     const resultado = await cliente.$transaction((tx) =>
-      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
     );
     expect(resultado.tipo).toBe("inventario_insuficiente");
 
@@ -408,7 +408,7 @@ describe("realizarVenta (Saldo) — EMPLEADO: camino de venta sin ningún cambio
   it("vende normalmente, saldo nunca se verifica ni se mueve, saldo sigue en 0", async () => {
     const cliente = prismaParaEmpresa(empresaId);
     const resultado = await cliente.$transaction((tx) =>
-      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
     );
     expect(resultado.tipo).toBe("ok");
     if (resultado.tipo !== "ok") throw new Error("esperaba ok");
@@ -431,7 +431,7 @@ describe("realizarVenta (Saldo) — EMPLEADO: camino de venta sin ningún cambio
     // siendo el de siempre.
     const cliente = prismaParaEmpresa(empresaId);
     const resultado = await cliente.$transaction((tx) =>
-      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
     );
     expect(resultado.tipo).toBe("inventario_insuficiente");
   });
@@ -509,7 +509,7 @@ describe("realizarVenta (Saldo) — cuadre de ledger: el saldo final es exactame
     const cliente = prismaParaEmpresa(empresaId);
     for (let i = 0; i < 3; i++) {
       const resultado = await cliente.$transaction((tx) =>
-        realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+        realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
       );
       expect(resultado.tipo).toBe("ok");
     }
@@ -540,7 +540,7 @@ describe("realizarVenta (Saldo) — cuadre de ledger: el saldo final es exactame
     // Una 4ª venta ya no alcanza (saldo 5000 < precio 10000): saldo_insuficiente,
     // no inventario (la pantalla #4 quedó libre a propósito).
     const cuarto = await cliente.$transaction((tx) =>
-      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
     );
     expect(cuarto.tipo).toBe("saldo_insuficiente");
   });

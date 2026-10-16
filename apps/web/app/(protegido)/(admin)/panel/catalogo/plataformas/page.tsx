@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Plus, Pencil, Ban, CheckCircle2, Tv, Building2 } from "lucide-react";
+import { PIN_LONGITUD_MAX, PIN_LONGITUD_MIN, PIN_PATRON, letraPerfil } from "@dismanet/shared";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { esSinEmpresaActiva } from "@/lib/error-api";
@@ -23,6 +24,10 @@ interface Plataforma {
   condiciones: string | null;
   capacidadPantallas: number;
   usaPerfilPin: boolean;
+  usaCorreo: boolean;
+  usaUsuario: boolean;
+  usaCodigo: boolean;
+  usaEnlace: boolean;
   activa: boolean;
 }
 
@@ -43,15 +48,15 @@ function mensajeDeError(errorRespuesta: unknown): string {
   return valor?.error?.mensaje ?? "No se pudo completar la operación.";
 }
 
-function letraPerfil(indice: number): string {
-  return String.fromCharCode(65 + (indice % 26));
-}
-
 const FORMULARIO_VACIO = {
   nombre: "",
   nombreMensaje: "",
   condiciones: "",
   usaPerfilPin: false,
+  usaCorreo: true,
+  usaUsuario: false,
+  usaCodigo: false,
+  usaEnlace: false,
 };
 
 const FILTROS: { valor: Filtro; etiqueta: string }[] = [
@@ -129,6 +134,10 @@ export default function PaginaPlataformas() {
       nombreMensaje: plataforma.nombreMensaje ?? "",
       condiciones: plataforma.condiciones ?? "",
       usaPerfilPin: plataforma.usaPerfilPin,
+      usaCorreo: plataforma.usaCorreo,
+      usaUsuario: plataforma.usaUsuario,
+      usaCodigo: plataforma.usaCodigo,
+      usaEnlace: plataforma.usaEnlace,
     });
     setCapacidadActual(plataforma.capacidadPantallas);
     setError(null);
@@ -145,8 +154,11 @@ export default function PaginaPlataformas() {
       nombre: formulario.nombre,
       ...(formulario.nombreMensaje ? { nombreMensaje: formulario.nombreMensaje } : {}),
       ...(formulario.condiciones ? { condiciones: formulario.condiciones } : {}),
-      capacidadPantallas: capacidadActual,
       usaPerfilPin: formulario.usaPerfilPin,
+      usaCorreo: formulario.usaCorreo,
+      usaUsuario: formulario.usaUsuario,
+      usaCodigo: formulario.usaCodigo,
+      usaEnlace: formulario.usaEnlace,
     };
 
     if (editandoId) {
@@ -157,21 +169,14 @@ export default function PaginaPlataformas() {
         return;
       }
     } else {
-      const { data, error: errorRespuesta } = await api.plataformas.post(cuerpo);
+      // Nace con capacidadPantallas = 0 y sin plantilla: el admin la carga
+      // después, editando la plataforma recién creada.
+      const { error: errorRespuesta } = await api.plataformas.post(cuerpo);
       setGuardando(false);
-      const nuevaPlataforma = (data as { plataforma?: { id: string } } | undefined)?.plataforma;
-      if (errorRespuesta || !nuevaPlataforma) {
+      if (errorRespuesta) {
         setError(mensajeDeError(errorRespuesta));
         return;
       }
-      // Una plataforma recién creada no tiene plantilla todavía: el body de
-      // POST /plataformas exige capacidadPantallas >= 1 por compatibilidad,
-      // pero eso no crea ninguna PlataformaPantalla. Sincronizar aquí mismo
-      // a 0 para que el número mostrado en todo el catálogo (incluida
-      // /disponibilidad) refleje la realidad — sin esto, el formulario de
-      // alta de cuentas diría "va a generar 1 pantalla" para una plataforma
-      // que en verdad no tiene plantilla y fallaría al crear.
-      await api.plataformas({ id: nuevaPlataforma.id }).pantallas.put({ pantallas: [] });
     }
 
     setPanelAbierto(false);
@@ -406,6 +411,48 @@ export default function PaginaPlataformas() {
             Usa perfil y PIN
           </label>
 
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-ink-muted">Campos de acceso de la cuenta</p>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex items-center gap-2 cuerpo text-ink">
+                <input
+                  type="checkbox"
+                  checked={formulario.usaCorreo}
+                  onChange={(e) => setFormulario({ ...formulario, usaCorreo: e.target.checked })}
+                  className="size-4 rounded accent-primario"
+                />
+                Correo
+              </label>
+              <label className="flex items-center gap-2 cuerpo text-ink">
+                <input
+                  type="checkbox"
+                  checked={formulario.usaUsuario}
+                  onChange={(e) => setFormulario({ ...formulario, usaUsuario: e.target.checked })}
+                  className="size-4 rounded accent-primario"
+                />
+                Usuario
+              </label>
+              <label className="flex items-center gap-2 cuerpo text-ink">
+                <input
+                  type="checkbox"
+                  checked={formulario.usaCodigo}
+                  onChange={(e) => setFormulario({ ...formulario, usaCodigo: e.target.checked })}
+                  className="size-4 rounded accent-primario"
+                />
+                Código
+              </label>
+              <label className="flex items-center gap-2 cuerpo text-ink">
+                <input
+                  type="checkbox"
+                  checked={formulario.usaEnlace}
+                  onChange={(e) => setFormulario({ ...formulario, usaEnlace: e.target.checked })}
+                  className="size-4 rounded accent-primario"
+                />
+                Enlace
+              </label>
+            </div>
+          </div>
+
           <div className="flex gap-2 pt-2">
             <Boton type="submit" variante="principal" disabled={guardando} className="flex-1">
               {guardando ? "Guardando…" : editandoId ? "Guardar cambios" : "Crear plataforma"}
@@ -470,7 +517,10 @@ export default function PaginaPlataformas() {
                               aria-label={`PIN de la pantalla ${indice + 1}`}
                               placeholder="PIN"
                               inputMode="numeric"
-                              maxLength={4}
+                              pattern={PIN_PATRON}
+                              minLength={PIN_LONGITUD_MIN}
+                              maxLength={PIN_LONGITUD_MAX}
+                              title={`${PIN_LONGITUD_MIN} a ${PIN_LONGITUD_MAX} dígitos.`}
                               value={fila.pin}
                               onChange={(e) => actualizarFilaPlantilla(indice, "pin", e.target.value)}
                             />

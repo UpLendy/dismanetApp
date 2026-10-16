@@ -7,6 +7,7 @@ import { prismaRaw } from "../lib/prisma.ts";
 import { cifrar } from "../lib/cifrado.ts";
 import { auth } from "./auth.ts";
 import { ventas } from "./ventas.ts";
+import { garantias } from "./garantias.ts";
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -72,6 +73,11 @@ async function crearEmpresaLista(prefijo: string, nombre: string, capacidadPanta
   await prismaRaw.precio.create({
     data: { empresaId, plataformaId: plataforma.id, duracionId: duracion.id, tipoClienteId: tipoCliente.id, precioVenta: "15000", costo: "8000" },
   });
+  // El costo real que realizarVenta consulta ya no sale de Precio.costo —
+  // ver CostoPlataforma (lib/ventas.ts, camino del dinero).
+  await prismaRaw.costoPlataforma.create({
+    data: { empresaId, plataformaId: plataforma.id, duracionId: duracion.id, costo: "8000" },
+  });
   await prismaRaw.plantillaMensaje.create({ data: { empresaId, tipo: "UNIDAD", contenido: "Código {{codigoCompra}} - {{correo}} - {{clave}}" } });
   await prismaRaw.plantillaMensaje.create({ data: { empresaId, tipo: "PAQUETE", contenido: "Código {{codigoCompra}}\n{{listaCuentas}}" } });
 
@@ -82,6 +88,7 @@ async function borrarEmpresa(empresaId: string) {
   await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
   await prismaRaw.venta.deleteMany({ where: { empresaId } });
   await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+  await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.precio.deleteMany({ where: { empresaId } });
   await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
   await prismaRaw.duracion.deleteMany({ where: { empresaId } });
@@ -139,7 +146,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     empresaBId = empresaB.empresaId;
     cookieAdminB = empresaB.cookieAdmin;
     const respuestaVentaB = await post(
-      { tipoVenta: "UNIDAD", plataformaId: empresaB.plataformaId, duracionId: empresaB.duracionId, tipoClienteId: empresaB.tipoClienteId },
+      { tipoVenta: "UNIDAD", plataformas: [empresaB.plataformaId], duracionId: empresaB.duracionId, tipoClienteId: empresaB.tipoClienteId },
       cookieAdminB,
     );
     expect(respuestaVentaB.status).toBe(201);
@@ -154,7 +161,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
 
   it("vendedor1 y vendedor2 venden (misma plataforma, 2 pantallas disponibles en total)", async () => {
     const r1 = await post(
-      { tipoVenta: "UNIDAD", plataformaId: plataformaAId, duracionId: duracionAId, tipoClienteId: tipoClienteAId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaAId], duracionId: duracionAId, tipoClienteId: tipoClienteAId },
       cookieVendedor1,
     );
     expect(r1.status).toBe(201);
@@ -163,7 +170,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     ventaId1 = c1.venta.id;
 
     const r2 = await post(
-      { tipoVenta: "UNIDAD", plataformaId: plataformaAId, duracionId: duracionAId, tipoClienteId: tipoClienteAId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaAId], duracionId: duracionAId, tipoClienteId: tipoClienteAId },
       cookieVendedor2,
     );
     expect(r2.status).toBe(201);
@@ -171,7 +178,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
 
   it("a una tercera venta ya no le queda pantalla libre (inventario agotado por las dos anteriores)", async () => {
     const r3 = await post(
-      { tipoVenta: "UNIDAD", plataformaId: plataformaAId, duracionId: duracionAId, tipoClienteId: tipoClienteAId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaAId], duracionId: duracionAId, tipoClienteId: tipoClienteAId },
       cookieVendedor1,
     );
     expect(r3.status).toBe(409);
@@ -258,7 +265,7 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
     expect(ventaAnulada.anuladaPorId).toBeString();
 
     const reventa = await post(
-      { tipoVenta: "UNIDAD", plataformaId: plataformaAId, duracionId: duracionAId, tipoClienteId: tipoClienteAId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaAId], duracionId: duracionAId, tipoClienteId: tipoClienteAId },
       cookieVendedor1,
     );
     expect(reventa.status).toBe(201);
@@ -304,5 +311,273 @@ describe("Rutas de ventas — listado, totales y anulación (Entrega 9, seccione
   it("EMPLEADO no puede anular una venta (403)", async () => {
     const respuesta = await patch(`/ventas/${ventaId1}/anular`, cookieVendedor1);
     expect(respuesta.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Camino del dinero, punto 4 — la pérdida de una garantía descuenta de la
+// utilidad del PERÍODO EN QUE LA GARANTÍA SE CREÓ, nunca de la venta
+// original (R3: Venta.utilidad nunca se toca). /ventas/totales debe devolver
+// ambas cifras por separado: utilidad ya neta, y perdidaGarantias aparte.
+// ---------------------------------------------------------------------------
+describe("Totales — la pérdida por garantías descuenta la utilidad del período", () => {
+  let empresaId: string;
+  let cookieAdmin: string;
+  let ventaId: string;
+
+  beforeAll(async () => {
+    const empresa = await crearEmpresaLista("LSG", "Empresa totales-garantías (ventas-listado.test)", 2);
+    empresaId = empresa.empresaId;
+    cookieAdmin = empresa.cookieAdmin;
+
+    const respuestaVenta = await post(
+      { tipoVenta: "UNIDAD", plataformas: [empresa.plataformaId], duracionId: empresa.duracionId, tipoClienteId: empresa.tipoClienteId },
+      cookieAdmin,
+    );
+    expect(respuestaVenta.status).toBe(201);
+    const cuerpoVenta = (await respuestaVenta.json()) as { venta: { id: string } };
+    ventaId = cuerpoVenta.venta.id;
+
+    const detalleOriginal = await prismaRaw.ventaDetalle.findFirstOrThrow({ where: { ventaId } });
+    const respuestaGarantia = await garantias.handle(
+      new Request(`http://local/garantias/${detalleOriginal.id}/reemplazar`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: cookieAdmin },
+        body: JSON.stringify({ motivo: "Pantalla dañada" }),
+      }),
+    );
+    expect(respuestaGarantia.status).toBe(201);
+  });
+
+  afterAll(async () => {
+    await prismaRaw.garantia.deleteMany({ where: { empresaId } });
+    await borrarEmpresa(empresaId);
+  });
+
+  it("perdidaGarantias llega aparte y utilidad ya viene neta (bruta - pérdida)", async () => {
+    const respuesta = await get("/ventas/totales", cookieAdmin);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as {
+      mes: { ingresos: string; costos: string; utilidad: string; perdidaGarantias: string };
+    };
+
+    // Venta: precioVenta 15000, costo 8000 (CostoPlataforma) -> utilidad bruta 7000.
+    // Garantía: mismo CostoPlataforma (8000) -> perdidaGarantias "8000".
+    // Utilidad neta esperada: 7000 - 8000 = -1000.
+    expect(Number(cuerpo.mes.ingresos)).toBe(15000);
+    expect(Number(cuerpo.mes.costos)).toBe(8000);
+    expect(cuerpo.mes.perdidaGarantias).toBe("8000");
+    expect(Number(cuerpo.mes.utilidad)).toBe(-1000);
+
+    // La venta original jamás se tocó (R3): su utilidad guardada sigue
+    // siendo la bruta, no la neta del período.
+    const ventaRecargada = await prismaRaw.venta.findUniqueOrThrow({ where: { id: ventaId } });
+    expect(ventaRecargada.utilidad.toString()).toBe("7000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F4.3 — garantía de una venta hecha fuera del sistema: la Venta esExterna
+// que la sostiene NO es un ingreso. Esta es la prueba que de verdad protege
+// la plata: una venta normal y una garantía externa en la MISMA ventana
+// deben dejar numeroVentas/listado/codigos viendo solo la normal, mientras
+// que perdidaGarantias SÍ suma la pérdida de la externa (Garantia.costoAsumido
+// no se filtra por esExterna — ver routes/ventas.ts totalesDesde()).
+// ---------------------------------------------------------------------------
+describe("F4.3 — la Venta esExterna no contamina /ventas (listado, totales, códigos)", () => {
+  let empresaId: string;
+  let cookieAdmin: string;
+  let plataformaId: string;
+  let duracionId: string;
+  let codigoVentaNormal: string;
+  let ventaExternaId: string;
+
+  async function postExterna(body: unknown, cookie: string) {
+    return garantias.handle(
+      new Request("http://local/garantias/externa", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  beforeAll(async () => {
+    // 2 pantallas: una para la venta normal, otra para la pantalla que
+    // entrega la garantía externa.
+    const empresa = await crearEmpresaLista("LSE", "Empresa venta externa (ventas-listado.test)", 2);
+    empresaId = empresa.empresaId;
+    cookieAdmin = empresa.cookieAdmin;
+    plataformaId = empresa.plataformaId;
+    duracionId = empresa.duracionId;
+
+    const respuestaNormal = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId: empresa.tipoClienteId },
+      cookieAdmin,
+    );
+    expect(respuestaNormal.status).toBe(201);
+    const cuerpoNormal = (await respuestaNormal.json()) as { venta: { codigoCompra: string } };
+    codigoVentaNormal = cuerpoNormal.venta.codigoCompra;
+
+    const fechaVencimiento = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const respuestaExterna = await postExterna(
+      { plataformaId, duracionId, fechaVencimiento, celularCliente: "3000000000", motivo: "Venta por WhatsApp" },
+      cookieAdmin,
+    );
+    expect(respuestaExterna.status).toBe(201);
+
+    const ventaExterna = await prismaRaw.venta.findFirstOrThrow({ where: { empresaId, esExterna: true } });
+    ventaExternaId = ventaExterna.id;
+  });
+
+  afterAll(async () => {
+    await prismaRaw.garantia.deleteMany({ where: { empresaId } });
+    await borrarEmpresa(empresaId);
+  });
+
+  it("la Venta externa nace con precio/costo/utilidad cero, sin tipoCliente, marcada esExterna", async () => {
+    const venta = await prismaRaw.venta.findUniqueOrThrow({ where: { id: ventaExternaId } });
+    expect(venta.esExterna).toBe(true);
+    expect(venta.tipoClienteId).toBeNull();
+    expect(venta.nombreTipoCliente).toBe("Venta externa");
+    expect(venta.precioVenta.toString()).toBe("0");
+    expect(venta.costo.toString()).toBe("0");
+    expect(venta.utilidad.toString()).toBe("0");
+  });
+
+  it("numeroVentas, /listado y /codigos ven solo la venta normal; perdidaGarantias SÍ incluye la pérdida externa", async () => {
+    const respuestaListado = await get("/ventas/listado", cookieAdmin);
+    expect(respuestaListado.status).toBe(200);
+    const cuerpoListado = (await respuestaListado.json()) as { ventas: Array<{ codigoCompra: string }> };
+    expect(cuerpoListado.ventas).toHaveLength(1);
+    expect(cuerpoListado.ventas[0].codigoCompra).toBe(codigoVentaNormal);
+
+    const respuestaCodigos = await get("/ventas/codigos", cookieAdmin);
+    const cuerpoCodigos = (await respuestaCodigos.json()) as { codigos: string[] };
+    expect(cuerpoCodigos.codigos).toHaveLength(1);
+    expect(cuerpoCodigos.codigos[0]).toBe(codigoVentaNormal);
+
+    const respuestaTotales = await get("/ventas/totales", cookieAdmin);
+    const cuerpoTotales = (await respuestaTotales.json()) as {
+      mes: { numeroVentas: number; ingresos: string; costos: string; utilidad: string; perdidaGarantias: string };
+    };
+    // Venta normal: 15000/8000 -> utilidad bruta 7000. Garantía externa:
+    // mismo CostoPlataforma (8000) -> perdidaGarantias "8000". numeroVentas
+    // cuenta solo la normal: si contara la externa también sería 2.
+    expect(cuerpoTotales.mes.numeroVentas).toBe(1);
+    expect(Number(cuerpoTotales.mes.ingresos)).toBe(15000);
+    expect(Number(cuerpoTotales.mes.costos)).toBe(8000);
+    expect(cuerpoTotales.mes.perdidaGarantias).toBe("8000");
+    expect(Number(cuerpoTotales.mes.utilidad)).toBe(-1000);
+  });
+
+  it("una venta externa no se puede anular (409 VENTA_EXTERNA_NO_SE_ANULA)", async () => {
+    const respuesta = await patch(`/ventas/${ventaExternaId}/anular`, cookieAdmin);
+    expect(respuesta.status).toBe(409);
+    const cuerpo = (await respuesta.json()) as { error: { codigo: string } };
+    expect(cuerpo.error.codigo).toBe("VENTA_EXTERNA_NO_SE_ANULA");
+  });
+
+  it("GET /garantias/pantallas-vendidas SÍ muestra la fila entregada por la garantía externa, marcada como tal", async () => {
+    const respuesta = await garantias.handle(
+      new Request("http://local/garantias/pantallas-vendidas", { headers: { cookie: cookieAdmin } }),
+    );
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as {
+      pantallas: Array<{ esExterna: boolean; celularExterno: string | null; codigoCompra: string }>;
+    };
+    const filaExterna = cuerpo.pantallas.find((p) => p.esExterna);
+    expect(filaExterna).toBeDefined();
+    expect(filaExterna?.celularExterno).toBe("3000000000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F4.4 decisión 6 — una venta de 2+ renglones nace con Venta.plataformaId
+// null (no hay un único id que represente "Netflix y Disney+"). Si
+// whereDesdeFiltros() siguiera filtrando por Venta.plataformaId, esta venta
+// sería invisible al filtrar /listado por cualquiera de sus dos
+// plataformas — exactamente el bug que el cambio a `detalles: { some: ... }`
+// (routes/ventas.ts) tiene que evitar.
+// ---------------------------------------------------------------------------
+describe("F4.4 — filtrar /listado por plataforma encuentra ventas de 2+ renglones (Venta.plataformaId null)", () => {
+  let empresaId: string;
+  let cookieAdmin: string;
+  let plataformaNetflixId: string;
+  let plataformaDisneyId: string;
+  let duracionId: string;
+  let tipoClienteId: string;
+  let codigoVentaMulti: string;
+  let codigoVentaUnica: string;
+
+  beforeAll(async () => {
+    const empresa = await crearEmpresaLista("LSF", "Empresa filtro multi-renglón (ventas-listado.test)", 1);
+    empresaId = empresa.empresaId;
+    cookieAdmin = empresa.cookieAdmin;
+    plataformaNetflixId = empresa.plataformaId;
+    duracionId = empresa.duracionId;
+    tipoClienteId = empresa.tipoClienteId;
+
+    // Disney+ con 2 pantallas: una para la venta de un solo renglón, otra
+    // para el renglón que aporta a la venta multi-renglón — sin que compitan
+    // por el mismo cupo.
+    const disney = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "Disney+ (filtro-multi.test)", capacidadPantallas: 2, usaPerfilPin: false },
+    });
+    plataformaDisneyId = disney.id;
+    const cuentaDisney = await prismaRaw.cuenta.create({
+      data: { empresaId, plataformaId: plataformaDisneyId, correo: "disney@filtro-multi.test", password: cifrar("clave"), capacidadPantallas: 2 },
+    });
+    await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuentaDisney.id, numero: 1 } });
+    await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuentaDisney.id, numero: 2 } });
+    await prismaRaw.precio.create({
+      data: { empresaId, plataformaId: plataformaDisneyId, duracionId, tipoClienteId, precioVenta: "12000", costo: "5000" },
+    });
+    await prismaRaw.costoPlataforma.create({ data: { empresaId, plataformaId: plataformaDisneyId, duracionId, costo: "5000" } });
+
+    // Una venta de un solo renglón (solo Disney+) para confirmar que el
+    // filtro no empieza a traer TODO al cambiar a detalles.some (falso
+    // positivo): no debe aparecer al filtrar por Netflix.
+    const respuestaUnica = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaDisneyId], duracionId, tipoClienteId },
+      cookieAdmin,
+    );
+    expect(respuestaUnica.status).toBe(201);
+    codigoVentaUnica = ((await respuestaUnica.json()) as { venta: { codigoCompra: string } }).venta.codigoCompra;
+
+    const respuestaMulti = await post(
+      { tipoVenta: "UNIDAD", plataformas: [plataformaNetflixId, plataformaDisneyId], duracionId, tipoClienteId },
+      cookieAdmin,
+    );
+    expect(respuestaMulti.status).toBe(201);
+    const cuerpoMulti = (await respuestaMulti.json()) as { venta: { codigoCompra: string } };
+    codigoVentaMulti = cuerpoMulti.venta.codigoCompra;
+  });
+
+  afterAll(async () => {
+    await borrarEmpresa(empresaId);
+  });
+
+  it("Venta.plataformaId es null para la venta de 2 renglones", async () => {
+    const venta = await prismaRaw.venta.findFirstOrThrow({ where: { empresaId, codigoCompra: codigoVentaMulti } });
+    expect(venta.plataformaId).toBeNull();
+  });
+
+  it("/listado?plataformaId=<Netflix> encuentra la venta multi-renglón (no solo las de un renglón)", async () => {
+    const respuesta = await get(`/ventas/listado?plataformaId=${plataformaNetflixId}`, cookieAdmin);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { ventas: Array<{ codigoCompra: string }> };
+    const codigos = cuerpo.ventas.map((v) => v.codigoCompra);
+    expect(codigos).toContain(codigoVentaMulti);
+    expect(codigos).not.toContain(codigoVentaUnica); // esa venta no llevó Netflix
+  });
+
+  it("/listado?plataformaId=<Disney+> TAMBIÉN encuentra la misma venta multi-renglón, por su otro renglón", async () => {
+    const respuesta = await get(`/ventas/listado?plataformaId=${plataformaDisneyId}`, cookieAdmin);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { ventas: Array<{ codigoCompra: string }> };
+    const codigos = cuerpo.ventas.map((v) => v.codigoCompra);
+    expect(codigos).toContain(codigoVentaMulti);
+    expect(codigos).toContain(codigoVentaUnica); // esa sí llevó Disney+
   });
 });

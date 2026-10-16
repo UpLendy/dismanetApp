@@ -66,6 +66,7 @@ model Empresa {
   paquetePlataformas         PaquetePlataforma[]
   paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
   precios                    Precio[]
+  costosPlataforma           CostoPlataforma[]
   cuentas                    Cuenta[]
   pantallas                  Pantalla[]
   pantallasPlantilla         PlataformaPantalla[]
@@ -139,6 +140,15 @@ model Plataforma {
   condiciones        String?
   capacidadPantallas Int
   usaPerfilPin       Boolean @default(false)
+  /// Qué campos de acceso usa esta plataforma (F4.2, parte 1): controla qué
+  /// pide el formulario de Cuenta, qué exige la validación en cuentas.ts, y
+  /// qué bloques del mensaje de WhatsApp sobreviven a
+  /// quitarBloquesDeCamposNoUsados(). usaCorreo es el único true por
+  /// defecto porque es el campo que ya existía antes de F4.2.
+  usaCorreo          Boolean @default(true)
+  usaUsuario         Boolean @default(false)
+  usaCodigo          Boolean @default(false)
+  usaEnlace          Boolean @default(false)
   activa             Boolean @default(true)
   logoUrl            String?
 
@@ -147,10 +157,12 @@ model Plataforma {
   paquetePlataformas         PaquetePlataforma[]
   paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
   precios                    Precio[]
+  costosPlataforma           CostoPlataforma[]
   cuentas                    Cuenta[]
   ventas                     Venta[]
   ventaDetalles              VentaDetalle[]
   pantallasPlantilla         PlataformaPantalla[]
+  garantiasExternas          Garantia[]
 
   @@index([empresaId])
 }
@@ -188,6 +200,7 @@ model Duracion {
   empresa Empresa @relation(fields: [empresaId], references: [id])
 
   precios                Precio[]
+  costosPlataforma       CostoPlataforma[]
   paqueteDuracionVendida PaqueteDuracionPlataforma[] @relation("DuracionVendida")
   paqueteDuracionReal    PaqueteDuracionPlataforma[] @relation("DuracionReal")
   ventas                 Venta[]
@@ -295,6 +308,25 @@ model Precio {
   @@index([empresaId])
 }
 
+/// Costo por plataforma+duración — el costo no depende del tipo de cliente,
+/// a diferencia de Precio.precioVenta. Reemplaza a Precio.costo como fuente
+/// de costo en todo el código de negocio (Precio.costo queda sin leerse,
+/// ver lib/precio-costo-lista-blanca.test.ts, pendiente de eliminar columna).
+model CostoPlataforma {
+  id           String  @id @default(cuid())
+  empresaId    String
+  plataformaId String
+  duracionId   String
+  costo        Decimal @db.Decimal(14, 2)
+
+  empresa    Empresa    @relation(fields: [empresaId], references: [id])
+  plataforma Plataforma @relation(fields: [plataformaId], references: [id])
+  duracion   Duracion   @relation(fields: [duracionId], references: [id])
+
+  @@unique([empresaId, plataformaId, duracionId])
+  @@index([empresaId])
+}
+
 // ---------------------------------------------------------------------------
 // Inventario
 // ---------------------------------------------------------------------------
@@ -303,8 +335,18 @@ model Cuenta {
   id                 String   @id @default(cuid())
   empresaId          String
   plataformaId       String
-  correo             String
+  /// Nullable desde F4.2: obligatorio solo si Plataforma.usaCorreo = true.
+  /// La validación real (obligatorio/prohibido según la plataforma) vive en
+  /// el handler de cuentas.ts, no aquí — depende de la plataforma cargada.
+  correo             String?
+  usuario            String?
+  /// Cifrado reversible (AES-256-GCM), igual que password — ver src/lib/cifrado.ts.
+  codigo             String?
+  /// Texto plano a propósito: es una URL, no un secreto (F4.2, parte 1.1).
+  enlace             String?
   /// Cifrado reversible (AES-256-GCM), no hash — ver src/lib/cifrado.ts.
+  /// Nunca nullable: toda cuenta tiene contraseña de la plataforma, sin
+  /// importar qué otros campos declare usaX.
   password           String
   capacidadPantallas Int
   notas              String?
@@ -362,7 +404,12 @@ model Venta {
   plataformaId  String?
   paqueteId     String?
   duracionId    String
-  tipoClienteId String
+  tipoClienteId String?
+
+  /// Venta creada únicamente para sostener una garantía de una venta hecha
+  /// fuera del sistema (F4.3). precioVenta/costo/utilidad son cero: no es un
+  /// ingreso. Se excluye de listados y totales.
+  esExterna Boolean @default(false)
 
   // Copias inmutables al momento de la venta (R3).
   nombreItem        String
@@ -370,6 +417,11 @@ model Venta {
   cantidadDuracion  Int
   unidadDuracion    UnidadDuracion
   nombreTipoCliente String
+  /// Suma de precios de catálogo de los renglones vendidos (F4.4). Antes de
+  /// F4.4 no existía forma de descontar, así que en todo lo histórico
+  /// precioSugerido == precioVenta. El descuento no se guarda: se deriva
+  /// como precioSugerido - precioVenta (puede ser negativo: un recargo).
+  precioSugerido    Decimal        @db.Decimal(14, 2)
   precioVenta       Decimal        @db.Decimal(14, 2)
   costo             Decimal        @db.Decimal(14, 2)
   utilidad          Decimal        @db.Decimal(14, 2)
@@ -394,13 +446,13 @@ model Venta {
   anuladaEn    DateTime?
   createdAt    DateTime  @default(now())
 
-  empresa     Empresa     @relation(fields: [empresaId], references: [id])
-  vendedor    Usuario     @relation("VentaVendedor", fields: [vendedorId], references: [id])
-  anuladaPor  Usuario?    @relation("VentaAnuladaPor", fields: [anuladaPorId], references: [id])
-  plataforma  Plataforma? @relation(fields: [plataformaId], references: [id])
-  paquete     Paquete?    @relation(fields: [paqueteId], references: [id])
-  duracion    Duracion    @relation(fields: [duracionId], references: [id])
-  tipoCliente TipoCliente @relation(fields: [tipoClienteId], references: [id])
+  empresa     Empresa      @relation(fields: [empresaId], references: [id])
+  vendedor    Usuario      @relation("VentaVendedor", fields: [vendedorId], references: [id])
+  anuladaPor  Usuario?     @relation("VentaAnuladaPor", fields: [anuladaPorId], references: [id])
+  plataforma  Plataforma?  @relation(fields: [plataformaId], references: [id])
+  paquete     Paquete?     @relation(fields: [paqueteId], references: [id])
+  duracion    Duracion     @relation(fields: [duracionId], references: [id])
+  tipoCliente TipoCliente? @relation(fields: [tipoClienteId], references: [id])
 
   detalles         VentaDetalle[]
   movimientosSaldo MovimientoSaldo[]
@@ -423,7 +475,11 @@ model VentaDetalle {
 
   // Copias inmutables al momento de la venta (R3).
   nombrePlataforma String
-  correoCuenta     String
+  correoCuenta     String?
+  usuarioCuenta    String?
+  /// Cifrado reversible (AES-256-GCM), copiado de Cuenta.codigo al vender.
+  codigoCuenta     String?
+  enlaceCuenta     String?
   /// Cifrado reversible (AES-256-GCM), copiado de Cuenta.password al vender.
   passwordCuenta   String
   perfil           String?
@@ -436,6 +492,17 @@ model VentaDetalle {
   /// Fuente de verdad de disponibilidad (R5): ocupada si venta no anulada y
   /// fechaVencimiento > now().
   fechaVencimiento DateTime
+
+  /// Copias inmutables por renglón (R3, F4.4). Nulas en las ventas
+  /// anteriores a F4.4 y en las de tipoVenta PAQUETE: el precio de un
+  /// paquete no se puede atribuir por plataforma sin inventarlo. Null
+  /// significa "sin desglose", no cero — F4.5 tiene que tratarlo así.
+  precioSugerido Decimal? @db.Decimal(14, 2)
+  /// Nulo en lo anterior a F4.4, y también (F4.7) cuando no existe
+  /// CostoPlataforma para esa plataforma/duración al momento de la venta.
+  /// Null significa "costo no atribuible", no cero — estadisticas-ventas.ts
+  /// lo cuenta en renglonesSinCostoAtribuible, nunca lo suma como $0.
+  costo          Decimal? @db.Decimal(14, 2)
 
   empresa    Empresa    @relation(fields: [empresaId], references: [id])
   venta      Venta      @relation(fields: [ventaId], references: [id])
@@ -464,7 +531,7 @@ model VentaDetalle {
 model Garantia {
   id                      String   @id @default(cuid())
   empresaId               String
-  ventaDetalleOriginalId  String   @unique
+  ventaDetalleOriginalId  String?  @unique
   ventaDetalleReemplazoId String   @unique
   motivo                  String?
   /// Costo de la plataforma/duración al momento de la garantía — copia
@@ -475,10 +542,22 @@ model Garantia {
   creadoPorId             String
   createdAt               DateTime @default(now())
 
-  empresa               Empresa      @relation(fields: [empresaId], references: [id])
-  ventaDetalleOriginal  VentaDetalle @relation("GarantiaOriginal", fields: [ventaDetalleOriginalId], references: [id])
-  ventaDetalleReemplazo VentaDetalle @relation("GarantiaReemplazo", fields: [ventaDetalleReemplazoId], references: [id])
-  creadoPor             Usuario      @relation("GarantiaCreadaPor", fields: [creadoPorId], references: [id])
+  /// Garantía de una venta que ocurrió fuera del sistema (F4.3): no hay
+  /// VentaDetalle original que reemplazar, solo la promesa hecha al
+  /// comprador.
+  esExterna Boolean @default(false)
+
+  /// Datos de la venta original cuando ocurrió fuera del sistema (F4.3).
+  /// Nulos en una garantía normal, donde esa información vive en el
+  /// VentaDetalle original.
+  plataformaExternaId String?
+  celularExterno      String?
+
+  empresa               Empresa       @relation(fields: [empresaId], references: [id])
+  ventaDetalleOriginal  VentaDetalle? @relation("GarantiaOriginal", fields: [ventaDetalleOriginalId], references: [id])
+  ventaDetalleReemplazo VentaDetalle  @relation("GarantiaReemplazo", fields: [ventaDetalleReemplazoId], references: [id])
+  creadoPor             Usuario       @relation("GarantiaCreadaPor", fields: [creadoPorId], references: [id])
+  plataformaExterna     Plataforma?   @relation(fields: [plataformaExternaId], references: [id])
 
   @@index([empresaId])
 }

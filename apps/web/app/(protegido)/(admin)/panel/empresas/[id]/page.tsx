@@ -27,10 +27,16 @@ interface Diagnostico {
   plataformasActivas: number;
   paquetesActivos: number;
   preciosActivos: number;
-  preciosConCostoCero: number;
   cuentasActivas: number;
   pantallasActivas: number;
   pantallasLibres: number;
+  cuentasConPinInconsistente: {
+    cuentaId: string;
+    nombrePlataforma: string;
+    identificador: string;
+    perfil: string;
+    numerosPantalla: number[];
+  }[];
   puedeVender: boolean;
 }
 
@@ -81,16 +87,24 @@ function itemsDeEstado(diagnostico: Diagnostico): ItemEstado[] {
     {
       etiqueta: "Precios",
       ok: diagnostico.preciosActivos > 0,
-      detalle:
-        diagnostico.preciosConCostoCero > 0
-          ? `${diagnostico.preciosActivos} activos (${diagnostico.preciosConCostoCero} con costo en cero)`
-          : `${diagnostico.preciosActivos} activos`,
+      detalle: `${diagnostico.preciosActivos} activos`,
       ruta: "/panel/precios",
     },
     {
       etiqueta: "Cuentas y pantallas",
       ok: diagnostico.cuentasActivas > 0 && diagnostico.pantallasLibres > 0,
       detalle: `${diagnostico.cuentasActivas} cuentas activas · ${diagnostico.pantallasLibres} de ${diagnostico.pantallasActivas} pantallas libres`,
+      ruta: "/panel/cuentas",
+    },
+    {
+      etiqueta: "PIN por perfil",
+      ok: diagnostico.cuentasConPinInconsistente.length === 0,
+      detalle:
+        diagnostico.cuentasConPinInconsistente.length === 0
+          ? "Mismo perfil, mismo PIN en todas las cuentas"
+          : diagnostico.cuentasConPinInconsistente
+              .map((fila) => `${fila.identificador} · perfil ${fila.perfil} (pantallas #${fila.numerosPantalla.join(", #")})`)
+              .join(" · "),
       ruta: "/panel/cuentas",
     },
   ];
