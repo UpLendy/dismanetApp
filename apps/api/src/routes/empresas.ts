@@ -12,7 +12,7 @@ import {
 import { requiereRol } from "../plugins/guardas.ts";
 import { PLANTILLA_PAQUETE_POR_DEFECTO, PLANTILLA_UNIDAD_POR_DEFECTO } from "../lib/plantillas-default.ts";
 import { TIPOS_CLIENTE_POR_DEFECTO } from "../lib/tipos-cliente-default.ts";
-import { diagnosticoDeEmpresa } from "../lib/diagnostico-empresa.ts";
+import { diagnosticoDeEmpresa, buscarCuentasConPinInconsistente } from "../lib/diagnostico-empresa.ts";
 
 const esquemaDiagnostico = t.Object({
   plantillas: t.Object({ existeUnidad: t.Boolean(), existePaquete: t.Boolean() }),
@@ -21,11 +21,27 @@ const esquemaDiagnostico = t.Object({
   plataformasActivas: t.Number(),
   paquetesActivos: t.Number(),
   preciosActivos: t.Number(),
-  preciosConCostoCero: t.Number(),
   cuentasActivas: t.Number(),
   pantallasActivas: t.Number(),
   pantallasLibres: t.Number(),
+  cuentasConPinInconsistente: t.Array(
+    t.Object({
+      cuentaId: t.String(),
+      nombrePlataforma: t.String(),
+      identificador: t.String(),
+      perfil: t.String(),
+      numerosPantalla: t.Array(t.Number()),
+    }),
+  ),
   puedeVender: t.Boolean(),
+});
+
+const esquemaCuentaPinInconsistente = t.Object({
+  cuentaId: t.String(),
+  nombrePlataforma: t.String(),
+  identificador: t.String(),
+  perfil: t.String(),
+  numerosPantalla: t.Array(t.Number()),
 });
 
 const esquemaError = t.Object({
@@ -148,6 +164,32 @@ export const empresas = new Elysia({ prefix: "/empresas" })
       response: {
         201: t.Object({ empresa: esquemaEmpresa }),
         409: esquemaError,
+      },
+    },
+  )
+  // F4.7, arreglo 4 — /:id/diagnostico (abajo) queda detrás del
+  // requiereRol(SUPER_ADMIN) de la siguiente línea: lo ve el dueño de la
+  // plataforma, no el ADMIN de la empresa, que es el único que sabe cuál PIN
+  // es el bueno. Esta ruta es el camino que el ADMIN sí puede usar, acotado
+  // a su propia empresa (contexto.empresaId) — no mueve ni amplía la ruta
+  // de SUPER_ADMIN.
+  .get(
+    "/diagnostico-cuentas",
+    async ({ contexto, set }) => {
+      if (!contexto.empresaId) {
+        set.status = 400;
+        return {
+          error: { codigo: "SIN_EMPRESA_ACTIVA", mensaje: "Selecciona una empresa antes de continuar." },
+        };
+      }
+
+      const cuentasConPinInconsistente = await buscarCuentasConPinInconsistente(prismaParaEmpresa(contexto.empresaId));
+      return { cuentasConPinInconsistente };
+    },
+    {
+      response: {
+        200: t.Object({ cuentasConPinInconsistente: t.Array(esquemaCuentaPinInconsistente) }),
+        400: esquemaError,
       },
     },
   )

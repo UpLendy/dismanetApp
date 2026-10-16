@@ -6,5 +6,5 @@ export default async function PaginaPantallasVendidas() {
   const sesion = await obtenerSesion();
   if (!sesion) redirect("/login");
 
-  return <PantallasVendidasContenido />;
+  return <PantallasVendidasContenido rol={sesion.usuario.rol} />;
 }

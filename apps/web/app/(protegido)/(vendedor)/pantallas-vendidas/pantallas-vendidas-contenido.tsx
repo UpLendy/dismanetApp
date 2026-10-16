@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, ChevronDown, ChevronUp, Copy, MonitorCheck, RefreshCcw, Search } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Check, ChevronDown, ChevronUp, Copy, MonitorCheck, PhoneCall, RefreshCcw, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta } from "@/components/ui/tarjeta";
@@ -12,6 +13,7 @@ import { Dialogo } from "@/components/ui/dialogo";
 import { EstadoVacio } from "@/components/ui/estado-vacio";
 import { CargandoTabla } from "@/components/ui/cargando";
 import { Tabla, TablaCabecera, TablaCuerpo, TablaFila, TablaCeldaCabecera, TablaCelda } from "@/components/ui/tabla";
+import { satisfaceRol, type Rol } from "@/lib/rol";
 
 type Estado = "VIGENTE" | "VENCIDA" | "REEMPLAZADA" | "VENTA_ANULADA";
 
@@ -20,7 +22,7 @@ interface GarantiaDetalle {
   motivo: string | null;
   creadoEn: string;
   creadoPor: { id: string; nombre: string };
-  correoCuentaReemplazo: string;
+  correoCuentaReemplazo: string | null;
   costoAsumido?: string;
 }
 
@@ -28,7 +30,7 @@ interface PantallaVendida {
   id: string;
   plataformaId: string;
   nombrePlataforma: string;
-  correoCuenta: string;
+  correoCuenta: string | null;
   claveCuenta: string;
   perfil: string | null;
   pin: string | null;
@@ -39,12 +41,37 @@ interface PantallaVendida {
   estado: Estado;
   puedeReemplazar: boolean;
   garantia: GarantiaDetalle | null;
+  // F4.3 — true si esta pantalla se entregó por una garantía de una venta
+  // hecha fuera del sistema: codigoCompra es el de la Venta mínima
+  // sintética, no el de una compra real. Se muestra celularExterno en su lugar.
+  esExterna: boolean;
+  celularExterno: string | null;
 }
 
 interface Opcion {
   id: string;
   nombre: string;
 }
+
+interface PlataformaExterna {
+  id: string;
+  nombre: string;
+  condiciones: string | null;
+  pantallasLibres: number;
+}
+
+interface DuracionExterna {
+  id: string;
+  nombre: string;
+}
+
+const FORM_EXTERNA_VACIO = {
+  plataformaId: "",
+  duracionId: "",
+  fechaVencimiento: "",
+  celularCliente: "",
+  motivo: "",
+};
 
 const ESTADOS: Record<Estado, { texto: string; tono: "bien" | "neutral" | "secundario" | "critico" }> = {
   VIGENTE: { texto: "Vigente", tono: "bien" },
@@ -90,7 +117,7 @@ function DetalleFila({ fila }: { fila: PantallaVendida }) {
       <div className="grid gap-2 text-sm sm:grid-cols-2">
         <p>
           <span className="text-ink-muted">Correo: </span>
-          <span className="text-ink">{fila.correoCuenta}</span>
+          <span className="text-ink">{fila.correoCuenta ?? "—"}</span>
         </p>
         <p>
           <span className="text-ink-muted">Clave: </span>
@@ -116,7 +143,7 @@ function DetalleFila({ fila }: { fila: PantallaVendida }) {
             {formatearFecha(fila.garantia.creadoEn)} · {fila.garantia.creadoPor.nombre}
           </p>
           {fila.garantia.motivo ? <p className="mt-1 text-ink-2">Motivo: {fila.garantia.motivo}</p> : null}
-          <p className="mt-1 text-ink-2">Pasó a la cuenta {fila.garantia.correoCuentaReemplazo}</p>
+          <p className="mt-1 text-ink-2">Pasó a la cuenta {fila.garantia.correoCuentaReemplazo ?? "—"}</p>
           {fila.garantia.costoAsumido !== undefined ? (
             <p className="mt-1 text-ink-muted">Pérdida asumida: {fila.garantia.costoAsumido}</p>
           ) : null}
@@ -126,13 +153,29 @@ function DetalleFila({ fila }: { fila: PantallaVendida }) {
   );
 }
 
-export function PantallasVendidasContenido() {
+export function PantallasVendidasContenido({ rol }: { rol: Rol }) {
+  // F4.7, arreglo 2 — /garantias/costo-externo es ADMIN-only (R4): un
+  // EMPLEADO ni pide el costo asumido ni lo ve en el diálogo.
+  const esAdmin = satisfaceRol(rol, "ADMIN");
+  const searchParams = useSearchParams();
+  // F4.6 — abrirExterna() debe disparar una sola vez al llegar con
+  // garantiaExterna=1 (viene de Vender), nunca otra vez: cerrar el diálogo
+  // no debe reabrirlo en el siguiente render.
+  const externaDisparadaRef = useRef(false);
+
   const [pantallas, setPantallas] = useState<PantallaVendida[]>([]);
   const [cargando, setCargando] = useState(true);
   const [errorLista, setErrorLista] = useState<string | null>(null);
   const [expandidoId, setExpandidoId] = useState<string | null>(null);
 
-  const [filtros, setFiltros] = useState(FILTROS_VACIOS);
+  // F4.6 — llega desde Vender con codigoCompra o correoCuenta en la URL: el
+  // filtro arranca aplicado, no vacío a la espera de que alguien lo escriba
+  // de nuevo.
+  const [filtros, setFiltros] = useState(() => ({
+    ...FILTROS_VACIOS,
+    codigoCompra: searchParams.get("codigoCompra") ?? "",
+    correoCuenta: searchParams.get("correoCuenta") ?? "",
+  }));
 
   // Las opciones de los selects de plataforma/vendedor se derivan de la
   // primera carga (sin filtros), no de /plataformas ni /usuarios: esos dos
@@ -148,6 +191,19 @@ export function PantallasVendidasContenido() {
 
   const [mensajeExitoso, setMensajeExitoso] = useState<string | null>(null);
   const [copiado, setCopiado] = useState(false);
+
+  // F4.3 — garantía de una venta hecha fuera del sistema: no hay pantalla
+  // original en la tabla de donde colgar el botón, así que es una acción de
+  // la página, no de un renglón.
+  const [registrandoExterna, setRegistrandoExterna] = useState(false);
+  const [catalogoExterna, setCatalogoExterna] = useState<{
+    plataformas: PlataformaExterna[];
+    duraciones: DuracionExterna[];
+  } | null>(null);
+  const [formExterna, setFormExterna] = useState(FORM_EXTERNA_VACIO);
+  const [costoExterna, setCostoExterna] = useState<string | null>(null);
+  const [procesandoExterna, setProcesandoExterna] = useState(false);
+  const [errorExterna, setErrorExterna] = useState<string | null>(null);
 
   const cargar = useCallback(async (filtrosActuales: typeof FILTROS_VACIOS) => {
     setCargando(true);
@@ -180,8 +236,20 @@ export function PantallasVendidasContenido() {
   }, []);
 
   useEffect(() => {
-    cargar(FILTROS_VACIOS);
-  }, [cargar]);
+    cargar(filtros);
+
+    // F4.6 — abrirExterna() abre sola el diálogo de garantía externa al
+    // llegar con garantiaExterna=1 (viene de Vender). Guardado por
+    // externaDisparadaRef para que cerrar el diálogo no lo vuelva a abrir
+    // en un render posterior.
+    if (!externaDisparadaRef.current && searchParams.get("garantiaExterna") === "1") {
+      externaDisparadaRef.current = true;
+      abrirExterna();
+    }
+    // Solo al montar, con los filtros iniciales ya leídos de la URL: no debe
+    // volver a correr si `filtros` cambia después por una búsqueda manual.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function actualizarFiltro<K extends keyof typeof FILTROS_VACIOS>(campo: K, valor: (typeof FILTROS_VACIOS)[K]) {
     setFiltros((previo) => ({ ...previo, [campo]: valor }));
@@ -233,13 +301,80 @@ export function PantallasVendidasContenido() {
     setTimeout(() => setCopiado(false), 2000);
   }
 
+  async function abrirExterna() {
+    setErrorExterna(null);
+    setFormExterna(FORM_EXTERNA_VACIO);
+    setCostoExterna(null);
+    setRegistrandoExterna(true);
+    if (!catalogoExterna) {
+      const { data, error: errorRespuesta } = await api.garantias["catalogo-externa"].get();
+      if (!errorRespuesta && data) setCatalogoExterna(data);
+    }
+  }
+
+  async function confirmarExterna() {
+    if (!formExterna.plataformaId || !formExterna.duracionId || !formExterna.fechaVencimiento) {
+      setErrorExterna("Completa plataforma, duración y fecha de vencimiento.");
+      return;
+    }
+    setProcesandoExterna(true);
+    setErrorExterna(null);
+    const { data, error: errorRespuesta } = await api.garantias.externa.post({
+      plataformaId: formExterna.plataformaId,
+      duracionId: formExterna.duracionId,
+      // Fin del día: así "hoy" sigue siendo una fecha futura válida frente
+      // a la hora actual, no solo "mañana en adelante".
+      fechaVencimiento: `${formExterna.fechaVencimiento}T23:59:00`,
+      celularCliente: formExterna.celularCliente.trim() || undefined,
+      motivo: formExterna.motivo.trim() || undefined,
+    });
+    setProcesandoExterna(false);
+
+    if (errorRespuesta || !data || !("mensajeGenerado" in data) || typeof data.mensajeGenerado !== "string") {
+      setErrorExterna(mensajeDeError(errorRespuesta));
+      return;
+    }
+
+    setRegistrandoExterna(false);
+    setMensajeExitoso(data.mensajeGenerado);
+    setCopiado(false);
+    cargar(filtros);
+  }
+
+  const plataformaExternaSeleccionada = catalogoExterna?.plataformas.find(
+    (plataforma) => plataforma.id === formExterna.plataformaId,
+  );
+
+  useEffect(() => {
+    if (!esAdmin || !registrandoExterna || !formExterna.plataformaId || !formExterna.duracionId) {
+      setCostoExterna(null);
+      return;
+    }
+    let cancelado = false;
+    (async () => {
+      const { data, error: errorRespuesta } = await api.garantias["costo-externo"].get({
+        query: { plataformaId: formExterna.plataformaId, duracionId: formExterna.duracionId },
+      });
+      if (!cancelado && !errorRespuesta && data) setCostoExterna(data.costoAsumido);
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [esAdmin, registrandoExterna, formExterna.plataformaId, formExterna.duracionId]);
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="titulo-pagina text-ink">Pantallas vendidas</h1>
-        <p className="cuerpo text-ink-muted">
-          Una fila por pantalla entregada. Si una cuenta no sirve, reemplázala por otra de la misma plataforma.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="titulo-pagina text-ink">Pantallas vendidas</h1>
+          <p className="cuerpo text-ink-muted">
+            Una fila por pantalla entregada. Si una cuenta no sirve, reemplázala por otra de la misma plataforma.
+          </p>
+        </div>
+        <Boton variante="contorno" type="button" onClick={abrirExterna}>
+          <PhoneCall />
+          Registrar garantía externa
+        </Boton>
       </div>
 
       {mensajeExitoso ? (
@@ -382,9 +517,18 @@ export function PantallasVendidasContenido() {
                 <Fragment key={fila.id}>
                   <TablaFila>
                     <TablaCelda className="font-medium text-ink">{fila.nombrePlataforma}</TablaCelda>
-                    <TablaCelda className="text-ink-2">{fila.correoCuenta}</TablaCelda>
+                    <TablaCelda className="text-ink-2">{fila.correoCuenta ?? "—"}</TablaCelda>
                     <TablaCelda className="text-ink-muted">{fila.perfil ?? "—"}</TablaCelda>
-                    <TablaCelda className="text-ink-2">{fila.codigoCompra}</TablaCelda>
+                    <TablaCelda className="text-ink-2">
+                      {fila.esExterna ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Pastilla tono="secundario">Externa</Pastilla>
+                          {fila.celularExterno ?? "—"}
+                        </span>
+                      ) : (
+                        fila.codigoCompra
+                      )}
+                    </TablaCelda>
                     <TablaCelda className="text-ink-muted">{fila.vendedor.nombre}</TablaCelda>
                     <TablaCelda className="text-ink-muted">{formatearFecha(fila.fechaEntrega)}</TablaCelda>
                     <TablaCelda className="text-ink-muted">{formatearFecha(fila.fechaVencimiento)}</TablaCelda>
@@ -434,6 +578,88 @@ export function PantallasVendidasContenido() {
         <Campo etiqueta="Motivo (opcional)">
           {(p) => (
             <AreaCampo {...p} value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Qué falló" />
+          )}
+        </Campo>
+      </Dialogo>
+
+      <Dialogo
+        abierto={registrandoExterna}
+        onCambiarAbierto={(abierto) => !abierto && setRegistrandoExterna(false)}
+        titulo="Registrar garantía externa"
+        descripcion={
+          plataformaExternaSeleccionada && formExterna.fechaVencimiento
+            ? esAdmin
+              ? `Se va a entregar una pantalla de ${plataformaExternaSeleccionada.nombre} del inventario, ocupada hasta ${formExterna.fechaVencimiento}, y se va a registrar una pérdida de ${costoExterna ?? "—"}.`
+              : `Se va a entregar una pantalla de ${plataformaExternaSeleccionada.nombre} del inventario, ocupada hasta ${formExterna.fechaVencimiento}.`
+            : "Para una venta que se hizo por fuera del sistema: entrega una pantalla del inventario y registra la pérdida."
+        }
+        textoConfirmar="Registrar"
+        varianteConfirmar="principal"
+        confirmando={procesandoExterna}
+        onConfirmar={confirmarExterna}
+      >
+        {errorExterna ? <Aviso variante="critico">{errorExterna}</Aviso> : null}
+        <Campo etiqueta="Plataforma">
+          {(p) => (
+            <SelectCampo
+              {...p}
+              value={formExterna.plataformaId}
+              onChange={(e) => setFormExterna((f) => ({ ...f, plataformaId: e.target.value }))}
+            >
+              <option value="">Selecciona...</option>
+              {(catalogoExterna?.plataformas ?? []).map((plataforma) => (
+                <option key={plataforma.id} value={plataforma.id}>
+                  {plataforma.nombre} ({plataforma.pantallasLibres} libres)
+                </option>
+              ))}
+            </SelectCampo>
+          )}
+        </Campo>
+        <Campo etiqueta="Duración">
+          {(p) => (
+            <SelectCampo
+              {...p}
+              value={formExterna.duracionId}
+              onChange={(e) => setFormExterna((f) => ({ ...f, duracionId: e.target.value }))}
+            >
+              <option value="">Selecciona...</option>
+              {(catalogoExterna?.duraciones ?? []).map((duracion) => (
+                <option key={duracion.id} value={duracion.id}>
+                  {duracion.nombre}
+                </option>
+              ))}
+            </SelectCampo>
+          )}
+        </Campo>
+        <Campo etiqueta="Fecha de vencimiento">
+          {(p) => (
+            <EntradaCampo
+              {...p}
+              type="date"
+              min={new Date().toISOString().slice(0, 10)}
+              value={formExterna.fechaVencimiento}
+              onChange={(e) => setFormExterna((f) => ({ ...f, fechaVencimiento: e.target.value }))}
+            />
+          )}
+        </Campo>
+        <Campo etiqueta="Celular del cliente (opcional)">
+          {(p) => (
+            <EntradaCampo
+              {...p}
+              placeholder="3001234567"
+              value={formExterna.celularCliente}
+              onChange={(e) => setFormExterna((f) => ({ ...f, celularCliente: e.target.value }))}
+            />
+          )}
+        </Campo>
+        <Campo etiqueta="Motivo (opcional)">
+          {(p) => (
+            <AreaCampo
+              {...p}
+              value={formExterna.motivo}
+              onChange={(e) => setFormExterna((f) => ({ ...f, motivo: e.target.value }))}
+              placeholder="Qué pasó"
+            />
           )}
         </Campo>
       </Dialogo>

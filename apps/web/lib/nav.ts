@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText } from "lucide-react";
+import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3 } from "lucide-react";
 import type { Rol } from "@/lib/rol";
 
 export interface ItemNav {
@@ -49,6 +49,11 @@ const GRUPOS: GrupoNav[] = [
   {
     titulo: "ADMINISTRACIÓN",
     items: [
+      // F4.5: no está en DISENO.md §3 (anterior a esta entrega) — se agrupa
+      // aquí porque el alcance es "solo ADMIN y SUPER_ADMIN", igual que
+      // Usuarios, y porque la cifra financiera que muestra exige ese mismo
+      // nivel de acceso.
+      { etiqueta: "Estadísticas", href: "/panel/estadisticas", icono: BarChart3, rolMinimo: "ADMIN" },
       { etiqueta: "Usuarios", href: "/panel/usuarios", icono: UserCog, rolMinimo: "ADMIN" },
       // Empresas: SUPER_ADMIN ve el listado completo y puede crear.
       // Ocultamos la ruta completamente para ADMIN.

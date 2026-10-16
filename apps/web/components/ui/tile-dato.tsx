@@ -17,12 +17,14 @@ function TileDato({
   icono: Icono,
   tono,
   className,
+  subInfo,
 }: {
   etiqueta: string;
   valor: React.ReactNode;
   icono?: React.ComponentType<{ className?: string }>;
   tono?: keyof typeof tonoColor;
   className?: string;
+  subInfo?: React.ReactNode;
 }) {
   return (
     <div className={cn("rounded-tarjeta border border-borde bg-superficie p-5 shadow-tarjeta", className)}>
@@ -31,6 +33,7 @@ function TileDato({
         {Icono ? <Icono className={cn("size-4", tono ? tonoColor[tono] : "text-ink-muted")} /> : null}
       </div>
       <p className={cn("valor-dato mt-1 tabular-nums", tono ? tonoColor[tono] : "text-ink")}>{valor}</p>
+      {subInfo ? <p className="mt-0.5 text-xs text-critico">{subInfo}</p> : null}
     </div>
   );
 }

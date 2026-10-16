@@ -18,7 +18,7 @@ async function main() {
 
   let totalConPlantilla = 0;
   let totalSinPlantilla = 0;
-  const todasDivergentes: { empresa: string; cuentaId: string; correo: string; nombrePlataforma: string; pantallasCuenta: number; pantallasPlantilla: number }[] = [];
+  const todasDivergentes: { empresa: string; cuentaId: string; correo: string | null; nombrePlataforma: string; pantallasCuenta: number; pantallasPlantilla: number }[] = [];
 
   for (const empresa of empresas) {
     const cliente = prismaParaEmpresa(empresa.id);

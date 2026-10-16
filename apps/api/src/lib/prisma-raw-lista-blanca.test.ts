@@ -46,6 +46,17 @@ const LISTA_BLANCA = new Set<string>([
   // negocio en sí vive en src/lib/backfill-plataforma-pantalla.ts y recibe
   // siempre un cliente ya acotado por prismaParaEmpresa.
   "prisma/backfill-plataforma-pantalla.ts",
+  // Migración de datos (camino del dinero, punto 1: Precio.costo ->
+  // CostoPlataforma): mismo caso — necesita listar todas las empresas para
+  // recorrerlas. La lógica de negocio vive en
+  // src/lib/migrar-costo-plataforma.ts y recibe siempre un cliente ya
+  // acotado por prismaParaEmpresa.
+  "prisma/migrar-costo-plataforma.ts",
+  // Script de reparación uno-solo-vez (camino del dinero, punto 7): mismo
+  // caso — necesita listar todas las empresas para recorrerlas. La
+  // reparación en sí vive en src/lib/reparar-costos-historicos.ts y recibe
+  // siempre un cliente ya acotado por prismaParaEmpresa.
+  "prisma/reparar-costos-historicos.ts",
   // Resuelve la identidad del usuario a partir del JWT: todavía no hay
   // empresaId de sesión fiable en ese punto (es justamente lo que esta
   // consulta ayuda a derivar), y para SUPER_ADMIN nunca hay una empresa
@@ -86,6 +97,12 @@ const LISTA_BLANCA_RAW_SQL = new Set<string>([
   // consulta de datos, no hay empresaId que filtrar — el nombre del
   // savepoint es un literal fijo, sin interpolación de usuario.
   "src/lib/ventas.ts",
+  // F4.3: mismo patrón de SAVEPOINT que ventas.ts, alrededor del create()
+  // del reintento de código de compra de realizarGarantiaExterna() — con
+  // su propio nombre de savepoint (intento_codigo_compra_externa) para no
+  // colisionar si alguna vez corrieran dentro de la misma transacción.
+  // Tampoco hay empresaId que filtrar: no es una consulta de datos.
+  "src/lib/garantias.ts",
 ]);
 
 function esArchivoDePrueba(rutaRelativa: string): boolean {

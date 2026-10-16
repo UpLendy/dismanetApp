@@ -9,7 +9,7 @@ import { calcularVencimiento } from "./duracion.ts";
 import { restriccionViolada } from "./errores.ts";
 import { renderizarMensajeDeVenta } from "./mensaje-venta.ts";
 import type { ComponenteMensajePaquete } from "./mensaje.ts";
-import { resolverComposicionDePaquete, type ComponentePaquete } from "./paquetes.ts";
+import { costoComponentesPaquete, resolverComposicionDePaquete, type ComponentePaquete } from "./paquetes.ts";
 import { PLANTILLA_RESPALDO_PAQUETE, PLANTILLA_RESPALDO_UNIDAD } from "./plantillas-default.ts";
 
 // ---------------------------------------------------------------------------
@@ -34,11 +34,23 @@ const MAX_INTENTOS_CODIGO = 5;
 
 export interface EntradaVentaUnidad {
   tipoVenta: "UNIDAD";
-  plataformaId: string;
+  /**
+   * 1..N plataformas (F4.4). Una plataforma repetida ("netflix","netflix")
+   * pide dos pantallas de esa plataforma, no una — se agrupan para pedir el
+   * inventario en una sola llamada, pero siguen siendo dos renglones para
+   * efectos de plantilla de mensaje y de la regla de descuento.
+   */
+  plataformas: string[];
   duracionId: string;
   tipoClienteId: string;
   /** Celular del comprador final, opcional (R3: se copia una sola vez). */
   celularCliente?: string | null;
+  /**
+   * Ajuste manual del total (F4.4, Parte 3). La ruta ya validó rol, que la
+   * venta tenga 2+ renglones y que sea > 0 antes de llegar aquí — acá solo
+   * se usa para decidir qué se cobra. Ausente: se cobra el precio sugerido.
+   */
+  precioFinal?: Prisma.Decimal | null;
 }
 
 export interface EntradaVentaPaquete {
@@ -100,41 +112,107 @@ export async function realizarVenta(
   let nombreItem: string;
   let composicion: ComponentePaquete[];
   if (entrada.tipoVenta === "UNIDAD") {
-    const plataforma = await tx.plataforma.findUnique({ where: { id: entrada.plataformaId } });
-    if (!plataforma || !plataforma.activa) {
-      return { tipo: "no_disponible", mensaje: "La plataforma seleccionada no está disponible." };
+    if (entrada.plataformas.length === 0) {
+      return { tipo: "no_disponible", mensaje: "Selecciona al menos una plataforma." };
     }
-    const precio = await tx.precio.findFirst({
-      where: {
-        plataformaId: plataforma.id,
-        duracionId: duracionVendida.id,
-        tipoClienteId: tipoCliente.id,
-        activo: true,
-      },
+
+    // Una plataforma repetida ("netflix","netflix") es un solo id único para
+    // efectos de inventario (se agrupa abajo), pero sigue siendo 2 renglones
+    // del lado del precio/mensaje — ver entrada.plataformas más arriba.
+    const idsUnicos = [...new Set(entrada.plataformas)];
+    const plataformas = await tx.plataforma.findMany({ where: { id: { in: idsUnicos } } });
+    const plataformaPorId = new Map(plataformas.map((p) => [p.id, p]));
+    for (const id of idsUnicos) {
+      const plataforma = plataformaPorId.get(id);
+      if (!plataforma || !plataforma.activa) {
+        return { tipo: "no_disponible", mensaje: `La plataforma "${plataforma?.nombre ?? id}" no está disponible.` };
+      }
+    }
+
+    const precios = await tx.precio.findMany({
+      where: { plataformaId: { in: idsUnicos }, duracionId: duracionVendida.id, tipoClienteId: tipoCliente.id, activo: true },
     });
-    if (!precio) {
-      return { tipo: "no_disponible", mensaje: "No hay un precio activo para esta combinación." };
+    const precioPorPlataforma = new Map(precios.map((p) => [p.plataformaId, p.precioVenta]));
+    for (const id of idsUnicos) {
+      if (!precioPorPlataforma.has(id)) {
+        // Nunca cobrar cero por falta de precio: se rechaza toda la venta
+        // nombrando la plataforma que no tiene precio activo.
+        return {
+          tipo: "no_disponible",
+          mensaje: `No hay un precio activo para "${plataformaPorId.get(id)!.nombre}" en esta combinación.`,
+        };
+      }
     }
-    nombreItem = plataforma.nombre;
-    composicion = [
-      {
-        plataformaId: plataforma.id,
-        nombrePlataforma: plataforma.nombre,
-        cantidadPantallas: 1,
-        duracionId: duracionVendida.id,
-        cantidadDuracion: duracionVendida.cantidad,
-        unidadDuracion: duracionVendida.unidad,
-      },
-    ];
+
+    // El costo ya no depende del tipo de cliente — una sola fila por
+    // plataforma+duración (CostoPlataforma). Si falta, la venta no se
+    // bloquea (R3/punto 3 del encargo "camino del dinero"): se registra con
+    // costo cero y el aviso de la matriz de precios señala el faltante.
+    const costos = await tx.costoPlataforma.findMany({
+      where: { plataformaId: { in: idsUnicos }, duracionId: duracionVendida.id },
+    });
+    const costoPorPlataforma = new Map(costos.map((c) => [c.plataformaId, c.costo]));
+
+    const cantidadPorPlataforma = new Map<string, number>();
+    for (const id of entrada.plataformas) {
+      cantidadPorPlataforma.set(id, (cantidadPorPlataforma.get(id) ?? 0) + 1);
+    }
+
+    // R2 regla 1: orden determinista de bloqueo, ascendente por
+    // plataformaId — sin importar en qué orden el vendedor agregó los
+    // renglones. Una sola llamada a tomarPantallasDisponibles por
+    // plataforma distinta (más abajo, en realizarVentaConComposicion),
+    // pidiendo la cantidad ya sumada.
+    composicion = idsUnicos
+      .slice()
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+      .map((id) => {
+        const plataforma = plataformaPorId.get(id)!;
+        return {
+          plataformaId: id,
+          nombrePlataforma: plataforma.nombre,
+          cantidadPantallas: cantidadPorPlataforma.get(id)!,
+          duracionId: duracionVendida.id,
+          cantidadDuracion: duracionVendida.cantidad,
+          unidadDuracion: duracionVendida.unidad,
+        };
+      });
+
+    // nombreItem: nombres en el orden en que el vendedor los agregó (no el
+    // orden de bloqueo) — copia inmutable de lo que el comprador vio (R3).
+    nombreItem = entrada.plataformas.map((id) => plataformaPorId.get(id)!.nombre).join(" + ");
+
+    const precioSugerido = entrada.plataformas.reduce(
+      (suma, id) => suma.plus(precioPorPlataforma.get(id)!),
+      new Prisma.Decimal(0),
+    );
+    const costoTotal = entrada.plataformas.reduce(
+      (suma, id) => suma.plus(costoPorPlataforma.get(id) ?? new Prisma.Decimal(0)),
+      new Prisma.Decimal(0),
+    );
+    // Precio final (Parte 3): la ruta ya validó rol, 2+ renglones y > 0. Un
+    // recargo (precioFinal > precioSugerido) se acepta igual — el
+    // descuento derivado simplemente queda negativo, no es un error.
+    const precioVentaFinal = entrada.precioFinal ?? precioSugerido;
+
+    const infoPorPlataforma = new Map(
+      idsUnicos.map((id) => [
+        id,
+        { precioSugerido: precioPorPlataforma.get(id)!, costo: costoPorPlataforma.get(id) ?? null },
+      ]),
+    );
+
     return realizarVentaConComposicion(tx, empresaId, vendedorId, entrada, {
       empresa,
       tipoCliente,
       duracionVendida,
       nombreItem,
       composicion,
-      precioVenta: precio.precioVenta,
-      costo: precio.costo,
+      precioSugerido,
+      precioVenta: precioVentaFinal,
+      costo: costoTotal,
       esPromocion: false,
+      infoPorPlataforma,
     });
   }
 
@@ -158,6 +236,17 @@ export async function realizarVenta(
   if (composicion.length === 0) {
     return { tipo: "no_disponible", mensaje: "El paquete no tiene plataformas configuradas." };
   }
+  // Costo calculado (lib/paquetes.ts), nunca digitado — suma lo que SÍ se
+  // conoce aunque algún componente no tenga costo registrado: la venta no
+  // se bloquea por un dato de configuración faltante (punto 3).
+  const { suma: costoPaquete, detalle } = await costoComponentesPaquete(tx, paquete.id, duracionVendida.id);
+  // El precio de un paquete es uno solo por fila de la matriz: no se puede
+  // atribuir por plataforma sin inventarlo (F4.4) — por eso
+  // precioSugerido va null por renglón más abajo. El costo sí es
+  // atribuible (CostoPlataforma existe por plataforma+duración).
+  const infoPorPlataforma = new Map(
+    detalle.map((d) => [d.plataformaId, { precioSugerido: null, costo: d.costoUnitario ?? null }]),
+  );
 
   return realizarVentaConComposicion(tx, empresaId, vendedorId, entrada, {
     empresa,
@@ -165,9 +254,11 @@ export async function realizarVenta(
     duracionVendida,
     nombreItem,
     composicion,
+    precioSugerido: precio.precioVenta,
     precioVenta: precio.precioVenta,
-    costo: precio.costo,
+    costo: costoPaquete,
     esPromocion: paquete.esPromocion,
+    infoPorPlataforma,
   });
 }
 
@@ -177,10 +268,18 @@ interface DatosComunesVenta {
   duracionVendida: { id: string; nombre: string; cantidad: number; unidad: UnidadDuracion };
   nombreItem: string;
   composicion: ComponentePaquete[];
+  /** Suma de precios de catálogo de los renglones vendidos (F4.4). */
+  precioSugerido: Prisma.Decimal;
   precioVenta: Prisma.Decimal;
   costo: Prisma.Decimal;
   /** Copia desde Paquete.esPromocion al momento de vender (R3). Siempre false para UNIDAD. */
   esPromocion: boolean;
+  /**
+   * Precio sugerido y costo por plataforma, para las copias inmutables de
+   * VentaDetalle (F4.4). precioSugerido es null para PAQUETE: el precio de
+   * un paquete no se puede atribuir por plataforma sin inventarlo.
+   */
+  infoPorPlataforma: Map<string, { precioSugerido: Prisma.Decimal | null; costo: Prisma.Decimal | null }>;
 }
 
 /**
@@ -199,7 +298,16 @@ async function realizarVentaConComposicion(
   entrada: EntradaVenta,
   datos: DatosComunesVenta,
 ): Promise<ResultadoVenta> {
-  const { empresa, tipoCliente, duracionVendida, nombreItem, composicion, precioVenta, costo, esPromocion } = datos;
+  const { empresa, tipoCliente, duracionVendida, nombreItem, composicion, precioSugerido, precioVenta, costo, esPromocion, infoPorPlataforma } =
+    datos;
+
+  // F4.4: un UNIDAD de 2+ renglones usa la plantilla y el armado de mensaje
+  // de PAQUETE (decisión 4) aunque Venta.tipoVenta siga guardando "UNIDAD"
+  // — esto es una elección de QUÉ PLANTILLA RENDERIZAR, no del tipo de
+  // negocio de la venta. Un UNIDAD de 1 renglón sigue exactamente el
+  // camino de hoy, byte a byte.
+  const esMultiProducto = entrada.tipoVenta === "UNIDAD" && entrada.plataformas.length >= 2;
+  const tipoPlantilla: "UNIDAD" | "PAQUETE" = esMultiProducto || entrada.tipoVenta === "PAQUETE" ? "PAQUETE" : "UNIDAD";
 
   // Saldo, orden global de bloqueos (ver CLAUDE.md / lib/bloqueo-usuario.ts):
   // PRIMERO la fila del usuario, FOR UPDATE sin SKIP LOCKED — la más
@@ -279,31 +387,45 @@ async function realizarVentaConComposicion(
   // empresa — ver empresas.ts y el backfill de datos — pero puede faltar
   // en empresas antiguas o si alguien la borró a mano), se usa la
   // plantilla de respaldo incorporada en el código y se avisa después.
-  const plantilla = await tx.plantillaMensaje.findFirst({ where: { tipo: entrada.tipoVenta } });
+  const plantilla = await tx.plantillaMensaje.findFirst({ where: { tipo: tipoPlantilla } });
   const plantillaFaltante = !plantilla;
   const contenidoPlantilla =
     plantilla?.contenido ??
-    (entrada.tipoVenta === "UNIDAD" ? PLANTILLA_RESPALDO_UNIDAD : PLANTILLA_RESPALDO_PAQUETE);
+    (tipoPlantilla === "UNIDAD" ? PLANTILLA_RESPALDO_UNIDAD : PLANTILLA_RESPALDO_PAQUETE);
 
   // Piezas del mensaje que NO dependen del código de compra: se calculan una
   // sola vez, antes del lazo de reintento.
+  const construirBloqueMensaje = (componente: ComponentePaquete, pantalla: PantallaBloqueada): ComponenteMensajePaquete => {
+    const cuenta = cuentaPorId.get(pantalla.cuentaId)!;
+    const infoPantalla = pantallaPorId.get(pantalla.id)!;
+    const plataformaInfo = plataformaInfoPorId.get(componente.plataformaId)!;
+    return {
+      nombrePlataforma: plataformaInfo.nombreMensaje ?? plataformaInfo.nombre,
+      usaPerfilPin: plataformaInfo.usaPerfilPin,
+      usaCorreo: plataformaInfo.usaCorreo,
+      usaUsuario: plataformaInfo.usaUsuario,
+      usaCodigo: plataformaInfo.usaCodigo,
+      usaEnlace: plataformaInfo.usaEnlace,
+      nombreDuracionReal: nombreDuracionPorId.get(componente.duracionId) ?? componente.nombrePlataforma,
+      perfil: infoPantalla.perfil,
+      pin: infoPantalla.pin ? descifrar(infoPantalla.pin) : null,
+      correo: cuenta.correo,
+      usuario: cuenta.usuario,
+      codigo: cuenta.codigo ? descifrar(cuenta.codigo) : null,
+      enlace: cuenta.enlace,
+      clave: descifrar(cuenta.password),
+    };
+  };
   const componentesMensaje: ComponenteMensajePaquete[] =
-    entrada.tipoVenta === "PAQUETE"
-      ? bloqueos.map(({ componente, pantallas }) => {
-          const pantalla = pantallas[0];
-          const cuenta = cuentaPorId.get(pantalla.cuentaId)!;
-          const infoPantalla = pantallaPorId.get(pantalla.id)!;
-          const plataformaInfo = plataformaInfoPorId.get(componente.plataformaId)!;
-          return {
-            nombrePlataforma: plataformaInfo.nombreMensaje ?? plataformaInfo.nombre,
-            usaPerfilPin: plataformaInfo.usaPerfilPin,
-            nombreDuracionReal: nombreDuracionPorId.get(componente.duracionId) ?? componente.nombrePlataforma,
-            perfil: infoPantalla.perfil,
-            pin: infoPantalla.pin ? descifrar(infoPantalla.pin) : null,
-            correo: cuenta.correo,
-            clave: descifrar(cuenta.password),
-          };
-        })
+    tipoPlantilla === "PAQUETE"
+      ? entrada.tipoVenta === "PAQUETE"
+        // Paquete real: un bloque por componente (pantallas[0]) — sin
+        // cambios, byte a byte, respecto de antes de F4.4.
+        ? bloqueos.map(({ componente, pantallas }) => construirBloqueMensaje(componente, pantallas[0]))
+        // UNIDAD multi-renglón (F4.4): un bloque por PANTALLA, no por
+        // componente — una plataforma repetida pide 2 pantallas en un solo
+        // componente agrupado, pero el mensaje debe traer sus 2 bloques.
+        : bloqueos.flatMap(({ componente, pantallas }) => pantallas.map((pantalla) => construirBloqueMensaje(componente, pantalla)))
       : [];
 
   let ventaCreada: Venta | null = null;
@@ -313,7 +435,7 @@ async function realizarVentaConComposicion(
     // Mismo punto de entrada que la vista previa de la pantalla de
     // plantillas (lib/mensaje-venta.ts): mismos datos, mismo texto.
     const mensajeGenerado =
-      entrada.tipoVenta === "UNIDAD"
+      tipoPlantilla === "UNIDAD"
         ? (() => {
             const { componente, pantallas } = bloqueos[0];
             const pantalla = pantallas[0];
@@ -331,9 +453,16 @@ async function realizarVentaConComposicion(
                 precioVenta,
                 nombrePlataformaMensaje: plataformaInfo.nombreMensaje ?? plataformaInfo.nombre,
                 usaPerfilPin: plataformaInfo.usaPerfilPin,
+                usaCorreo: plataformaInfo.usaCorreo,
+                usaUsuario: plataformaInfo.usaUsuario,
+                usaCodigo: plataformaInfo.usaCodigo,
+                usaEnlace: plataformaInfo.usaEnlace,
                 perfil: infoPantalla.perfil,
                 pin: infoPantalla.pin ? descifrar(infoPantalla.pin) : null,
                 correo: cuenta.correo,
+                usuario: cuenta.usuario,
+                codigo: cuenta.codigo ? descifrar(cuenta.codigo) : null,
+                enlace: cuenta.enlace,
                 clave: descifrar(cuenta.password),
                 celularCliente: entrada.celularCliente ?? null,
               },
@@ -371,7 +500,10 @@ async function realizarVentaConComposicion(
           vendedorId,
           codigoCompra,
           tipoVenta: entrada.tipoVenta,
-          plataformaId: entrada.tipoVenta === "UNIDAD" ? entrada.plataformaId : null,
+          // null para 2+ renglones (decisión 6): no hay un único id que
+          // represente "Netflix y Disney+" — el filtro por plataforma pasa
+          // a mirar VentaDetalle (ver whereDesdeFiltros en routes/ventas.ts).
+          plataformaId: entrada.tipoVenta === "UNIDAD" && !esMultiProducto ? composicion[0].plataformaId : null,
           paqueteId: entrada.tipoVenta === "PAQUETE" ? entrada.paqueteId : null,
           duracionId: duracionVendida.id,
           tipoClienteId: tipoCliente.id,
@@ -380,6 +512,7 @@ async function realizarVentaConComposicion(
           cantidadDuracion: duracionVendida.cantidad,
           unidadDuracion: duracionVendida.unidad,
           nombreTipoCliente: tipoCliente.nombre,
+          precioSugerido,
           precioVenta,
           costo,
           utilidad: precioVenta.minus(costo),
@@ -436,6 +569,7 @@ async function realizarVentaConComposicion(
     for (const pantalla of pantallas) {
       const cuenta = cuentaPorId.get(pantalla.cuentaId)!;
       const infoPantalla = pantallaPorId.get(pantalla.id)!;
+      const infoPrecio = infoPorPlataforma.get(componente.plataformaId);
       await tx.ventaDetalle.create({
         data: datosSinEmpresa<Prisma.VentaDetalleUncheckedCreateInput>({
           ventaId: ventaCreada.id,
@@ -444,8 +578,12 @@ async function realizarVentaConComposicion(
           plataformaId: componente.plataformaId,
           nombrePlataforma: componente.nombrePlataforma,
           correoCuenta: cuenta.correo,
-          // Ya cifrados en BD (Cuenta.password / Pantalla.pin): se copian
-          // tal cual, sin descifrar — la copia de R3 es del valor cifrado.
+          usuarioCuenta: cuenta.usuario,
+          // Ya cifrados en BD (Cuenta.password / Cuenta.codigo / Pantalla.pin):
+          // se copian tal cual, sin descifrar — la copia de R3 es del valor
+          // cifrado.
+          codigoCuenta: cuenta.codigo,
+          enlaceCuenta: cuenta.enlace,
           passwordCuenta: cuenta.password,
           perfil: infoPantalla.perfil,
           pin: infoPantalla.pin,
@@ -453,6 +591,10 @@ async function realizarVentaConComposicion(
           cantidadDuracion: componente.cantidadDuracion,
           unidadDuracion: componente.unidadDuracion,
           fechaVencimiento,
+          // F4.4: precioSugerido es null en PAQUETE (no atribuible por
+          // plataforma sin inventar un dato); costo sí se llena siempre.
+          precioSugerido: infoPrecio?.precioSugerido ?? null,
+          costo: infoPrecio?.costo ?? null,
         }),
       });
     }

@@ -18,7 +18,7 @@ type ClienteEmpresa = Prisma.TransactionClient;
 
 export interface CuentaDivergente {
   cuentaId: string;
-  correo: string;
+  correo: string | null;
   plataformaId: string;
   nombrePlataforma: string;
   pantallasCuenta: number;

@@ -1,10 +1,19 @@
 import { Prisma } from "../generated/prisma/client.ts";
 import { pantallasDisponibles } from "./pantallas.ts";
 import { resolverComposicionDePaquete } from "./paquetes.ts";
+import { descifrar } from "./cifrado.ts";
 
 // Prisma.TransactionClient (no PrismaClient completo): mismo motivo que
 // pantallas.ts/paquetes.ts — esta función solo usa delegados de modelo.
 type ClienteEmpresa = Prisma.TransactionClient;
+
+export interface CuentaPinInconsistente {
+  cuentaId: string;
+  nombrePlataforma: string;
+  identificador: string;
+  perfil: string;
+  numerosPantalla: number[];
+}
 
 export interface DiagnosticoEmpresa {
   plantillas: { existeUnidad: boolean; existePaquete: boolean };
@@ -13,11 +22,60 @@ export interface DiagnosticoEmpresa {
   plataformasActivas: number;
   paquetesActivos: number;
   preciosActivos: number;
-  preciosConCostoCero: number;
   cuentasActivas: number;
   pantallasActivas: number;
   pantallasLibres: number;
+  cuentasConPinInconsistente: CuentaPinInconsistente[];
   puedeVender: boolean;
+}
+
+/**
+ * F4.2 parte 2.1 — "mismo perfil ⇒ mismo PIN". El PATCH de pantallas ya
+ * propaga el PIN a las hermanas del mismo perfil al editar, así que esto
+ * solo debería encontrar algo si quedó una inconsistencia de antes de esa
+ * regla. Un entrada por (cuenta, perfil): agrupa las pantallas activas con
+ * perfil de cada cuenta de plataforma con usaPerfilPin y marca los perfiles
+ * donde el PIN descifrado no es el mismo en todas.
+ */
+export async function buscarCuentasConPinInconsistente(cliente: ClienteEmpresa): Promise<CuentaPinInconsistente[]> {
+  const cuentas = await cliente.cuenta.findMany({
+    where: { activa: true, plataforma: { usaPerfilPin: true } },
+    select: {
+      id: true,
+      correo: true,
+      usuario: true,
+      plataforma: { select: { nombre: true } },
+      pantallas: {
+        where: { activa: true, perfil: { not: null } },
+        select: { numero: true, perfil: true, pin: true },
+      },
+    },
+  });
+
+  const resultado: CuentaPinInconsistente[] = [];
+  for (const cuenta of cuentas) {
+    const porPerfil = new Map<string, { numero: number; pin: string | null }[]>();
+    for (const pantalla of cuenta.pantallas) {
+      const perfil = pantalla.perfil!;
+      const pin = pantalla.pin ? descifrar(pantalla.pin) : null;
+      const filas = porPerfil.get(perfil) ?? [];
+      filas.push({ numero: pantalla.numero, pin });
+      porPerfil.set(perfil, filas);
+    }
+
+    for (const [perfil, filas] of porPerfil) {
+      if (new Set(filas.map((f) => f.pin)).size > 1) {
+        resultado.push({
+          cuentaId: cuenta.id,
+          nombrePlataforma: cuenta.plataforma.nombre,
+          identificador: cuenta.correo ?? cuenta.usuario ?? `${cuenta.plataforma.nombre} #${cuenta.id.slice(0, 8)}`,
+          perfil,
+          numerosPantalla: filas.map((f) => f.numero),
+        });
+      }
+    }
+  }
+  return resultado;
 }
 
 /**
@@ -81,10 +139,10 @@ export async function diagnosticoDeEmpresa(cliente: ClienteEmpresa): Promise<Dia
     plataformasActivas,
     paquetesActivos,
     preciosActivos,
-    preciosConCostoCero,
     cuentasActivas,
     pantallasActivas,
     pantallasLibresPorCuenta,
+    cuentasConPinInconsistente,
   ] = await Promise.all([
     cliente.plantillaMensaje.findFirst({ where: { tipo: "UNIDAD" }, select: { id: true } }),
     cliente.plantillaMensaje.findFirst({ where: { tipo: "PAQUETE" }, select: { id: true } }),
@@ -93,7 +151,6 @@ export async function diagnosticoDeEmpresa(cliente: ClienteEmpresa): Promise<Dia
     cliente.plataforma.count({ where: { activa: true } }),
     cliente.paquete.count({ where: { activo: true } }),
     cliente.precio.count({ where: { activo: true } }),
-    cliente.precio.count({ where: { activo: true, costo: 0 } }),
     cliente.cuenta.count({ where: { activa: true } }),
     cliente.pantalla.count({ where: { activa: true } }),
     // Libre = sin VentaDetalle vigente (R5) — mismo criterio que
@@ -106,6 +163,7 @@ export async function diagnosticoDeEmpresa(cliente: ClienteEmpresa): Promise<Dia
         ventaDetalles: { none: { fechaVencimiento: { gt: new Date() }, venta: { anulada: false } } },
       },
     }),
+    buscarCuentasConPinInconsistente(cliente),
   ]);
 
   const puedeVender = (await hayUnidadVendible(cliente)) || (await hayPaqueteVendible(cliente));
@@ -117,10 +175,10 @@ export async function diagnosticoDeEmpresa(cliente: ClienteEmpresa): Promise<Dia
     plataformasActivas,
     paquetesActivos,
     preciosActivos,
-    preciosConCostoCero,
     cuentasActivas,
     pantallasActivas,
     pantallasLibres: pantallasLibresPorCuenta,
+    cuentasConPinInconsistente,
     puedeVender,
   };
 }

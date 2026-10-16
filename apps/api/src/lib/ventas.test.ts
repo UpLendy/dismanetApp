@@ -6,16 +6,20 @@ import { randomUUID } from "node:crypto";
 // paquetes.test.ts/bloqueo-pantallas.test.ts.
 import { prismaRaw } from "./prisma.ts";
 import { prismaParaEmpresa } from "./prisma-empresa.ts";
+import { Prisma } from "../generated/prisma/client.ts";
 import { cifrar } from "./cifrado.ts";
 import { realizarVenta } from "./ventas.ts";
+import { calcularEstadisticas } from "./estadisticas-ventas.ts";
 
 describe("realizarVenta", () => {
   let empresaId: string;
   let vendedorId: string;
   let plataformaNetflixId: string;
   let plataformaDisneyId: string;
+  let plataformaHboId: string;
   let cuentaNetflixId: string;
   let cuentaDisneyId: string;
+  let cuentaHboId: string;
   let duracion30Id: string;
   let tipoClienteId: string;
   let paqueteId: string;
@@ -47,6 +51,14 @@ describe("realizarVenta", () => {
     });
     plataformaDisneyId = disney.id;
 
+    // HBO (ventas.test): tiene Precio pero deliberadamente NO tiene
+    // CostoPlataforma — es la fixture de F4.7 para el renglón sin costo
+    // atribuible (VentaDetalle.costo debe quedar en null, no en 0).
+    const hbo = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "HBO (ventas.test)", capacidadPantallas: 1, usaPerfilPin: false },
+    });
+    plataformaHboId = hbo.id;
+
     const cuentaNetflix = await prismaRaw.cuenta.create({
       data: {
         empresaId,
@@ -73,6 +85,18 @@ describe("realizarVenta", () => {
     cuentaDisneyId = cuentaDisney.id;
     await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuentaDisneyId, numero: 1 } });
 
+    const cuentaHbo = await prismaRaw.cuenta.create({
+      data: {
+        empresaId,
+        plataformaId: plataformaHboId,
+        correo: "hbo@ventas.test",
+        password: cifrar("clave-hbo"),
+        capacidadPantallas: 1,
+      },
+    });
+    cuentaHboId = cuentaHbo.id;
+    await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuentaHboId, numero: 1 } });
+
     const duracion30 = await prismaRaw.duracion.create({
       data: { empresaId, nombre: "30 días (ventas.test)", cantidad: 30, unidad: "DIAS" },
     });
@@ -88,6 +112,18 @@ describe("realizarVenta", () => {
     });
     await prismaRaw.precio.create({
       data: { empresaId, plataformaId: plataformaDisneyId, duracionId: duracion30Id, tipoClienteId, precioVenta: "12000", costo: "5000" },
+    });
+    await prismaRaw.precio.create({
+      data: { empresaId, plataformaId: plataformaHboId, duracionId: duracion30Id, tipoClienteId, precioVenta: "10000", costo: "0" },
+    });
+    // El costo ya no sale de Precio: CostoPlataforma es la fuente real que
+    // realizarVenta consulta (lib/ventas.ts). HBO deliberadamente no tiene
+    // fila en CostoPlataforma (ver fixture arriba).
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: plataformaNetflixId, duracionId: duracion30Id, costo: "8000" },
+    });
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: plataformaDisneyId, duracionId: duracion30Id, costo: "5000" },
     });
 
     const paquete = await prismaRaw.paquete.create({ data: { empresaId, nombre: "Combo (ventas.test)" } });
@@ -123,6 +159,7 @@ describe("realizarVenta", () => {
     await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.precio.deleteMany({ where: { empresaId } });
     await prismaRaw.paquetePlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.paquete.deleteMany({ where: { empresaId } });
@@ -140,7 +177,7 @@ describe("realizarVenta", () => {
     const resultado = await cliente.$transaction((tx) =>
       realizarVenta(tx, empresaId, vendedorId, {
         tipoVenta: "UNIDAD",
-        plataformaId: plataformaNetflixId,
+        plataformas: [plataformaNetflixId],
         duracionId: duracion30Id,
         tipoClienteId,
       }),
@@ -166,7 +203,7 @@ describe("realizarVenta", () => {
     const segundo = await cliente.$transaction((tx) =>
       realizarVenta(tx, empresaId, vendedorId, {
         tipoVenta: "UNIDAD",
-        plataformaId: plataformaNetflixId,
+        plataformas: [plataformaNetflixId],
         duracionId: duracion30Id,
         tipoClienteId,
       }),
@@ -204,7 +241,7 @@ describe("realizarVenta", () => {
     const resultado = await cliente.$transaction((tx) =>
       realizarVenta(tx, empresaId, vendedorId, {
         tipoVenta: "UNIDAD",
-        plataformaId: plataformaDisneyId,
+        plataformas: [plataformaDisneyId],
         duracionId: duracion30Id,
         tipoClienteId: otroTipoCliente.id,
       }),
@@ -222,7 +259,7 @@ describe("realizarVenta", () => {
     const resultado = await cliente.$transaction((tx) =>
       realizarVenta(tx, empresaId, vendedorId, {
         tipoVenta: "UNIDAD",
-        plataformaId: plataformaDisneyId,
+        plataformas: [plataformaDisneyId],
         duracionId: duracion30Id,
         tipoClienteId,
       }),
@@ -231,6 +268,35 @@ describe("realizarVenta", () => {
     expect(resultado.tipo).toBe("no_disponible");
 
     await prismaRaw.plataforma.update({ where: { id: plataformaDisneyId }, data: { activa: true } });
+  });
+
+  // F4.7, arreglo 1: sin CostoPlataforma, VentaDetalle.costo debe quedar en
+  // null (dato desconocido), nunca en 0 (costo real) — Venta.costo, en
+  // cambio, sigue siendo NOT NULL y alimenta los agregados.
+  it("UNIDAD: sin CostoPlataforma, VentaDetalle.costo queda en null y el renglón se cuenta como sin costo atribuible", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "UNIDAD",
+        plataformas: [plataformaHboId],
+        duracionId: duracion30Id,
+        tipoClienteId,
+      }),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+
+    // Venta.costo (el agregado) no es nulo: sin costo atribuible se trata
+    // como 0 para el total, que es la semántica correcta de un agregado.
+    expect(resultado.venta.costo.toString()).toBe("0");
+
+    const detalle = await prismaRaw.ventaDetalle.findFirst({ where: { ventaId: resultado.venta.id } });
+    expect(detalle?.costo).toBeNull();
+
+    const estadisticas = await calcularEstadisticas(cliente, new Date(0), new Date(Date.now() + 86_400_000));
+    const segmentoHbo = estadisticas.porPlataforma.find((p) => p.plataformaId === plataformaHboId);
+    expect(segmentoHbo?.renglonesSinCostoAtribuible).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -291,7 +357,7 @@ describe("realizarVenta (R2, prueba obligatoria 1) — UNIDAD: 20 peticiones en 
     const resultados = await Promise.all(
       Array.from({ length: 20 }, () =>
         prismaParaEmpresa(empresaId).$transaction((tx) =>
-          realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+          realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
         ),
       ),
     );
@@ -456,7 +522,7 @@ describe("realizarVenta (R2, prueba obligatoria 3) — código de compra bajo co
     const resultados = await Promise.all(
       Array.from({ length: CANTIDAD }, () =>
         prismaParaEmpresa(empresaId).$transaction((tx) =>
-          realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+          realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
         ),
       ),
     );
@@ -515,7 +581,7 @@ describe("realizarVenta (R3) — editar la plantilla después de vender no cambi
   it("el mensajeGenerado de una venta ya hecha no cambia aunque se edite la plantilla después", async () => {
     const cliente = prismaParaEmpresa(empresaId);
     const resultado = await cliente.$transaction((tx) =>
-      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+      realizarVenta(tx, empresaId, vendedorId, { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
     );
     expect(resultado.tipo).toBe("ok");
     if (resultado.tipo !== "ok") throw new Error("esperaba ok");
@@ -648,6 +714,7 @@ describe("realizarVenta (0c, prueba forzada) — colisión real de código de co
         unidadDuracion: "DIAS",
         nombreTipoCliente: "Nuevo",
         precioVenta: "10000",
+        precioSugerido: "10000",
         costo: "5000",
         utilidad: "5000",
         fechaVencimientoMax: new Date(),
@@ -669,7 +736,7 @@ describe("realizarVenta (0c, prueba forzada) — colisión real de código de co
       const resultado = await cliente.$transaction((tx) =>
         realizarVenta(conPreVerificacionMentirosa(tx, 1), empresaId, vendedorId, {
           tipoVenta: "UNIDAD",
-          plataformaId,
+          plataformas: [plataformaId],
           duracionId,
           tipoClienteId,
         }),
@@ -704,6 +771,7 @@ describe("realizarVenta (0c, prueba forzada) — colisión real de código de co
         unidadDuracion: "DIAS",
         nombreTipoCliente: "Nuevo",
         precioVenta: "10000",
+        precioSugerido: "10000",
         costo: "5000",
         utilidad: "5000",
         fechaVencimientoMax: new Date(),
@@ -720,7 +788,7 @@ describe("realizarVenta (0c, prueba forzada) — colisión real de código de co
         cliente.$transaction((tx) =>
           realizarVenta(conPreVerificacionMentirosa(tx, Infinity), empresaId, vendedorId, {
             tipoVenta: "UNIDAD",
-            plataformaId,
+            plataformas: [plataformaId],
             duracionId,
             tipoClienteId,
           }),
@@ -891,5 +959,302 @@ describe("realizarVenta — Promoción", () => {
     // no una lectura en vivo de Paquete.esPromocion.
     const ventaRecargada = await prismaRaw.venta.findUniqueOrThrow({ where: { id: resultado.venta.id } });
     expect(ventaRecargada.esPromocion).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F4.4 — "Venta de varios productos con precio final editable". Fixture
+// propia: el describe de arriba no tiene cupo para vender 2+ renglones en
+// una sola llamada. Cada escenario usa sus propias plataformas dedicadas
+// (en vez de compartir cupo entre pruebas) para que el conteo de pantallas
+// consumidas de cada prueba sea independiente y legible.
+// ---------------------------------------------------------------------------
+
+describe("realizarVenta (F4.4) — UNIDAD multi-renglón", () => {
+  let empresaId: string;
+  let vendedorId: string;
+  let duracion30Id: string;
+  let tipoClienteId: string;
+
+  let netflixId: string;
+  let disneyId: string;
+  let netflixPaqueteId: string;
+  let disneyPaqueteId: string;
+  let paqueteId: string;
+  let netflixDescId: string;
+  let disneyDescId: string;
+  let netflixSurId: string;
+  let disneySurId: string;
+  let netflixOrdId: string;
+  let disneyOrdId: string;
+
+  // Crea una plataforma con su propia cuenta, N pantallas libres, Precio y
+  // CostoPlataforma — todo lo que realizarVenta necesita para vender esa
+  // plataforma de inmediato.
+  async function crearPlataformaConCupo(nombre: string, cantidadPantallas: number, precioVenta: string, costo: string) {
+    const plataforma = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre, capacidadPantallas: cantidadPantallas, usaPerfilPin: false },
+    });
+    const slug = nombre.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const cuenta = await prismaRaw.cuenta.create({
+      data: { empresaId, plataformaId: plataforma.id, correo: `${slug}@f44.test`, password: cifrar("clave"), capacidadPantallas: cantidadPantallas },
+    });
+    for (let numero = 1; numero <= cantidadPantallas; numero++) {
+      await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuenta.id, numero } });
+    }
+    await prismaRaw.precio.create({
+      data: { empresaId, plataformaId: plataforma.id, duracionId: duracion30Id, tipoClienteId, precioVenta, costo },
+    });
+    await prismaRaw.costoPlataforma.create({ data: { empresaId, plataformaId: plataforma.id, duracionId: duracion30Id, costo } });
+    return plataforma.id;
+  }
+
+  beforeAll(async () => {
+    const empresa = await prismaRaw.empresa.create({ data: { nombre: "Empresa F4.4 (ventas.test)", prefijoCodigo: "F44" } });
+    empresaId = empresa.id;
+
+    const vendedor = await prismaRaw.usuario.create({
+      data: { empresaId, email: `empleado-f44-${randomUUID()}@test.local`, passwordHash: "hash", nombre: "Empleado", rol: "EMPLEADO" },
+    });
+    vendedorId = vendedor.id;
+
+    const duracion = await prismaRaw.duracion.create({ data: { empresaId, nombre: "30 días (f44.test)", cantidad: 30, unidad: "DIAS" } });
+    duracion30Id = duracion.id;
+
+    const tipoCliente = await prismaRaw.tipoCliente.create({ data: { empresaId, nombre: "Nuevo (f44.test)" } });
+    tipoClienteId = tipoCliente.id;
+
+    // Netflix/Disney+ con 3 pantallas cada una: alcanza para las pruebas de
+    // "2 distintas" (1+1) y "repetida x2" (2) antes de agotarse, lo que deja
+    // la prueba de todo-o-nada usando el agotamiento real de la anterior en
+    // vez de un stock fabricado aparte.
+    netflixId = await crearPlataformaConCupo("Netflix (f44.test)", 3, "15000", "8000");
+    disneyId = await crearPlataformaConCupo("Disney+ (f44.test)", 3, "12000", "5000");
+
+    netflixPaqueteId = await crearPlataformaConCupo("Netflix combo (f44.test)", 1, "15000", "8000");
+    disneyPaqueteId = await crearPlataformaConCupo("Disney+ combo (f44.test)", 1, "12000", "5000");
+    const paquete = await prismaRaw.paquete.create({ data: { empresaId, nombre: "Combo (f44.test)" } });
+    paqueteId = paquete.id;
+    await prismaRaw.paquetePlataforma.create({ data: { empresaId, paqueteId, plataformaId: netflixPaqueteId, cantidadPantallas: 1 } });
+    await prismaRaw.paquetePlataforma.create({ data: { empresaId, paqueteId, plataformaId: disneyPaqueteId, cantidadPantallas: 1 } });
+    await prismaRaw.precio.create({ data: { empresaId, paqueteId, duracionId: duracion30Id, tipoClienteId, precioVenta: "25000", costo: "13000" } });
+
+    netflixDescId = await crearPlataformaConCupo("Netflix descuento (f44.test)", 1, "15000", "8000");
+    disneyDescId = await crearPlataformaConCupo("Disney+ descuento (f44.test)", 1, "12000", "5000");
+
+    netflixSurId = await crearPlataformaConCupo("Netflix recargo (f44.test)", 1, "15000", "8000");
+    disneySurId = await crearPlataformaConCupo("Disney+ recargo (f44.test)", 1, "12000", "5000");
+
+    netflixOrdId = await crearPlataformaConCupo("Netflix orden (f44.test)", 2, "15000", "8000");
+    disneyOrdId = await crearPlataformaConCupo("Disney+ orden (f44.test)", 2, "12000", "5000");
+
+    // F4.4 Parte 2b: 2+ renglones usa la plantilla PAQUETE (un bloque por
+    // pantalla), aunque tipoVenta siga siendo "UNIDAD".
+    await prismaRaw.plantillaMensaje.create({
+      data: { empresaId, tipo: "UNIDAD", contenido: "Código: {{codigoCompra}} | {{correo}} | {{clave}} | {{precio}}" },
+    });
+    await prismaRaw.plantillaMensaje.create({
+      data: { empresaId, tipo: "PAQUETE", contenido: "Código: {{codigoCompra}} | {{paquete}}\n{{listaCuentas}}\n{{precio}}" },
+    });
+  });
+
+  afterAll(async () => {
+    await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
+    await prismaRaw.venta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.precio.deleteMany({ where: { empresaId } });
+    await prismaRaw.paquetePlataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.paquete.deleteMany({ where: { empresaId } });
+    await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
+    await prismaRaw.duracion.deleteMany({ where: { empresaId } });
+    await prismaRaw.pantalla.deleteMany({ where: { empresaId } });
+    await prismaRaw.cuenta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.usuario.deleteMany({ where: { empresaId } });
+    await prismaRaw.empresa.delete({ where: { id: empresaId } });
+  });
+
+  it("2 plataformas distintas en una sola venta: plataformaId null, precioSugerido = suma, un VentaDetalle por plataforma con su propio precioSugerido/costo", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "UNIDAD",
+        plataformas: [netflixId, disneyId],
+        duracionId: duracion30Id,
+        tipoClienteId,
+      }),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+    expect(resultado.venta.plataformaId).toBeNull(); // decisión 6: sin un único id que represente el renglón
+    expect(resultado.venta.precioSugerido.toString()).toBe("27000"); // 15000 + 12000
+    expect(resultado.venta.precioVenta.toString()).toBe("27000"); // sin precioFinal, se cobra el sugerido
+    expect(resultado.venta.nombreItem).toBe("Netflix (f44.test) + Disney+ (f44.test)");
+    // un solo mensaje para los dos renglones (decisión 1/4), no dos mensajes separados.
+    expect(resultado.venta.mensajeGenerado.match(/Código:/g)?.length).toBe(1);
+
+    const detalles = await prismaRaw.ventaDetalle.findMany({ where: { ventaId: resultado.venta.id } });
+    expect(detalles).toHaveLength(2);
+    const detalleNetflix = detalles.find((d) => d.plataformaId === netflixId)!;
+    const detalleDisney = detalles.find((d) => d.plataformaId === disneyId)!;
+    expect(detalleNetflix.precioSugerido?.toString()).toBe("15000");
+    expect(detalleNetflix.costo?.toString()).toBe("8000");
+    expect(detalleDisney.precioSugerido?.toString()).toBe("12000");
+    expect(detalleDisney.costo?.toString()).toBe("5000");
+  });
+
+  it("plataforma repetida (Netflix x2): un componente agrupado con 2 pantallas, dos VentaDetalle de la misma plataforma en pantallas distintas", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "UNIDAD",
+        plataformas: [netflixId, netflixId],
+        duracionId: duracion30Id,
+        tipoClienteId,
+      }),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+    expect(resultado.venta.plataformaId).toBeNull();
+    expect(resultado.venta.precioSugerido.toString()).toBe("30000"); // 15000 x 2 renglones
+    expect(resultado.venta.nombreItem).toBe("Netflix (f44.test) + Netflix (f44.test)");
+    expect(resultado.venta.mensajeGenerado.match(/Código:/g)?.length).toBe(1); // un mensaje con 2 bloques, no 2 mensajes
+
+    const detalles = await prismaRaw.ventaDetalle.findMany({ where: { ventaId: resultado.venta.id } });
+    expect(detalles).toHaveLength(2);
+    expect(detalles.every((d) => d.plataformaId === netflixId)).toBe(true);
+    expect(new Set(detalles.map((d) => d.pantallaId)).size).toBe(2); // 2 pantallas distintas, no la misma dos veces
+    for (const detalle of detalles) {
+      expect(detalle.precioSugerido?.toString()).toBe("15000");
+      expect(detalle.costo?.toString()).toBe("8000");
+    }
+  });
+
+  it("todo o nada: si una de las plataformas ya no tiene cupo, no se vende ninguna (ni siquiera la que sí tenía)", async () => {
+    // Netflix ya agotó sus 3 pantallas en las dos pruebas anteriores (1 + 2).
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "UNIDAD",
+        plataformas: [netflixId, disneyId],
+        duracionId: duracion30Id,
+        tipoClienteId,
+      }),
+    );
+
+    expect(resultado.tipo).toBe("inventario_insuficiente");
+    if (resultado.tipo === "inventario_insuficiente") {
+      expect(resultado.nombrePlataforma).toBe("Netflix (f44.test)");
+    }
+
+    // Disney+ no quedó afectado por el intento fallido: sigue con el único
+    // VentaDetalle de la primera prueba, ninguno nuevo (R2 regla 2).
+    const detallesDisney = await prismaRaw.ventaDetalle.findMany({ where: { empresaId, plataformaId: disneyId } });
+    expect(detallesDisney).toHaveLength(1);
+  });
+
+  it("precioFinal (descuento manual): ajusta Venta.precioVenta pero no distribuye el descuento ni toca las copias por plataforma", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "UNIDAD",
+        plataformas: [netflixDescId, disneyDescId],
+        duracionId: duracion30Id,
+        tipoClienteId,
+        precioFinal: new Prisma.Decimal("20000"),
+      }),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+    expect(resultado.venta.precioSugerido.toString()).toBe("27000"); // 15000 + 12000, intacto
+    expect(resultado.venta.precioVenta.toString()).toBe("20000"); // lo que de verdad se cobró
+    expect(resultado.venta.utilidad.toString()).toBe("7000"); // 20000 - costo(8000+5000)
+
+    const detalles = await prismaRaw.ventaDetalle.findMany({ where: { ventaId: resultado.venta.id } });
+    const detalleNetflix = detalles.find((d) => d.plataformaId === netflixDescId)!;
+    const detalleDisney = detalles.find((d) => d.plataformaId === disneyDescId)!;
+    // decisión 3 del encargo F4.4: el descuento es del total, nunca se
+    // reparte — cada renglón conserva su propio precio de catálogo.
+    expect(detalleNetflix.precioSugerido?.toString()).toBe("15000");
+    expect(detalleDisney.precioSugerido?.toString()).toBe("12000");
+  });
+
+  it("precioFinal por encima de precioSugerido (recargo) se acepta igual", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "UNIDAD",
+        plataformas: [netflixSurId, disneySurId],
+        duracionId: duracion30Id,
+        tipoClienteId,
+        precioFinal: new Prisma.Decimal("40000"),
+      }),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+    expect(resultado.venta.precioSugerido.toString()).toBe("27000");
+    expect(resultado.venta.precioVenta.toString()).toBe("40000");
+  });
+
+  it("PAQUETE: VentaDetalle.precioSugerido queda null (el precio de un paquete no se puede atribuir por plataforma)", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const resultado = await cliente.$transaction((tx) =>
+      realizarVenta(tx, empresaId, vendedorId, {
+        tipoVenta: "PAQUETE",
+        paqueteId,
+        duracionId: duracion30Id,
+        tipoClienteId,
+      }),
+    );
+
+    expect(resultado.tipo).toBe("ok");
+    if (resultado.tipo !== "ok") throw new Error("esperaba ok");
+
+    const detalles = await prismaRaw.ventaDetalle.findMany({ where: { ventaId: resultado.venta.id } });
+    expect(detalles).toHaveLength(2);
+    for (const detalle of detalles) {
+      expect(detalle.precioSugerido).toBeNull();
+      // El costo sí se conoce por plataforma (CostoPlataforma): solo el
+      // precio de venta es lo que no se puede atribuir sin inventarlo.
+      expect(detalle.costo).not.toBeNull();
+    }
+  });
+
+  it("R2 regla 1: dos ventas concurrentes que piden las mismas 2 plataformas en orden inverso no se bloquean entre sí ni duplican pantallas", async () => {
+    const clienteA = prismaParaEmpresa(empresaId);
+    const clienteB = prismaParaEmpresa(empresaId);
+
+    const [resultadoA, resultadoB] = await Promise.all([
+      clienteA.$transaction((tx) =>
+        realizarVenta(tx, empresaId, vendedorId, {
+          tipoVenta: "UNIDAD",
+          plataformas: [netflixOrdId, disneyOrdId],
+          duracionId: duracion30Id,
+          tipoClienteId,
+        }),
+      ),
+      clienteB.$transaction((tx) =>
+        realizarVenta(tx, empresaId, vendedorId, {
+          tipoVenta: "UNIDAD",
+          plataformas: [disneyOrdId, netflixOrdId], // mismo par, orden invertido
+          duracionId: duracion30Id,
+          tipoClienteId,
+        }),
+      ),
+    ]);
+
+    expect(resultadoA.tipo).toBe("ok");
+    expect(resultadoB.tipo).toBe("ok");
+
+    const detalles = await prismaRaw.ventaDetalle.findMany({
+      where: { empresaId, plataformaId: { in: [netflixOrdId, disneyOrdId] } },
+    });
+    expect(detalles).toHaveLength(4); // 2 ventas x 2 plataformas
+    expect(new Set(detalles.map((d) => d.pantallaId)).size).toBe(4); // ninguna pantalla repetida entre las dos ventas
   });
 });

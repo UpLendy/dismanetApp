@@ -1,4 +1,5 @@
 import { Elysia, t } from "elysia";
+import { PIN_PATRON } from "@dismanet/shared";
 import { cifrar, descifrar } from "../lib/cifrado.ts";
 import { datosSinEmpresa, prismaParaEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol } from "../generated/prisma/client.ts";
@@ -17,6 +18,10 @@ const esquemaPlataforma = t.Object({
   condiciones: t.Union([t.String(), t.Null()]),
   capacidadPantallas: t.Number(),
   usaPerfilPin: t.Boolean(),
+  usaCorreo: t.Boolean(),
+  usaUsuario: t.Boolean(),
+  usaCodigo: t.Boolean(),
+  usaEnlace: t.Boolean(),
   activa: t.Boolean(),
 });
 
@@ -32,6 +37,10 @@ interface FilaPlataforma {
   condiciones: string | null;
   capacidadPantallas: number;
   usaPerfilPin: boolean;
+  usaCorreo: boolean;
+  usaUsuario: boolean;
+  usaCodigo: boolean;
+  usaEnlace: boolean;
   activa: boolean;
 }
 
@@ -42,15 +51,34 @@ const respuestaPlataforma = (fila: FilaPlataforma) => ({
   condiciones: fila.condiciones,
   capacidadPantallas: fila.capacidadPantallas,
   usaPerfilPin: fila.usaPerfilPin,
+  usaCorreo: fila.usaCorreo,
+  usaUsuario: fila.usaUsuario,
+  usaCodigo: fila.usaCodigo,
+  usaEnlace: fila.usaEnlace,
   activa: fila.activa,
 });
 
+// capacidadPantallas no se acepta en el body de ninguno de los dos: es
+// derivado, nunca digitado — lo fija PUT /:id/pantallas a partir del largo
+// de la plantilla (pantallas.length). Aceptarlo aquí es exactamente el bug
+// ya corregido una vez (CLAUDE.md, "arreglar el dato no es arreglar la
+// fuente"): una plataforma nacía con capacidad declarada y cero plantilla.
+//
+// Los 4 campos de acceso (F4.2, parte 1) son opcionales en el body — a
+// diferencia de usaPerfilPin, que ya era obligatorio antes de esta entrega y
+// cuyos llamadores existentes siempre lo mandan. Si no vienen, create() usa
+// el default de Prisma (usaCorreo=true, el resto false) y update() deja el
+// valor existente intacto, para no romper llamadores que todavía no conocen
+// estos campos.
 const cuerpoPlataforma = t.Object({
   nombre: t.String({ minLength: 1 }),
   nombreMensaje: t.Optional(t.String()),
   condiciones: t.Optional(t.String()),
-  capacidadPantallas: t.Integer({ minimum: 1 }),
   usaPerfilPin: t.Boolean(),
+  usaCorreo: t.Optional(t.Boolean()),
+  usaUsuario: t.Optional(t.Boolean()),
+  usaCodigo: t.Optional(t.Boolean()),
+  usaEnlace: t.Optional(t.Boolean()),
 });
 
 // Plantilla de pantallas (Parte 5 del encargo "plantilla de pantallas"): el
@@ -68,13 +96,17 @@ const esquemaPantallaPlantilla = t.Object({
 const esquemaPlantilla = t.Object({
   capacidadPantallas: t.Number(),
   pantallas: t.Array(esquemaPantallaPlantilla),
+  // Números de fila (1-based) cuyo pin terminó distinto del que venía en el
+  // body, porque se igualó al de otra fila con el mismo perfil (F4.2, parte
+  // 2.2: mismo perfil ⇒ mismo pin, nunca se rechaza, se propaga).
+  filasConPinPropagado: t.Array(t.Number()),
 });
 
 const cuerpoPlantilla = t.Object({
   pantallas: t.Array(
     t.Object({
       perfil: t.Optional(t.Union([t.String(), t.Null()])),
-      pin: t.Optional(t.Union([t.String({ pattern: "^[0-9]{4}$" }), t.Null()])),
+      pin: t.Optional(t.Union([t.String({ pattern: PIN_PATRON }), t.Null()])),
     }),
   ),
 });
@@ -114,8 +146,15 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
             nombre: body.nombre,
             nombreMensaje: body.nombreMensaje ?? null,
             condiciones: body.condiciones ?? null,
-            capacidadPantallas: body.capacidadPantallas,
+            // Nace en 0: sin plantilla todavía, no hay pantalla que ofrecer.
+            // PUT /:id/pantallas la deriva de pantallas.length en cuanto se
+            // carga la plantilla.
+            capacidadPantallas: 0,
             usaPerfilPin: body.usaPerfilPin,
+            ...(body.usaCorreo !== undefined ? { usaCorreo: body.usaCorreo } : {}),
+            ...(body.usaUsuario !== undefined ? { usaUsuario: body.usaUsuario } : {}),
+            ...(body.usaCodigo !== undefined ? { usaCodigo: body.usaCodigo } : {}),
+            ...(body.usaEnlace !== undefined ? { usaEnlace: body.usaEnlace } : {}),
           }),
         });
         set.status = 201;
@@ -136,7 +175,10 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
         throw error;
       }
     },
-    { body: cuerpoPlataforma, response: { 201: t.Object({ plataforma: esquemaPlataforma }), 409: esquemaError } },
+    {
+      body: cuerpoPlataforma,
+      response: { 201: t.Object({ plataforma: esquemaPlataforma }), 409: esquemaError },
+    },
   )
   .patch(
     "/:id",
@@ -149,8 +191,15 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
             nombre: body.nombre,
             nombreMensaje: body.nombreMensaje ?? null,
             condiciones: body.condiciones ?? null,
-            capacidadPantallas: body.capacidadPantallas,
+            // capacidadPantallas no se toca aquí: solo la deriva
+            // PUT /:id/pantallas a partir de la plantilla.
             usaPerfilPin: body.usaPerfilPin,
+            // Solo se sobrescriben si vienen en el body: un llamador que
+            // todavía no conoce estos campos no debe apagarlos sin querer.
+            ...(body.usaCorreo !== undefined ? { usaCorreo: body.usaCorreo } : {}),
+            ...(body.usaUsuario !== undefined ? { usaUsuario: body.usaUsuario } : {}),
+            ...(body.usaCodigo !== undefined ? { usaCodigo: body.usaCodigo } : {}),
+            ...(body.usaEnlace !== undefined ? { usaEnlace: body.usaEnlace } : {}),
           },
         });
         return { plataforma: respuestaPlataforma(plataforma) };
@@ -263,6 +312,9 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
       return {
         capacidadPantallas: filas.length,
         pantallas: filas.map((f) => ({ numero: f.numero, perfil: f.perfil, pin: f.pin ? descifrar(f.pin) : null })),
+        // La plantilla almacenada ya es consistente (toda escritura pasa por
+        // el PUT de abajo, que normaliza); aquí no se propaga nada nuevo.
+        filasConPinPropagado: [],
       };
     },
     { params: t.Object({ id: t.String() }), response: { 200: esquemaPlantilla, 404: esquemaError } },
@@ -274,10 +326,34 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
         const plataforma = await txCliente.plataforma.findUnique({ where: { id: params.id } });
         if (!plataforma) return null;
 
+        // F4.2, parte 2.2: mismo perfil ⇒ mismo pin, dentro de esta misma
+        // plantilla. Se toma el primer pin no vacío que trae cada perfil en
+        // el body y se propaga a todas las filas de ese perfil — nunca se
+        // rechaza un pin distinto para el mismo perfil, se sobrescribe con
+        // el canónico (igual que PATCH /cuentas/:id/pantallas/:pantallaId).
+        const perfiles = body.pantallas.map((fila) => (plataforma.usaPerfilPin ? fila.perfil ?? null : null));
+        const pinCanonicoPorPerfil = new Map<string, string>();
+        for (const [indice, fila] of body.pantallas.entries()) {
+          const perfil = perfiles[indice];
+          if (perfil && fila.pin && !pinCanonicoPorPerfil.has(perfil)) {
+            pinCanonicoPorPerfil.set(perfil, fila.pin);
+          }
+        }
+
+        const filasConPinPropagado: number[] = [];
+
         for (const [indice, fila] of body.pantallas.entries()) {
           const numero = indice + 1;
-          const perfil = plataforma.usaPerfilPin ? fila.perfil ?? null : null;
-          const pin = plataforma.usaPerfilPin && fila.pin ? cifrar(fila.pin) : null;
+          const perfil = perfiles[indice];
+          const pinTexto = plataforma.usaPerfilPin
+            ? perfil
+              ? pinCanonicoPorPerfil.get(perfil) ?? null
+              : fila.pin ?? null
+            : null;
+          if (perfil && pinTexto !== (fila.pin ?? null)) {
+            filasConPinPropagado.push(numero);
+          }
+          const pin = pinTexto ? cifrar(pinTexto) : null;
 
           const existente = await txCliente.plataformaPantalla.findFirst({
             where: { plataformaId: params.id, numero },
@@ -308,10 +384,11 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
           data: { capacidadPantallas: body.pantallas.length },
         });
 
-        return await txCliente.plataformaPantalla.findMany({
+        const filas = await txCliente.plataformaPantalla.findMany({
           where: { plataformaId: params.id },
           orderBy: { numero: "asc" },
         });
+        return { filas, filasConPinPropagado };
       });
 
       if (!resultado) {
@@ -320,8 +397,13 @@ export const plataformas = new Elysia({ prefix: "/plataformas" })
       }
 
       return {
-        capacidadPantallas: resultado.length,
-        pantallas: resultado.map((f) => ({ numero: f.numero, perfil: f.perfil, pin: f.pin ? descifrar(f.pin) : null })),
+        capacidadPantallas: resultado.filas.length,
+        pantallas: resultado.filas.map((f) => ({
+          numero: f.numero,
+          perfil: f.perfil,
+          pin: f.pin ? descifrar(f.pin) : null,
+        })),
+        filasConPinPropagado: resultado.filasConPinPropagado,
       };
     },
     {

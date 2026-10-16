@@ -15,30 +15,47 @@ const dinero = t.String({ pattern: PATRON_DINERO.source });
 
 const esquemaFila = t.Object({ id: t.String(), nombre: t.String() });
 
+// Unidades: las columnas de tipoCliente ya solo llevan precio (punto 6,
+// camino del dinero). El costo se pide una sola vez por renglón de
+// duración — ver esquemaCostoDuracion — y no varía por tipoCliente.
 const esquemaCelda = t.Object({
   duracionId: t.String(),
   tipoClienteId: t.String(),
   precioVenta: t.String(),
-  costo: t.String(),
-  // true si costo >= precioVenta: venta a pérdida. Advertencia, nunca bloqueo
-  // (una promoción puede vender deliberadamente a pérdida).
+  // true si el costo de la duración (compartido entre tipos de cliente) es
+  // >= precioVenta: venta a pérdida. Advertencia, nunca bloqueo (una
+  // promoción puede vender deliberadamente a pérdida).
   perdida: t.Boolean(),
 });
 
+const esquemaCostoDuracion = t.Object({ duracionId: t.String(), costo: t.String() });
+
+const esquemaDetalleComponente = t.Object({
+  plataformaId: t.String(),
+  nombrePlataforma: t.String(),
+  cantidadPantallas: t.Number(),
+  // null si a este componente le falta costo registrado en su duración real.
+  costoUnitario: t.Union([t.String(), t.Null()]),
+  subtotal: t.Union([t.String(), t.Null()]),
+});
+
+// Paquetes: el campo de costo manual desaparece por completo (punto 6). En
+// su lugar, el costo calculado — de solo lectura — con el desglose de qué
+// componente aporta cuánto.
 const esquemaCeldaPaquete = t.Composite([
   esquemaCelda,
   t.Object({
     // Suma de costos de las plataformas componentes, cada una a SU duración
     // real (ver resolverComposicionDePaquete). null si no es calculable
-    // (falta el precio activo de algún componente).
-    sumaComponentes: t.Union([t.String(), t.Null()]),
-    componentesFaltantes: t.Array(t.String()),
-    // true si sumaComponentes no es null y difiere del costo digitado en
-    // más de un 5%. Advertencia, nunca bloqueo.
-    costoNoCoincide: t.Boolean(),
+    // (falta el costo de algún componente).
+    costoCalculado: t.Union([t.String(), t.Null()]),
+    detalle: t.Array(esquemaDetalleComponente),
   }),
 ]);
 
+// Punto 5: ya no cuenta "celdas de precio con costo en cero". Para unidades
+// cuenta combinaciones plataforma+duración sin costo registrado; para
+// paquetes, renglones cuyos componentes no tienen costo completo.
 const esquemaAvisoCostoCero = t.Object({ cantidad: t.Number() });
 
 function esDinero(valor: string): boolean {
@@ -50,18 +67,21 @@ function perdida(precioVenta: Prisma.Decimal, costo: Prisma.Decimal): boolean {
 }
 
 // Celda a guardar: `limpiar: true` desactiva la fila existente (si hay) y
-// ningún otro campo se usa. `limpiar: false` (o ausente) exige
-// precioVenta/costo y crea o reactiva la fila. Nunca se borra una fila de
-// Precio (R3): hay ventas históricas que no la referencian directamente,
-// pero el histórico de precios en sí es información de negocio que no se
-// descarta.
+// ningún otro campo se usa. `limpiar: false` (o ausente) exige precioVenta y
+// crea o reactiva la fila. Nunca se borra una fila de Precio (R3): hay
+// ventas históricas que no la referencian directamente, pero el histórico de
+// precios en sí es información de negocio que no se descarta.
+//
+// Ya no lleva `costo` (punto 6, camino del dinero): el costo salió de Precio
+// y vive en CostoPlataforma, una vez por plataforma+duración, no por celda.
 const cuerpoCelda = t.Object({
   duracionId: t.String(),
   tipoClienteId: t.String(),
   limpiar: t.Optional(t.Boolean()),
   precioVenta: t.Optional(dinero),
-  costo: t.Optional(dinero),
 });
+
+const cuerpoCostoDuracion = t.Object({ duracionId: t.String(), costo: dinero });
 
 const esquemaResultadoCelda = t.Object({
   duracionId: t.String(),
@@ -76,17 +96,20 @@ type ClienteEmpresa = typeof prismaRaw;
 // un paquete (exactamente uno de los dos se pasa). Sin upsert (prismaParaEmpresa
 // lo bloquea, R1): find + create/update, con manejo de P2002 por si dos
 // peticiones concurrentes golpean la misma celda vacía a la vez.
+//
+// `Precio.costo` ya no se pide ni se usa (punto 6, camino del dinero) — se
+// escribe "0" porque la columna sigue existiendo (se elimina en una entrega
+// posterior, ver CLAUDE.md punto 1) pero ningún código de negocio la lee.
 async function guardarCelda(
   cliente: ClienteEmpresa,
   selector: { plataformaId: string } | { paqueteId: string },
   duracionId: string,
   tipoClienteId: string,
   precioVenta: string,
-  costo: string,
 ) {
   const where = { ...selector, duracionId, tipoClienteId };
   const existente = await cliente.precio.findFirst({ where });
-  const datos = { precioVenta, costo, activo: true };
+  const datos = { precioVenta, costo: "0", activo: true };
 
   if (existente) {
     return cliente.precio.update({ where: { id: existente.id }, data: datos });
@@ -100,6 +123,29 @@ async function guardarCelda(
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       const carrera = await cliente.precio.findFirst({ where });
       if (carrera) return cliente.precio.update({ where: { id: carrera.id }, data: datos });
+    }
+    throw error;
+  }
+}
+
+// Guarda el costo de una plataforma+duración (CostoPlataforma). Mismo patrón
+// find + create/update con manejo de P2002 que guardarCelda — upsert sigue
+// bloqueado por prismaParaEmpresa (R1).
+async function guardarCostoPlataforma(cliente: ClienteEmpresa, plataformaId: string, duracionId: string, costo: string) {
+  const where = { plataformaId, duracionId };
+  const existente = await cliente.costoPlataforma.findFirst({ where });
+  if (existente) {
+    return cliente.costoPlataforma.update({ where: { id: existente.id }, data: { costo } });
+  }
+
+  try {
+    return await cliente.costoPlataforma.create({
+      data: datosSinEmpresa<Prisma.CostoPlataformaUncheckedCreateInput>({ plataformaId, duracionId, costo }),
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const carrera = await cliente.costoPlataforma.findFirst({ where });
+      if (carrera) return cliente.costoPlataforma.update({ where: { id: carrera.id }, data: { costo } });
     }
     throw error;
   }
@@ -144,23 +190,47 @@ export const precios = new Elysia({ prefix: "/precios" })
         return { error: { codigo: "PLATAFORMA_NO_ENCONTRADA", mensaje: "La plataforma no existe." } };
       }
 
-      const [duracionesActivas, tiposClienteActivos, filas] = await Promise.all([
+      const [duracionesActivas, tiposClienteActivos, filas, costos] = await Promise.all([
         cliente.duracion.findMany({ where: { activa: true }, orderBy: { nombre: "asc" }, select: { id: true, nombre: true } }),
         cliente.tipoCliente.findMany({ where: { activo: true }, orderBy: { nombre: "asc" }, select: { id: true, nombre: true } }),
         cliente.precio.findMany({ where: { plataformaId: query.plataformaId, activo: true } }),
+        cliente.costoPlataforma.findMany({ where: { plataformaId: query.plataformaId } }),
       ]);
 
-      const celdas = filas.map((fila) => ({
-        duracionId: fila.duracionId,
-        tipoClienteId: fila.tipoClienteId,
-        precioVenta: fila.precioVenta.toString(),
-        costo: fila.costo.toString(),
-        perdida: perdida(fila.precioVenta, fila.costo),
+      // El costo ya no varía por tipoCliente (punto 6): una sola fila por
+      // duración, compartida entre todas las celdas de precio de esa fila.
+      const costoPorDuracion = new Map(costos.map((c) => [c.duracionId, c.costo]));
+
+      const celdas = filas.map((fila) => {
+        const costoDuracion = costoPorDuracion.get(fila.duracionId) ?? new Prisma.Decimal(0);
+        return {
+          duracionId: fila.duracionId,
+          tipoClienteId: fila.tipoClienteId,
+          precioVenta: fila.precioVenta.toString(),
+          perdida: perdida(fila.precioVenta, costoDuracion),
+        };
+      });
+
+      const costosRespuesta = duracionesActivas.map((duracion) => ({
+        duracionId: duracion.id,
+        costo: (costoPorDuracion.get(duracion.id) ?? new Prisma.Decimal(0)).toString(),
       }));
 
-      const avisoCostoCero = { cantidad: filas.filter((f) => f.costo.isZero()).length };
+      // Combinaciones plataforma+duración EN USO (con al menos un precio
+      // activo) que no tienen costo registrado — punto 5.
+      const duracionesEnUso = new Set(filas.map((f) => f.duracionId));
+      const avisoCostoCero = {
+        cantidad: [...duracionesEnUso].filter((id) => (costoPorDuracion.get(id) ?? new Prisma.Decimal(0)).isZero())
+          .length,
+      };
 
-      return { duraciones: duracionesActivas, tiposCliente: tiposClienteActivos, celdas, avisoCostoCero };
+      return {
+        duraciones: duracionesActivas,
+        tiposCliente: tiposClienteActivos,
+        celdas,
+        costos: costosRespuesta,
+        avisoCostoCero,
+      };
     },
     {
       query: t.Object({ plataformaId: t.String() }),
@@ -169,8 +239,31 @@ export const precios = new Elysia({ prefix: "/precios" })
           duraciones: t.Array(esquemaFila),
           tiposCliente: t.Array(esquemaFila),
           celdas: t.Array(esquemaCelda),
+          costos: t.Array(esquemaCostoDuracion),
           avisoCostoCero: esquemaAvisoCostoCero,
         }),
+        404: esquemaError,
+      },
+    },
+  )
+  .put(
+    "/unidades/costo",
+    async ({ body, contexto, set }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+
+      const plataforma = await cliente.plataforma.findUnique({ where: { id: body.plataformaId } });
+      if (!plataforma) {
+        set.status = 404;
+        return { error: { codigo: "PLATAFORMA_NO_ENCONTRADA", mensaje: "La plataforma no existe." } };
+      }
+
+      const costoPlataforma = await guardarCostoPlataforma(cliente, body.plataformaId, body.duracionId, body.costo);
+      return { costo: costoPlataforma.costo.toString() };
+    },
+    {
+      body: t.Object({ plataformaId: t.String(), duracionId: t.String(), costo: dinero }),
+      response: {
+        200: t.Object({ costo: t.String() }),
         404: esquemaError,
       },
     },
@@ -194,12 +287,12 @@ export const precios = new Elysia({ prefix: "/precios" })
           continue;
         }
 
-        if (!celda.precioVenta || !celda.costo || !esDinero(celda.precioVenta) || !esDinero(celda.costo)) {
+        if (!celda.precioVenta || !esDinero(celda.precioVenta)) {
           resultados.push({
             duracionId: celda.duracionId,
             tipoClienteId: celda.tipoClienteId,
             ok: false,
-            error: "precioVenta y costo son obligatorios y deben ser montos válidos.",
+            error: "precioVenta es obligatorio y debe ser un monto válido.",
           });
           continue;
         }
@@ -212,24 +305,8 @@ export const precios = new Elysia({ prefix: "/precios" })
           });
           continue;
         }
-        if (Number(celda.costo) < 0) {
-          resultados.push({
-            duracionId: celda.duracionId,
-            tipoClienteId: celda.tipoClienteId,
-            ok: false,
-            error: "costo no puede ser negativo.",
-          });
-          continue;
-        }
 
-        await guardarCelda(
-          cliente,
-          { plataformaId: body.plataformaId },
-          celda.duracionId,
-          celda.tipoClienteId,
-          celda.precioVenta,
-          celda.costo,
-        );
+        await guardarCelda(cliente, { plataformaId: body.plataformaId }, celda.duracionId, celda.tipoClienteId, celda.precioVenta);
         resultados.push({ duracionId: celda.duracionId, tipoClienteId: celda.tipoClienteId, ok: true, error: null });
       }
 
@@ -262,33 +339,36 @@ export const precios = new Elysia({ prefix: "/precios" })
 
       const celdas = await Promise.all(
         filas.map(async (fila) => {
-          const { suma, faltantes } = await costoComponentesPaquete(
-            cliente,
-            query.paqueteId,
-            fila.duracionId,
-            fila.tipoClienteId,
-          );
-
-          let costoNoCoincide = false;
-          if (suma !== null) {
-            const diferencia = fila.costo.minus(suma).abs();
-            costoNoCoincide = suma.isZero() ? !fila.costo.isZero() : diferencia.dividedBy(suma).greaterThan(0.05);
-          }
+          const { suma, faltantes, detalle } = await costoComponentesPaquete(cliente, query.paqueteId, fila.duracionId);
+          const completo = faltantes.length === 0;
 
           return {
             duracionId: fila.duracionId,
             tipoClienteId: fila.tipoClienteId,
             precioVenta: fila.precioVenta.toString(),
-            costo: fila.costo.toString(),
-            perdida: perdida(fila.precioVenta, fila.costo),
-            sumaComponentes: suma !== null ? suma.toString() : null,
-            componentesFaltantes: faltantes,
-            costoNoCoincide,
+            // Solo se compara contra el costo calculado cuando está completo
+            // (punto 6): un parcial subestima el costo real y marcaría como
+            // "no es pérdida" una venta que sí lo es.
+            perdida: completo ? perdida(fila.precioVenta, suma) : false,
+            costoCalculado: completo ? suma.toString() : null,
+            detalle: detalle.map((d) => ({
+              plataformaId: d.plataformaId,
+              nombrePlataforma: d.nombrePlataforma,
+              cantidadPantallas: d.cantidadPantallas,
+              costoUnitario: d.costoUnitario?.toString() ?? null,
+              subtotal: d.subtotal?.toString() ?? null,
+            })),
           };
         }),
       );
 
-      const avisoCostoCero = { cantidad: filas.filter((f) => f.costo.isZero()).length };
+      // Renglones de duración (no celdas: cada duración se repite una vez
+      // por tipoCliente pero el costo del paquete no varía por tipoCliente)
+      // cuyos componentes no tienen costo completo — punto 5.
+      const duracionesIncompletas = new Set(
+        celdas.filter((c) => c.costoCalculado === null).map((c) => c.duracionId),
+      );
+      const avisoCostoCero = { cantidad: duracionesIncompletas.size };
 
       return { duraciones: duracionesActivas, tiposCliente: tiposClienteActivos, celdas, avisoCostoCero };
     },
@@ -324,12 +404,12 @@ export const precios = new Elysia({ prefix: "/precios" })
           continue;
         }
 
-        if (!celda.precioVenta || !celda.costo || !esDinero(celda.precioVenta) || !esDinero(celda.costo)) {
+        if (!celda.precioVenta || !esDinero(celda.precioVenta)) {
           resultados.push({
             duracionId: celda.duracionId,
             tipoClienteId: celda.tipoClienteId,
             ok: false,
-            error: "precioVenta y costo son obligatorios y deben ser montos válidos.",
+            error: "precioVenta es obligatorio y debe ser un monto válido.",
           });
           continue;
         }
@@ -342,24 +422,8 @@ export const precios = new Elysia({ prefix: "/precios" })
           });
           continue;
         }
-        if (Number(celda.costo) < 0) {
-          resultados.push({
-            duracionId: celda.duracionId,
-            tipoClienteId: celda.tipoClienteId,
-            ok: false,
-            error: "costo no puede ser negativo.",
-          });
-          continue;
-        }
 
-        await guardarCelda(
-          cliente,
-          { paqueteId: body.paqueteId },
-          celda.duracionId,
-          celda.tipoClienteId,
-          celda.precioVenta,
-          celda.costo,
-        );
+        await guardarCelda(cliente, { paqueteId: body.paqueteId }, celda.duracionId, celda.tipoClienteId, celda.precioVenta);
         resultados.push({ duracionId: celda.duracionId, tipoClienteId: celda.tipoClienteId, ok: true, error: null });
       }
 

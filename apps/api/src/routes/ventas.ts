@@ -7,7 +7,18 @@ import { paquetesDisponibles } from "../lib/paquetes.ts";
 import { realizarVenta, type EntradaVenta } from "../lib/ventas.ts";
 import { bloquearUsuarioParaVenta } from "../lib/bloqueo-usuario.ts";
 import { restriccionViolada } from "../lib/errores.ts";
-import { inicioDiaBogota, inicioMesBogota, inicioSemanaBogota } from "../lib/periodos.ts";
+import {
+  inicioDiaBogota,
+  inicioMesBogota,
+  inicioSemanaBogota,
+  finDiaBogota,
+  finSemanaBogota,
+  finMesBogota,
+  inicioMesAnteriorBogota,
+  inicioDeFechaBogota,
+  finDeFechaBogota,
+} from "../lib/periodos.ts";
+import { calcularEstadisticas } from "../lib/estadisticas-ventas.ts";
 
 const esquemaError = t.Object({
   error: t.Object({ codigo: t.String(), mensaje: t.String() }),
@@ -31,8 +42,9 @@ const esquemaPaqueteDisponible = t.Object({
   esPromocion: t.Boolean(),
 });
 
-// R4: nunca costo/utilidad/margen cuando quien consulta es VENDEDOR. El
-// resto de los campos (precioVenta, mensajeGenerado, etc.) sí se devuelven.
+// R4: nunca costo/utilidad/margen cuando quien consulta es VENDEDOR, ni
+// tampoco precioSugerido (revela el descuento) — el resto de los campos
+// (precioVenta, mensajeGenerado, etc.) sí se devuelven.
 const esquemaVenta = t.Composite([
   t.Object({
     id: t.String(),
@@ -49,6 +61,9 @@ const esquemaVenta = t.Composite([
     esPromocion: t.Boolean(),
   }),
   t.Object({
+    // F4.4: solo si quien consulta puede descontar (EMPLEADO+) — permite
+    // mostrar el descuento aplicado sin exponerlo a VENDEDOR.
+    precioSugerido: t.Optional(t.String()),
     costo: t.Optional(t.String()),
     utilidad: t.Optional(t.String()),
   }),
@@ -63,13 +78,19 @@ const esquemaAviso = t.Object({ codigo: t.String(), mensaje: t.String() });
 
 const cuerpoVenta = t.Object({
   tipoVenta: t.Union([t.Literal("UNIDAD"), t.Literal("PAQUETE")]),
-  plataformaId: t.Optional(t.String()),
+  // F4.4: 1..N plataformas para UNIDAD — reemplaza a plataformaId singular.
+  // Repetir un id pide varias pantallas de esa plataforma.
+  plataformas: t.Optional(t.Array(t.String(), { minItems: 1 })),
   paqueteId: t.Optional(t.String()),
   duracionId: t.String(),
   tipoClienteId: t.String(),
   // Validación de formato es responsabilidad del frontend (suave, no
   // bloqueante); aquí solo se acepta y se guarda tal cual (R3).
   celularCliente: t.Optional(t.String()),
+  // F4.4 Parte 3: ajuste manual del total — solo EMPLEADO+ y solo en
+  // ventas de 2+ renglones (ver POST / más abajo). Viaja como string: el
+  // dinero nunca se maneja como number flotante (CLAUDE.md).
+  precioFinal: t.Optional(t.String()),
 });
 
 // Entrega 9 — listado de ventas (secciones 1 y 2).
@@ -78,7 +99,7 @@ const esquemaDetalleVenta = t.Object({
   id: t.String(),
   plataformaId: t.String(),
   nombrePlataforma: t.String(),
-  correoCuenta: t.String(),
+  correoCuenta: t.Union([t.String(), t.Null()]),
   fechaVencimiento: t.String(),
 });
 
@@ -144,10 +165,17 @@ function whereDesdeFiltros(query: {
   if (query.hasta) fechaVenta.lte = new Date(query.hasta);
 
   return {
+    // F4.3: una venta externa no es una venta real (es el soporte de una
+    // garantía de una venta hecha fuera del sistema) — nunca aparece en
+    // /listado ni en /codigos, sin importar el filtro recibido.
+    esExterna: false,
     ...(Object.keys(fechaVenta).length > 0 ? { fechaVenta } : {}),
     ...(query.vendedorId ? { vendedorId: query.vendedorId } : {}),
     ...(query.tipoVenta ? { tipoVenta: query.tipoVenta } : {}),
-    ...(query.plataformaId ? { plataformaId: query.plataformaId } : {}),
+    // F4.4: Venta.plataformaId es null en una venta de 2+ productos (no
+    // hay un único id que la represente) — filtrar por el renglón real en
+    // VentaDetalle encuentra esas ventas también, no solo las de 1 renglón.
+    ...(query.plataformaId ? { detalles: { some: { plataformaId: query.plataformaId } } } : {}),
     ...(query.paqueteId ? { paqueteId: query.paqueteId } : {}),
     // Venta.esPromocion directamente, nunca el paquete relacionado (R3): el
     // paquete pudo dejar de ser promoción después de esta venta.
@@ -164,14 +192,123 @@ const esquemaTotalesPeriodo = t.Object({
   numeroVentas: t.Number(),
   ingresos: t.String(),
   costos: t.String(),
+  // Utilidad NETA: ya descuenta perdidaGarantias (punto 4, camino del
+  // dinero). perdidaGarantias viaja aparte para que el frontend la muestre
+  // como línea secundaria, nunca como una quinta tarjeta.
+  utilidad: t.String(),
+  perdidaGarantias: t.String(),
+});
+
+// F4.5 — estadísticas segmentadas. Ver lib/estadisticas-ventas.ts para el
+// cálculo; aquí solo vive la resolución del periodo y la forma HTTP.
+const esquemaResumenEstadisticas = t.Object({
+  numeroVentas: t.Number(),
+  unidadesEntregadas: t.Number(),
+  ingresos: t.String(),
+  costos: t.String(),
+  utilidad: t.String(),
+  descuentosOtorgados: t.String(),
+  recargosAplicados: t.String(),
+  perdidaGarantias: t.String(),
+  ventasSinCostoRegistrado: t.Number(),
+});
+
+const esquemaSegmentoTipo = t.Object({
+  clave: t.String(),
+  etiqueta: t.String(),
+  numeroVentas: t.Number(),
+  unidades: t.Number(),
+  ingresos: t.String(),
+  costos: t.String(),
   utilidad: t.String(),
 });
+
+const esquemaSegmentoPaquete = t.Object({
+  paqueteId: t.String(),
+  nombre: t.String(),
+  numeroVentas: t.Number(),
+  unidades: t.Number(),
+  ingresos: t.String(),
+  costos: t.String(),
+  utilidad: t.String(),
+});
+
+const esquemaSegmentoVendedor = t.Object({
+  vendedorId: t.String(),
+  nombre: t.String(),
+  numeroVentas: t.Number(),
+  unidades: t.Number(),
+  ingresos: t.String(),
+  costos: t.String(),
+  utilidad: t.String(),
+  descuentosOtorgados: t.String(),
+});
+
+const esquemaSegmentoPlataforma = t.Object({
+  plataformaId: t.String(),
+  nombre: t.String(),
+  unidades: t.Number(),
+  ingresoAtribuible: t.String(),
+  costoAtribuible: t.String(),
+  renglonesSinIngresoAtribuible: t.Number(),
+  renglonesSinCostoAtribuible: t.Number(),
+  perdidaGarantias: t.String(),
+});
+
+const esquemaEstadisticas = t.Object({
+  periodo: t.Object({ desde: t.String(), hasta: t.String() }),
+  resumen: esquemaResumenEstadisticas,
+  porTipo: t.Array(esquemaSegmentoTipo),
+  porPaquete: t.Array(esquemaSegmentoPaquete),
+  porVendedor: t.Array(esquemaSegmentoVendedor),
+  porPlataforma: t.Array(esquemaSegmentoPlataforma),
+});
+
+const PRESETS_ESTADISTICAS = ["hoy", "semana", "mes", "mes_anterior"] as const;
+type PresetEstadisticas = (typeof PRESETS_ESTADISTICAS)[number];
+
+/**
+ * Resuelve el rango [desde, hasta) de /ventas/estadisticas. Un solo
+ * endpoint, un solo rango: así las cuatro tablas de la pantalla siempre
+ * describen exactamente la misma ventana de tiempo.
+ *
+ * `desde`/`hasta` explícitos (formato "YYYY-MM-DD", el de un <input
+ * type="date">) ganan sobre `preset` y deben venir juntos — un rango libre
+ * a medias no tiene un significado razonable. Sin ninguno de los dos, por
+ * defecto "mes" (el aterrizaje más útil para una pantalla de estadísticas).
+ *
+ * Importante — Parte 3 del encargo: esto NO es whereDesdeFiltros() de
+ * /listado. Esa función sigue interpretando "desde"/"hasta" como
+ * medianoche UTC (bug conocido, pendiente de su propia entrega); esta
+ * función nueva sí convierte a medianoche de Bogotá con periodos.ts. Las
+ * dos convivirán con comportamiento distinto hasta que /listado se corrija
+ * aparte.
+ */
+function resolverRangoEstadisticas(
+  query: { preset?: PresetEstadisticas; desde?: string; hasta?: string },
+  ahora: Date,
+): { desde: Date; hasta: Date } | null {
+  if (query.desde || query.hasta) {
+    if (!query.desde || !query.hasta) return null;
+    return { desde: inicioDeFechaBogota(query.desde), hasta: finDeFechaBogota(query.hasta) };
+  }
+  switch (query.preset ?? "mes") {
+    case "hoy":
+      return { desde: inicioDiaBogota(ahora), hasta: finDiaBogota(ahora) };
+    case "semana":
+      return { desde: inicioSemanaBogota(ahora), hasta: finSemanaBogota(ahora) };
+    case "mes_anterior":
+      return { desde: inicioMesAnteriorBogota(ahora), hasta: inicioMesBogota(ahora) };
+    case "mes":
+      return { desde: inicioMesBogota(ahora), hasta: finMesBogota(ahora) };
+  }
+}
 
 const esquemaDetalleVentaMap = (detalle: {
   id: string;
   plataformaId: string;
   nombrePlataforma: string;
-  correoCuenta: string;
+  correoCuenta: string | null;
   fechaVencimiento: Date;
 }) => ({
   id: detalle.id,
@@ -181,18 +318,36 @@ const esquemaDetalleVentaMap = (detalle: {
   fechaVencimiento: detalle.fechaVencimiento.toISOString(),
 });
 
-/** Totales (R1: filtrados por empresa vía prismaParaEmpresa) de un período que arranca en `desde`. */
+/**
+ * Totales (R1: filtrados por empresa vía prismaParaEmpresa) de un período que
+ * arranca en `desde`. Punto 4 del camino del dinero: la pérdida de una
+ * garantía se descuenta del período en que la GARANTÍA se creó, nunca del
+ * de la venta original (R3 — Venta.utilidad no se toca). Por eso agrega
+ * Garantia.createdAt, no Venta.fechaVenta.
+ */
 async function totalesDesde(cliente: Prisma.TransactionClient, desde: Date) {
-  const agregado = await cliente.venta.aggregate({
-    where: { anulada: false, fechaVenta: { gte: desde } },
-    _count: { _all: true },
-    _sum: { precioVenta: true, costo: true, utilidad: true },
-  });
+  const [agregado, agregadoGarantias] = await Promise.all([
+    cliente.venta.aggregate({
+      // F4.3: esExterna:false — una venta externa no es un ingreso
+      // (precioVenta/costo/utilidad ya están en cero), pero numeroVentas sí
+      // debe excluirla o el contador de "ventas de hoy" quedaría inflado.
+      where: { anulada: false, esExterna: false, fechaVenta: { gte: desde } },
+      _count: { _all: true },
+      _sum: { precioVenta: true, costo: true, utilidad: true },
+    }),
+    cliente.garantia.aggregate({
+      where: { createdAt: { gte: desde } },
+      _sum: { costoAsumido: true },
+    }),
+  ]);
+  const utilidadBruta = new Prisma.Decimal(agregado._sum.utilidad ?? 0);
+  const perdidaGarantias = new Prisma.Decimal(agregadoGarantias._sum.costoAsumido ?? 0);
   return {
     numeroVentas: agregado._count._all,
     ingresos: (agregado._sum.precioVenta ?? 0).toString(),
     costos: (agregado._sum.costo ?? 0).toString(),
-    utilidad: (agregado._sum.utilidad ?? 0).toString(),
+    utilidad: utilidadBruta.minus(perdidaGarantias).toString(),
+    perdidaGarantias: perdidaGarantias.toString(),
   };
 }
 
@@ -301,14 +456,53 @@ export const ventas = new Elysia({ prefix: "/ventas" })
     "/",
     async ({ body, contexto, set }) => {
       const celularCliente = body.celularCliente?.trim() || null;
+
+      // F4.4 Parte 3 — el ajuste manual del precio se valida siempre en el
+      // servidor (R4: ocultar el campo en el frontend no es control de
+      // acceso). Una venta de paquete cuenta como 1 renglón (su precio ya
+      // es un bloque único de la matriz, no una suma de componentes): el
+      // chequeo de "2+ renglones" la rechaza igual, sin una regla aparte.
+      let precioFinal: Prisma.Decimal | undefined;
+      if (body.precioFinal !== undefined) {
+        if (contexto.rol === Rol.VENDEDOR) {
+          set.status = 403;
+          return {
+            error: { codigo: "DESCUENTO_NO_PERMITIDO", mensaje: "No tienes permiso para ajustar el precio de una venta." },
+          };
+        }
+        const numeroRenglones = body.tipoVenta === "UNIDAD" ? (body.plataformas?.length ?? 0) : 1;
+        if (numeroRenglones < 2) {
+          set.status = 409;
+          return {
+            error: {
+              codigo: "DESCUENTO_SOLO_MULTIPRODUCTO",
+              mensaje: "El precio final solo se puede ajustar en una venta de dos o más productos.",
+            },
+          };
+        }
+        let valor: Prisma.Decimal;
+        try {
+          valor = new Prisma.Decimal(body.precioFinal);
+        } catch {
+          set.status = 409;
+          return { error: { codigo: "PRECIO_FINAL_INVALIDO", mensaje: "El precio final no es un número válido." } };
+        }
+        if (!valor.isFinite() || valor.lessThanOrEqualTo(0)) {
+          set.status = 409;
+          return { error: { codigo: "PRECIO_FINAL_INVALIDO", mensaje: "El precio final debe ser mayor a cero." } };
+        }
+        precioFinal = valor;
+      }
+
       const entrada: EntradaVenta =
         body.tipoVenta === "UNIDAD"
           ? {
               tipoVenta: "UNIDAD",
-              plataformaId: body.plataformaId ?? "",
+              plataformas: body.plataformas ?? [],
               duracionId: body.duracionId,
               tipoClienteId: body.tipoClienteId,
               celularCliente,
+              precioFinal,
             }
           : {
               tipoVenta: "PAQUETE",
@@ -350,6 +544,9 @@ export const ventas = new Elysia({ prefix: "/ventas" })
 
       const venta = resultado.venta;
       const esAdmin = contexto.rol === Rol.ADMIN || contexto.rol === Rol.SUPER_ADMIN;
+      // F4.4 — precioSugerido revela el descuento: solo para quien puede
+      // descontar (EMPLEADO+), nunca VENDEDOR (R4).
+      const puedeVerDescuento = contexto.rol !== Rol.VENDEDOR;
       set.status = 201;
       return {
         venta: {
@@ -365,6 +562,7 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           fechaVencimientoMax: venta.fechaVencimientoMax.toISOString(),
           mensajeGenerado: venta.mensajeGenerado,
           esPromocion: venta.esPromocion,
+          ...(puedeVerDescuento ? { precioSugerido: venta.precioSugerido.toString() } : {}),
           ...(esAdmin ? { costo: venta.costo.toString(), utilidad: venta.utilidad.toString() } : {}),
         },
         ...(resultado.plantillaFaltante
@@ -381,7 +579,11 @@ export const ventas = new Elysia({ prefix: "/ventas" })
     },
     {
       body: cuerpoVenta,
-      response: { 201: t.Object({ venta: esquemaVenta, aviso: t.Optional(esquemaAviso) }), 409: esquemaError },
+      response: {
+        201: t.Object({ venta: esquemaVenta, aviso: t.Optional(esquemaAviso) }),
+        403: esquemaError,
+        409: esquemaError,
+      },
     },
   )
 
@@ -393,7 +595,9 @@ export const ventas = new Elysia({ prefix: "/ventas" })
     async ({ contexto }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
       const ventas = await cliente.venta.findMany({
-        where: { vendedorId: contexto.usuarioId! },
+        // F4.3: una venta externa no es una venta del vendedor, es el
+        // registro de una garantía — no pertenece a este listado.
+        where: { vendedorId: contexto.usuarioId!, esExterna: false },
         orderBy: { fechaVenta: "desc" },
         select: {
           id: true,
@@ -553,6 +757,48 @@ export const ventas = new Elysia({ prefix: "/ventas" })
     },
   )
 
+  // F4.5 — estadísticas segmentadas (ADMIN/SUPER_ADMIN, por la escalada de
+  // rol ya aplicada arriba). "Cada tabla reporta su propia cobertura": R4
+  // ya queda cubierto por la escalada de .use(requiereRol(Rol.ADMIN)), así
+  // que costo/utilidad aquí no necesitan exclusión aparte.
+  .get(
+    "/estadisticas",
+    async ({ contexto, query, set }) => {
+      const rango = resolverRangoEstadisticas(query, new Date());
+      if (!rango) {
+        set.status = 409;
+        return {
+          error: {
+            codigo: "RANGO_INVALIDO",
+            mensaje: "Envía 'desde' y 'hasta' juntos para un rango libre, o ninguno para usar el preset.",
+          },
+        };
+      }
+
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const estadisticas = await calcularEstadisticas(cliente, rango.desde, rango.hasta);
+
+      return {
+        // "hasta" se muestra como el último instante incluido (hasta - 1ms),
+        // no el límite exclusivo real que usan las consultas: así se lee
+        // como un rango cerrado normal ("del 1 al 15"), no uno que parece
+        // cortar un milisegundo antes del día 16.
+        periodo: { desde: rango.desde.toISOString(), hasta: new Date(rango.hasta.getTime() - 1).toISOString() },
+        ...estadisticas,
+      };
+    },
+    {
+      query: t.Object({
+        preset: t.Optional(
+          t.Union([t.Literal("hoy"), t.Literal("semana"), t.Literal("mes"), t.Literal("mes_anterior")]),
+        ),
+        desde: t.Optional(t.String()),
+        hasta: t.Optional(t.String()),
+      }),
+      response: { 200: esquemaEstadisticas, 409: esquemaError },
+    },
+  )
+
   // Entrega 9, sección 3 — anular una venta. R3: nunca se borra, solo se
   // marca; R5 libera las pantallas de inmediato como consecuencia de que
   // la disponibilidad siempre filtra por `venta.anulada: false` (pantallas.ts),
@@ -577,6 +823,10 @@ export const ventas = new Elysia({ prefix: "/ventas" })
         const venta = await tx.venta.findUnique({ where: { id: params.id } });
         if (!venta) return { tipo: "no_encontrada" as const };
         if (venta.anulada) return { tipo: "ya_anulada" as const };
+        // F4.3: anular una venta externa liberaría la pantalla del
+        // comprador sin que nadie se entere — esa venta no existió para el
+        // sistema hasta la garantía, no hay "antes" al que volver.
+        if (venta.esExterna) return { tipo: "externa" as const };
 
         const usuarioBloqueado = await bloquearUsuarioParaVenta(tx, contexto.empresaId!, venta.vendedorId);
 
@@ -629,6 +879,15 @@ export const ventas = new Elysia({ prefix: "/ventas" })
       if (resultado.tipo === "ya_anulada") {
         set.status = 409;
         return { error: { codigo: "VENTA_YA_ANULADA", mensaje: "Esta venta ya fue anulada." } };
+      }
+      if (resultado.tipo === "externa") {
+        set.status = 409;
+        return {
+          error: {
+            codigo: "VENTA_EXTERNA_NO_SE_ANULA",
+            mensaje: "Esta venta sostiene una garantía externa y no se puede anular.",
+          },
+        };
       }
 
       const actualizada = resultado.venta;

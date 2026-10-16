@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
+import { letraPerfil, PIN_PATRON } from "@dismanet/shared";
 import { cifrar, descifrar } from "../lib/cifrado.ts";
-import { letraPerfil, pantallasDeCuenta, pantallasDeCuentas, pinesDistintos } from "../lib/pantallas.ts";
+import { pantallasDeCuenta, pantallasDeCuentas, pinesPorPerfil } from "../lib/pantallas.ts";
 import { datosSinEmpresa, prismaParaEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol } from "../generated/prisma/client.ts";
 import { requiereRol } from "../plugins/guardas.ts";
@@ -9,13 +10,24 @@ const esquemaError = t.Object({
   error: t.Object({ codigo: t.String(), mensaje: t.String() }),
 });
 
-// Nunca incluye password ni pin (Parte 4): esos solo salen por
+// Mismo codigo que esquemaError, pero con los codigos de compra de las
+// ventas afectadas (R3/R5, F4.2 parte 2.3): el frontend los necesita para
+// mostrar "la pantalla vendida en la compra X" en vez de un 409 mudo.
+const esquemaErrorPantallaVendida = t.Object({
+  error: t.Object({ codigo: t.String(), mensaje: t.String() }),
+  codigosCompraAfectados: t.Array(t.String()),
+});
+
+// Nunca incluye password ni codigo/pin (Parte 4): esos solo salen por
 // GET /:id/credenciales, bajo la acción explícita "ver credenciales".
+// usuario y enlace no son secretos (texto plano), así que sí viajan aquí.
 const esquemaCuenta = t.Object({
   id: t.String(),
   plataformaId: t.String(),
   nombrePlataforma: t.String(),
-  correo: t.String(),
+  correo: t.Union([t.String(), t.Null()]),
+  usuario: t.Union([t.String(), t.Null()]),
+  enlace: t.Union([t.String(), t.Null()]),
   capacidadPantallas: t.Number(),
   notas: t.Union([t.String(), t.Null()]),
   activa: t.Boolean(),
@@ -37,13 +49,18 @@ const esquemaPantalla = t.Object({
 
 const esquemaCredenciales = t.Object({
   password: t.String(),
+  usuario: t.Union([t.String(), t.Null()]),
+  codigo: t.Union([t.String(), t.Null()]),
+  enlace: t.Union([t.String(), t.Null()]),
   pantallas: t.Array(t.Object({ id: t.String(), numero: t.Number(), pin: t.Union([t.String(), t.Null()]) })),
 });
 
 interface FilaCuenta {
   id: string;
   plataformaId: string;
-  correo: string;
+  correo: string | null;
+  usuario: string | null;
+  enlace: string | null;
   capacidadPantallas: number;
   notas: string | null;
   activa: boolean;
@@ -56,6 +73,8 @@ function respuestaCuenta(fila: FilaCuenta, pantallasLibres: number, pantallasTot
     plataformaId: fila.plataformaId,
     nombrePlataforma: fila.plataforma.nombre,
     correo: fila.correo,
+    usuario: fila.usuario,
+    enlace: fila.enlace,
     capacidadPantallas: fila.capacidadPantallas,
     notas: fila.notas,
     activa: fila.activa,
@@ -64,19 +83,82 @@ function respuestaCuenta(fila: FilaCuenta, pantallasLibres: number, pantallasTot
   };
 }
 
+// F4.2, parte 1.3 — "arreglar el dato no es arreglar la fuente": qué campos
+// de acceso pide/prohíbe una Cuenta lo decide la Plataforma elegida
+// (usaCorreo/usaUsuario/usaCodigo/usaEnlace), no un t.String() fijo en el
+// esquema. La validación vive aquí, en el handler, porque depende de la
+// plataforma cargada — TypeBox no puede expresar "obligatorio si X".
+type ClaveCampoAcceso = "correo" | "usuario" | "codigo" | "enlace";
+
+interface PlataformaConBanderasAcceso {
+  nombre: string;
+  usaCorreo: boolean;
+  usaUsuario: boolean;
+  usaCodigo: boolean;
+  usaEnlace: boolean;
+}
+
+const CAMPOS_ACCESO: { clave: ClaveCampoAcceso; bandera: keyof PlataformaConBanderasAcceso; etiqueta: string }[] = [
+  { clave: "correo", bandera: "usaCorreo", etiqueta: "correo" },
+  { clave: "usuario", bandera: "usaUsuario", etiqueta: "usuario" },
+  { clave: "codigo", bandera: "usaCodigo", etiqueta: "código" },
+  { clave: "enlace", bandera: "usaEnlace", etiqueta: "enlace" },
+];
+
+/** "" y " " cuentan como ausente: evita que un campo prohibido se guarde como cadena vacía. */
+function valorONulo(valor: string | null | undefined): string | null {
+  if (valor === undefined || valor === null) return null;
+  const recortado = valor.trim();
+  return recortado === "" ? null : recortado;
+}
+
+/**
+ * `modo: "crear"` exige los 4 campos según la plataforma, sin importar si
+ * vinieron en el body (una cuenta nueva no puede nacer incompleta).
+ * `modo: "editar"` solo valida los campos que de verdad vinieron en el
+ * PATCH (`valores` debe construirse con las claves presentes únicamente) —
+ * omitir un campo en una edición no lo vuelve a validar.
+ */
+function validarCamposDeAcceso(
+  plataforma: PlataformaConBanderasAcceso,
+  valores: Partial<Record<ClaveCampoAcceso, string | null>>,
+  modo: "crear" | "editar",
+): { codigo: string; mensaje: string } | null {
+  for (const { clave, bandera, etiqueta } of CAMPOS_ACCESO) {
+    const presente = clave in valores;
+    const valor = valores[clave] ?? null;
+
+    if (plataforma[bandera]) {
+      if ((modo === "crear" || presente) && valor === null) {
+        return { codigo: "CAMPO_REQUERIDO_POR_PLATAFORMA", mensaje: `${plataforma.nombre} necesita ${etiqueta}.` };
+      }
+    } else if (presente && valor !== null) {
+      return { codigo: "CAMPO_REQUERIDO_POR_PLATAFORMA", mensaje: `${plataforma.nombre} no usa ${etiqueta}.` };
+    }
+  }
+  return null;
+}
+
 // Parte 1 y 2 del encargo "plantilla de pantallas": capacidad, perfiles y
 // pines ya no se piden aquí — se copian de PlataformaPantalla (la plantilla
-// de la plataforma elegida). El cuerpo queda reducido a lo que de verdad
-// cambia entre cuentas de la misma plataforma.
+// de la plataforma elegida). Los 4 campos de acceso son todos opcionales a
+// nivel de esquema: la obligatoriedad real la decide validarCamposDeAcceso
+// según la plataforma, no TypeBox.
 const cuerpoCrearCuenta = t.Object({
   plataformaId: t.String(),
-  correo: t.String({ minLength: 1 }),
+  correo: t.Optional(t.Union([t.String(), t.Null()])),
+  usuario: t.Optional(t.Union([t.String(), t.Null()])),
+  codigo: t.Optional(t.Union([t.String(), t.Null()])),
+  enlace: t.Optional(t.Union([t.String(), t.Null()])),
   password: t.String({ minLength: 1 }),
   notas: t.Optional(t.Union([t.String(), t.Null()])),
 });
 
 const cuerpoEditarCuenta = t.Object({
-  correo: t.Optional(t.String({ minLength: 1 })),
+  correo: t.Optional(t.Union([t.String(), t.Null()])),
+  usuario: t.Optional(t.Union([t.String(), t.Null()])),
+  codigo: t.Optional(t.Union([t.String(), t.Null()])),
+  enlace: t.Optional(t.Union([t.String(), t.Null()])),
   password: t.Optional(t.String({ minLength: 1 })),
   notas: t.Optional(t.Union([t.String(), t.Null()])),
   capacidadPantallas: t.Optional(t.Integer({ minimum: 1 })),
@@ -84,7 +166,11 @@ const cuerpoEditarCuenta = t.Object({
 
 const cuerpoEditarPantalla = t.Object({
   perfil: t.Optional(t.Union([t.String(), t.Null()])),
-  pin: t.Optional(t.Union([t.String({ pattern: "^[0-9]{4}$" }), t.Null()])),
+  pin: t.Optional(t.Union([t.String({ pattern: PIN_PATRON }), t.Null()])),
+  // F4.2, parte 2.3: sin esto, cambiar perfil/pin de una pantalla con una
+  // venta vigente se rechaza con PANTALLA_VENDIDA. Nunca una casilla oculta:
+  // el frontend la marca true solo tras un diálogo de confirmación explícito.
+  confirmarPantallaVendida: t.Optional(t.Boolean()),
 });
 
 /** Agrupa el estado de pantallas por cuentaId, para calcular libres/totales de varias cuentas a la vez. */
@@ -140,6 +226,18 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
         };
       }
 
+      const valoresAcceso = {
+        correo: valorONulo(body.correo),
+        usuario: valorONulo(body.usuario),
+        codigo: valorONulo(body.codigo),
+        enlace: valorONulo(body.enlace),
+      };
+      const errorCampos = validarCamposDeAcceso(plataforma, valoresAcceso, "crear");
+      if (errorCampos) {
+        set.status = 409;
+        return { error: errorCampos };
+      }
+
       // Parte 2: las pantallas se generan copiando la plantilla de la
       // plataforma (PlataformaPantalla), nunca a mano. El chequeo de que la
       // plantilla exista va DENTRO de la misma transacción que crea la
@@ -158,7 +256,10 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
         const creada = await txCliente.cuenta.create({
           data: datosSinEmpresa<Prisma.CuentaUncheckedCreateInput>({
             plataformaId: body.plataformaId,
-            correo: body.correo,
+            correo: valoresAcceso.correo,
+            usuario: valoresAcceso.usuario,
+            codigo: valoresAcceso.codigo ? cifrar(valoresAcceso.codigo) : null,
+            enlace: valoresAcceso.enlace,
             password: cifrar(body.password),
             capacidadPantallas: plantilla.length,
             notas: body.notas ?? null,
@@ -191,11 +292,18 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
 
       set.status = 201;
       const cantidad = resultado.cuenta.capacidadPantallas;
-      return { cuenta: respuestaCuenta({ ...resultado.cuenta, plataforma: { nombre: plataforma.nombre } }, cantidad, cantidad) };
+      return {
+        cuenta: respuestaCuenta({ ...resultado.cuenta, plataforma: { nombre: plataforma.nombre } }, cantidad, cantidad),
+      };
     },
     {
       body: cuerpoCrearCuenta,
-      response: { 201: t.Object({ cuenta: esquemaCuenta }), 400: esquemaError, 404: esquemaError },
+      response: {
+        201: t.Object({ cuenta: esquemaCuenta }),
+        400: esquemaError,
+        404: esquemaError,
+        409: esquemaError,
+      },
     },
   )
 
@@ -276,12 +384,15 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
     },
   )
   // Acción explícita "ver credenciales" (Parte 4): la única ruta donde
-  // salen password y pin, y solo porque el ADMIN la pidió a propósito.
+  // salen password, codigo y pin, y solo porque el ADMIN la pidió a propósito.
   .get(
     "/:id/credenciales",
     async ({ params, contexto, set }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-      const cuenta = await cliente.cuenta.findUnique({ where: { id: params.id }, select: { id: true, password: true } });
+      const cuenta = await cliente.cuenta.findUnique({
+        where: { id: params.id },
+        select: { id: true, password: true, usuario: true, codigo: true, enlace: true },
+      });
       if (!cuenta) {
         set.status = 404;
         return { error: { codigo: "CUENTA_NO_ENCONTRADA", mensaje: "La cuenta no existe." } };
@@ -295,6 +406,9 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
 
       return {
         password: descifrar(cuenta.password),
+        usuario: cuenta.usuario,
+        codigo: cuenta.codigo ? descifrar(cuenta.codigo) : null,
+        enlace: cuenta.enlace,
         pantallas: pantallas.map((p) => ({ id: p.id, numero: p.numero, pin: p.pin ? descifrar(p.pin) : null })),
       };
     },
@@ -307,8 +421,25 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
         const cuenta = await txCliente.cuenta.findUnique({ where: { id: params.id } });
         if (!cuenta) return { tipo: "no-encontrada" as const };
 
+        const plataforma = await txCliente.plataforma.findUnique({ where: { id: cuenta.plataformaId } });
+        if (!plataforma) return { tipo: "no-encontrada" as const };
+
+        const valoresAcceso: Partial<Record<ClaveCampoAcceso, string | null>> = {};
+        if (body.correo !== undefined) valoresAcceso.correo = valorONulo(body.correo);
+        if (body.usuario !== undefined) valoresAcceso.usuario = valorONulo(body.usuario);
+        if (body.codigo !== undefined) valoresAcceso.codigo = valorONulo(body.codigo);
+        if (body.enlace !== undefined) valoresAcceso.enlace = valorONulo(body.enlace);
+
+        const errorCampos = validarCamposDeAcceso(plataforma, valoresAcceso, "editar");
+        if (errorCampos) return { tipo: "campo-invalido" as const, error: errorCampos };
+
         const dataActualizacion: Prisma.CuentaUpdateInput = {};
-        if (body.correo !== undefined) dataActualizacion.correo = body.correo;
+        if (body.correo !== undefined) dataActualizacion.correo = valoresAcceso.correo ?? null;
+        if (body.usuario !== undefined) dataActualizacion.usuario = valoresAcceso.usuario ?? null;
+        if (body.codigo !== undefined) {
+          dataActualizacion.codigo = valoresAcceso.codigo ? cifrar(valoresAcceso.codigo) : null;
+        }
+        if (body.enlace !== undefined) dataActualizacion.enlace = valoresAcceso.enlace ?? null;
         if (body.password !== undefined) dataActualizacion.password = cifrar(body.password);
         if (body.notas !== undefined) dataActualizacion.notas = body.notas;
 
@@ -316,14 +447,20 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
           const nuevaCapacidad = body.capacidadPantallas;
 
           if (nuevaCapacidad > cuenta.capacidadPantallas) {
-            const plataforma = await txCliente.plataforma.findUnique({ where: { id: cuenta.plataformaId } });
-            if (!plataforma) return { tipo: "no-encontrada" as const };
-
             const numerosNuevos: number[] = [];
             for (let numero = cuenta.capacidadPantallas + 1; numero <= nuevaCapacidad; numero++) {
               numerosNuevos.push(numero);
             }
-            const pinesGenerados = plataforma.usaPerfilPin ? pinesDistintos(numerosNuevos.length) : [];
+            // F4.2, parte 2.2: mismo perfil ⇒ mismo pin. letraPerfil envuelve
+            // cada 26 pantallas (A, B, ... Z, A, ...), así que un lote grande
+            // puede repetir perfil dentro de sí mismo — pinesPorPerfil es lo
+            // que garantiza que esa repetición comparta pin, en vez de que
+            // cada pantalla reciba uno distinto (el bug que motivó esta
+            // entrega: dos pantallas de perfil B con pines distintos).
+            const perfilesNuevos = numerosNuevos.map((numero) =>
+              plataforma.usaPerfilPin ? letraPerfil(numero - 1) : null,
+            );
+            const pinesGenerados = plataforma.usaPerfilPin ? pinesPorPerfil(perfilesNuevos) : [];
 
             for (const [indice, numero] of numerosNuevos.entries()) {
               // La numeración nunca se reinicia: si la pantalla ya existe
@@ -331,6 +468,7 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
               // reactiva en vez de crear una fila duplicada — @@unique([
               // cuentaId, numero]) lo impediría de todos modos.
               const existente = await txCliente.pantalla.findFirst({ where: { cuentaId: cuenta.id, numero } });
+              const pinTexto = pinesGenerados[indice];
               if (existente) {
                 await txCliente.pantalla.update({ where: { id: existente.id }, data: { activa: true } });
               } else {
@@ -338,8 +476,8 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
                   data: datosSinEmpresa<Prisma.PantallaUncheckedCreateInput>({
                     cuentaId: cuenta.id,
                     numero,
-                    perfil: plataforma.usaPerfilPin ? letraPerfil(numero - 1) : null,
-                    pin: plataforma.usaPerfilPin ? cifrar(pinesGenerados[indice]) : null,
+                    perfil: perfilesNuevos[indice],
+                    pin: pinTexto ? cifrar(pinTexto) : null,
                   }),
                 });
               }
@@ -380,6 +518,10 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
         set.status = 404;
         return { error: { codigo: "CUENTA_NO_ENCONTRADA", mensaje: "La cuenta no existe." } };
       }
+      if (resultado.tipo === "campo-invalido") {
+        set.status = 409;
+        return { error: resultado.error };
+      }
       if (resultado.tipo === "pantallas-ocupadas") {
         set.status = 400;
         const detalle = resultado.ocupadas
@@ -397,7 +539,7 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
     {
       params: t.Object({ id: t.String() }),
       body: cuerpoEditarCuenta,
-      response: { 200: t.Object({ cuenta: esquemaCuenta }), 400: esquemaError, 404: esquemaError },
+      response: { 200: t.Object({ cuenta: esquemaCuenta }), 400: esquemaError, 404: esquemaError, 409: esquemaError },
     },
   )
   .patch(
@@ -449,7 +591,10 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
     { params: t.Object({ id: t.String() }), response: { 200: t.Object({ cuenta: esquemaCuenta }), 404: esquemaError } },
   )
   // Edición puntual de perfil/PIN de una pantalla ya creada (Parte 2:
-  // "ambos editables... después de guardar").
+  // "ambos editables... después de guardar"). F4.2 agrega dos reglas de
+  // negocio sobre esta misma ruta: 2.2 (propagar el pin a las hermanas del
+  // mismo perfil) y 2.3 (bloquear el cambio en una pantalla vendida, salvo
+  // confirmación explícita).
   .patch(
     "/:id/pantallas/:pantallaId",
     async ({ params, body, contexto, set }) => {
@@ -460,24 +605,88 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
         return { error: { codigo: "PANTALLA_NO_ENCONTRADA", mensaje: "La pantalla no existe en esta cuenta." } };
       }
 
-      const actualizada = await cliente.pantalla.update({
-        where: { id: pantalla.id },
-        data: {
-          ...(body.perfil !== undefined ? { perfil: body.perfil } : {}),
-          ...(body.pin !== undefined ? { pin: body.pin ? cifrar(body.pin) : null } : {}),
-        },
+      const cambiaAlgo = body.perfil !== undefined || body.pin !== undefined;
+
+      // R5: ocupada = existe un VentaDetalle vigente (nunca Venta.fechaVencimientoMax).
+      if (cambiaAlgo) {
+        const estados = await pantallasDeCuenta(cliente, params.id);
+        const estadoActual = estados.find((e) => e.id === pantalla.id);
+        const ocupada = estadoActual ? !estadoActual.libre : false;
+
+        if (ocupada && !body.confirmarPantallaVendida) {
+          set.status = 409;
+          // F4.7, arreglo 6 — nombrar a TODOS los compradores afectados, no
+          // solo al más reciente: el cliente sobrevende a propósito y una
+          // pantalla puede tener más de una venta vigente a la vez.
+          const codigos = estadoActual?.codigosCompraAfectados ?? [];
+          return {
+            error: {
+              codigo: "PANTALLA_VENDIDA",
+              mensaje:
+                codigos.length > 0
+                  ? `La pantalla #${pantalla.numero} está vendida (código${codigos.length > 1 ? "s" : ""} de compra ${codigos.join(", ")}). Confirma para cambiar su perfil/PIN de todos modos.`
+                  : `La pantalla #${pantalla.numero} está vendida. Confirma para cambiar su perfil/PIN de todos modos.`,
+            },
+            codigosCompraAfectados: codigos,
+          };
+        }
+      }
+
+      const { actualizada, pantallasHermanasActualizadas } = await cliente.$transaction(async (tx) => {
+        let actualizada = await tx.pantalla.update({
+          where: { id: pantalla.id },
+          data: {
+            ...(body.perfil !== undefined ? { perfil: body.perfil } : {}),
+            ...(body.pin !== undefined ? { pin: body.pin ? cifrar(body.pin) : null } : {}),
+          },
+        });
+
+        // F4.2, parte 2.2: mismo perfil ⇒ mismo pin, siempre — nunca se
+        // rechaza un pin por repetirse entre pantallas de distinta cuenta;
+        // acá se propaga a las HERMANAS (misma cuenta, mismo perfil), que
+        // son literalmente la misma puerta.
+        let pantallasHermanasActualizadas: number[] = [];
+        if (actualizada.perfil !== null) {
+          const hermanas = await tx.pantalla.findMany({
+            where: { cuentaId: params.id, perfil: actualizada.perfil, id: { not: actualizada.id } },
+          });
+
+          if (hermanas.length > 0) {
+            if (body.pin !== undefined) {
+              // El pin llegó explícito en el body: manda sobre las hermanas.
+              await tx.pantalla.updateMany({
+                where: { id: { in: hermanas.map((h) => h.id) } },
+                data: { pin: actualizada.pin },
+              });
+              pantallasHermanasActualizadas = hermanas.map((h) => h.numero).sort((a, b) => a - b);
+            } else if (body.perfil !== undefined) {
+              // F4.7, arreglo 5 — la pantalla se MUDÓ de perfil sin traer un
+              // pin propio: adopta el de las hermanas del perfil destino.
+              // Sin esto quedan dos pines para la misma puerta, el estado
+              // que F4.2 vino a eliminar.
+              actualizada = await tx.pantalla.update({ where: { id: actualizada.id }, data: { pin: hermanas[0].pin } });
+            }
+          }
+        }
+
+        return { actualizada, pantallasHermanasActualizadas };
       });
 
       return {
         pantalla: { id: actualizada.id, numero: actualizada.numero, perfil: actualizada.perfil },
+        pantallasHermanasActualizadas,
       };
     },
     {
       params: t.Object({ id: t.String(), pantallaId: t.String() }),
       body: cuerpoEditarPantalla,
       response: {
-        200: t.Object({ pantalla: t.Object({ id: t.String(), numero: t.Number(), perfil: t.Union([t.String(), t.Null()]) }) }),
+        200: t.Object({
+          pantalla: t.Object({ id: t.String(), numero: t.Number(), perfil: t.Union([t.String(), t.Null()]) }),
+          pantallasHermanasActualizadas: t.Array(t.Number()),
+        }),
         404: esquemaError,
+        409: esquemaErrorPantallaVendida,
       },
     },
   );

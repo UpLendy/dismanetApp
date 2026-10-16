@@ -72,6 +72,42 @@ describe("diagnosticoDeEmpresa", () => {
     expect(diagnostico.cuentasActivas).toBe(1);
     expect(diagnostico.pantallasActivas).toBe(1);
     expect(diagnostico.pantallasLibres).toBe(1);
+    expect(diagnostico.cuentasConPinInconsistente).toEqual([]);
+  });
+
+  it("detecta PIN distinto entre dos pantallas del mismo perfil, en la misma cuenta", async () => {
+    const plataformaPerfil = await prismaRaw.plataforma.create({
+      data: { empresaId, nombre: "HBO Max (DGX)", capacidadPantallas: 2, usaPerfilPin: true },
+    });
+    const cuentaPerfil = await prismaRaw.cuenta.create({
+      data: {
+        empresaId,
+        plataformaId: plataformaPerfil.id,
+        correo: "hbo@dgx.test",
+        password: cifrar("clave"),
+        capacidadPantallas: 2,
+      },
+    });
+    await prismaRaw.pantalla.create({
+      data: { empresaId, cuentaId: cuentaPerfil.id, numero: 1, perfil: "A", pin: cifrar("1234") },
+    });
+    await prismaRaw.pantalla.create({
+      data: { empresaId, cuentaId: cuentaPerfil.id, numero: 2, perfil: "A", pin: cifrar("5678") },
+    });
+
+    const diagnostico = await diagnosticoDeEmpresa(prismaParaEmpresa(empresaId));
+    expect(diagnostico.cuentasConPinInconsistente).toHaveLength(1);
+    expect(diagnostico.cuentasConPinInconsistente[0]).toMatchObject({
+      cuentaId: cuentaPerfil.id,
+      nombrePlataforma: "HBO Max (DGX)",
+      identificador: "hbo@dgx.test",
+      perfil: "A",
+    });
+    expect(diagnostico.cuentasConPinInconsistente[0].numerosPantalla.sort()).toEqual([1, 2]);
+
+    await prismaRaw.pantalla.deleteMany({ where: { cuentaId: cuentaPerfil.id } });
+    await prismaRaw.cuenta.delete({ where: { id: cuentaPerfil.id } });
+    await prismaRaw.plataforma.delete({ where: { id: plataformaPerfil.id } });
   });
 
   it("con precio activo y pantalla libre: puedeVender es verdadero (UNIDAD)", async () => {
@@ -81,26 +117,9 @@ describe("diagnosticoDeEmpresa", () => {
 
     const diagnostico = await diagnosticoDeEmpresa(prismaParaEmpresa(empresaId));
     expect(diagnostico.preciosActivos).toBe(1);
-    expect(diagnostico.preciosConCostoCero).toBe(0);
     expect(diagnostico.puedeVender).toBe(true);
 
     await prismaRaw.precio.delete({ where: { id: precio.id } });
-  });
-
-  it("cuenta un precio activo con costo en cero por separado", async () => {
-    const precioGratis = await prismaRaw.precio.create({
-      data: { empresaId, plataformaId, duracionId, tipoClienteId, precioVenta: "15000", costo: "0" },
-    });
-
-    const diagnostico = await diagnosticoDeEmpresa(prismaParaEmpresa(empresaId));
-    expect(diagnostico.preciosActivos).toBe(1);
-    expect(diagnostico.preciosConCostoCero).toBe(1);
-    // Con costo 0 el precio sigue activo y la pantalla sigue libre: sigue
-    // siendo técnicamente vendible, aunque el costo en cero merezca aviso
-    // aparte (ver pantalla de precios).
-    expect(diagnostico.puedeVender).toBe(true);
-
-    await prismaRaw.precio.delete({ where: { id: precioGratis.id } });
   });
 
   it("si la única pantalla está ocupada (venta vigente, no anulada): puedeVender es falso", async () => {
@@ -125,6 +144,7 @@ describe("diagnosticoDeEmpresa", () => {
         unidadDuracion: "DIAS",
         nombreTipoCliente: "Nuevo",
         precioVenta: "15000",
+        precioSugerido: "15000",
         costo: "8000",
         utilidad: "7000",
         fechaVencimientoMax: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),

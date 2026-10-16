@@ -208,6 +208,24 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuesta.status).toBe(403);
   });
 
+  // F4.7, arreglo 4 — /empresas/diagnostico-cuentas es el camino que el
+  // ADMIN sí puede usar (acotado a su propia empresa), distinto de
+  // /:id/diagnostico que sigue siendo exclusivo de SUPER_ADMIN.
+  it("un ADMIN puede usar /empresas/diagnostico-cuentas aunque el resto de /empresas sea de SUPER_ADMIN", async () => {
+    const respuesta = await get("/empresas/diagnostico-cuentas");
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { cuentasConPinInconsistente: unknown[] };
+    expect(Array.isArray(cuerpo.cuentasConPinInconsistente)).toBe(true);
+  });
+
+  it("un EMPLEADO recibe 403 en /empresas/diagnostico-cuentas, y sin sesión también", async () => {
+    const respuestaEmpleado = await get("/empresas/diagnostico-cuentas", cookieEmpleado);
+    expect(respuestaEmpleado.status).toBe(403);
+
+    const sinCookie = await app.handle(new Request("http://local/empresas/diagnostico-cuentas"));
+    expect(sinCookie.status).toBe(403);
+  });
+
   it("un ADMIN puede usar /cuentas y /disponibilidad aunque /empresas también esté montado", async () => {
     const respuestaCuentas = await get("/cuentas");
     expect(respuestaCuentas.status).toBe(200);
@@ -243,6 +261,38 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuestaAdmin.status).toBe(200);
   });
 
+  // Fecha en el pasado a propósito: la guarda de rol se prueba sin tocar el
+  // inventario compartido de este fixture (otras pruebas de este archivo
+  // dependen de esa única pantalla libre). Si la guarda bloqueara, el
+  // resultado sería 403 ANTES de llegar a la validación de fecha — por eso
+  // 400 (no 403) confirma que EMPLEADO/ADMIN sí atraviesan la guarda.
+  it("división VENDEDOR/EMPLEADO: un VENDEDOR recibe 403 en POST /garantias/externa; un EMPLEADO y un ADMIN sí entran a la guarda (y llegan a la validación de fecha)", async () => {
+    const cuerpo = { plataformaId, duracionId, fechaVencimiento: "2000-01-01T00:00:00.000Z" };
+    const respuestaVendedor = await post("/garantias/externa", cuerpo, cookieVendedor);
+    expect(respuestaVendedor.status).toBe(403);
+    const respuestaEmpleado = await post("/garantias/externa", cuerpo, cookieEmpleado);
+    expect(respuestaEmpleado.status).toBe(400);
+    expect(((await respuestaEmpleado.json()) as RespuestaError).error.codigo).toBe("FECHA_INVALIDA");
+    const respuestaAdmin = await post("/garantias/externa", cuerpo, cookieAdmin);
+    expect(respuestaAdmin.status).toBe(400);
+  });
+
+  // F4.7, arreglo 2 — /garantias/costo-externo es cifra financiera (R4):
+  // un EMPLEADO puede todo lo demás de este router (lo prueba arriba) pero
+  // no esto.
+  it("división EMPLEADO/ADMIN: un EMPLEADO recibe 403 en /garantias/costo-externo; un ADMIN sí entra", async () => {
+    const respuestaEmpleado = await get(
+      `/garantias/costo-externo?plataformaId=${plataformaId}&duracionId=${duracionId}`,
+      cookieEmpleado,
+    );
+    expect(respuestaEmpleado.status).toBe(403);
+    const respuestaAdmin = await get(
+      `/garantias/costo-externo?plataformaId=${plataformaId}&duracionId=${duracionId}`,
+      cookieAdmin,
+    );
+    expect(respuestaAdmin.status).toBe(200);
+  });
+
   it("división VENDEDOR/EMPLEADO: un EMPLEADO puede crear una cuenta (POST /cuentas) pero recibe 403 en el resto de /cuentas", async () => {
     const crear = await post(
       "/cuentas",
@@ -270,6 +320,16 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     const activar = await patchBody(`/cuentas/${cuentaCreadaId}/activar`, {}, cookieEmpleado);
     expect(activar.status).toBe(403);
 
+    // F4.2 parte 2.2 — PATCH /cuentas/:id/pantallas/:pantallaId es ruta
+    // nueva en este router, bajo la misma guarda ADMIN ya probada arriba.
+    const pantallaCreada = await prismaRaw.pantalla.findFirstOrThrow({ where: { cuentaId: cuentaCreadaId } });
+    const editarPantalla = await patchBody(
+      `/cuentas/${cuentaCreadaId}/pantallas/${pantallaCreada.id}`,
+      { pin: "1234" },
+      cookieEmpleado,
+    );
+    expect(editarPantalla.status).toBe(403);
+
     await prismaRaw.pantalla.deleteMany({ where: { cuentaId: cuentaCreadaId } });
     await prismaRaw.cuenta.deleteMany({ where: { id: cuentaCreadaId } });
   });
@@ -279,6 +339,42 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       const respuesta = await get(ruta, cookieEmpleado);
       expect(respuesta.status).toBe(403);
     }
+  });
+
+  // F4.5 — estadísticas segmentadas: montada después de la misma escalada
+  // de rol que /listado y /totales, así que hereda su guarda — esta prueba
+  // confirma que de verdad lo hace, no solo que el código "se parece".
+  it("F4.5: /ventas/estadisticas es solo de ADMIN en adelante (VENDEDOR y EMPLEADO reciben 403, sin cookie también — mismo comportamiento que /cuentas, /disponibilidad, etc.)", async () => {
+    const sinCookie = await app.handle(new Request("http://local/ventas/estadisticas"));
+    expect(sinCookie.status).toBe(403);
+
+    const respuestaVendedor = await get("/ventas/estadisticas", cookieVendedor);
+    expect(respuestaVendedor.status).toBe(403);
+
+    const respuestaEmpleado = await get("/ventas/estadisticas", cookieEmpleado);
+    expect(respuestaEmpleado.status).toBe(403);
+
+    const respuestaAdmin = await get("/ventas/estadisticas", cookieAdmin);
+    expect(respuestaAdmin.status).toBe(200);
+    const cuerpo = (await respuestaAdmin.json()) as {
+      periodo: { desde: string; hasta: string };
+      resumen: { numeroVentas: number };
+      porTipo: unknown[];
+      porPaquete: unknown[];
+      porVendedor: unknown[];
+      porPlataforma: unknown[];
+    };
+    expect(typeof cuerpo.periodo.desde).toBe("string");
+    expect(typeof cuerpo.resumen.numeroVentas).toBe("number");
+    expect(Array.isArray(cuerpo.porTipo)).toBe(true);
+    expect(Array.isArray(cuerpo.porPaquete)).toBe(true);
+    expect(Array.isArray(cuerpo.porVendedor)).toBe(true);
+    expect(Array.isArray(cuerpo.porPlataforma)).toBe(true);
+  });
+
+  it("F4.5: /ventas/estadisticas con 'desde' sin 'hasta' (rango libre a medias) responde 409, no 200 con un rango adivinado", async () => {
+    const respuesta = await get("/ventas/estadisticas?desde=2026-01-01", cookieAdmin);
+    expect(respuesta.status).toBe(409);
   });
 
   it("nadie pierde la capacidad de vender: VENDEDOR y EMPLEADO venden y ven /ventas/mias", async () => {
@@ -291,7 +387,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   });
 
   it("Entrega 9: un VENDEDOR vende y ve /ventas/mias, pero recibe 403 en /listado, /totales y al anular; un ADMIN sí puede usar esas rutas", async () => {
-    const respuestaVenta = await post("/ventas", { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    const respuestaVenta = await post("/ventas", { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }, cookieVendedor);
     expect(respuestaVenta.status).toBe(201);
     const cuerpoVenta = (await respuestaVenta.json()) as { venta: { id: string } };
     const ventaId = cuerpoVenta.venta.id;
@@ -319,7 +415,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   // códigos de TODA la empresa sin paginar: si la guarda se moviera de nivel,
   // un VENDEDOR se llevaría las compras de sus compañeros en una sola llamada.
   it("Entrega 10: /ventas/codigos es solo de ADMIN, trae el conjunto filtrado completo y deja fuera las anuladas", async () => {
-    const respuestaVenta = await post("/ventas", { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }, cookieVendedor);
+    const respuestaVenta = await post("/ventas", { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }, cookieVendedor);
     expect(respuestaVenta.status).toBe(201);
     const { venta } = (await respuestaVenta.json()) as { venta: { id: string; codigoCompra: string } };
 
@@ -393,7 +489,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
 
     const respuestaVenta = await post(
       "/ventas",
-      { tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId },
+      { tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId },
       cookieVendedorSaldoCero,
     );
     expect(respuestaVenta.status).toBe(201);
@@ -453,6 +549,8 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       "/plantillas",
       "/paquetes",
       "/garantias/pantallas-vendidas",
+      "/garantias/catalogo-externa",
+      "/garantias/costo-externo?plataformaId=cualquier-id&duracionId=cualquier-id",
       "/plataformas/cualquier-id/pantallas",
     ]) {
       const respuesta = await sinCookie(ruta);
@@ -491,6 +589,11 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       ["POST", `/usuarios/${vendedorId}/saldo/cargar`, { monto: "1000" }],
       ["POST", `/usuarios/${vendedorId}/saldo/ajuste`, { monto: "1000", nota: "x" }],
       ["GET", `/usuarios/${vendedorId}/saldo/movimientos`, undefined],
+      [
+        "POST",
+        "/garantias/externa",
+        { plataformaId: "cualquier-id", duracionId: "cualquier-id", fechaVencimiento: "2099-01-01T00:00:00.000Z" },
+      ],
     ] as const) {
       const respuesta = await sinCookieConMetodo(metodo, ruta, cuerpo);
       expect(respuesta.status).toBe(403);

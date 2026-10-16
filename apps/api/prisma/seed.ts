@@ -5,7 +5,8 @@
 import argon2 from "argon2";
 import { cifrar } from "../src/lib/cifrado.js";
 import { credencialSeed } from "../src/lib/credenciales-seed.js";
-import { letraPerfil, pinAleatorio } from "../src/lib/pantallas.js";
+import { letraPerfil } from "@dismanet/shared";
+import { pinAleatorio } from "../src/lib/pantallas.js";
 import { PLANTILLA_PAQUETE_POR_DEFECTO, PLANTILLA_UNIDAD_POR_DEFECTO } from "../src/lib/plantillas-default.js";
 import { prismaRaw as prisma } from "../src/lib/prisma.js";
 import { TIPOS_CLIENTE_POR_DEFECTO } from "../src/lib/tipos-cliente-default.js";
@@ -245,6 +246,27 @@ async function main() {
         }),
     );
     plataformaPorNombre.set(p.nombre, plataforma);
+
+    // Plantilla de pantallas (Parte 5 del encargo "plantilla de pantallas"):
+    // sin esto, el seed repetía el mismo bug que ya se corrigió una vez
+    // (CLAUDE.md, "arreglar el dato no es arreglar la fuente") — una
+    // plataforma con capacidadPantallas declarado y cero PlataformaPantalla
+    // real detrás. El pin es un valor de arranque, no uno real: el admin lo
+    // reemplaza al cargar la plantilla de verdad.
+    for (let indice = 0; indice < p.capacidadPantallas; indice++) {
+      const numero = indice + 1;
+      await prisma.plataformaPantalla.upsert({
+        where: { plataformaId_numero: { plataformaId: plataforma.id, numero } },
+        update: {},
+        create: {
+          empresaId: empresa.id,
+          plataformaId: plataforma.id,
+          numero,
+          perfil: p.usaPerfilPin ? letraPerfil(indice) : null,
+          pin: p.usaPerfilPin ? cifrar(pinAleatorio()) : null,
+        },
+      });
+    }
   }
   console.log(`✔ Plataformas: ${PLATAFORMAS.length}`);
 

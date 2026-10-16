@@ -20,7 +20,9 @@ interface Cuenta {
   id: string;
   plataformaId: string;
   nombrePlataforma: string;
-  correo: string;
+  correo: string | null;
+  usuario: string | null;
+  enlace: string | null;
   capacidadPantallas: number;
   notas: string | null;
   activa: boolean;
@@ -28,12 +30,31 @@ interface Cuenta {
   pantallasTotales: number;
 }
 
+interface CuentaPinInconsistente {
+  cuentaId: string;
+  nombrePlataforma: string;
+  identificador: string;
+  perfil: string;
+  numerosPantalla: number[];
+}
+
 interface Plataforma {
   id: string;
   nombre: string;
   usaPerfilPin: boolean;
+  usaCorreo: boolean;
+  usaUsuario: boolean;
+  usaCodigo: boolean;
+  usaEnlace: boolean;
   capacidadPantallas: number;
   activa: boolean;
+}
+
+// F4.2, parte 1.4 — la lista nunca muestra una celda de identificador vacía:
+// correo → usuario → plataforma+id, en ese orden, según lo que la cuenta
+// de verdad tenga (depende de qué campos declara su plataforma).
+function identificadorCuenta(cuenta: Cuenta): string {
+  return cuenta.correo ?? cuenta.usuario ?? `${cuenta.nombrePlataforma} #${cuenta.id.slice(0, 8)}`;
 }
 
 type FiltroEstado = "todas" | "activa" | "inactiva";
@@ -60,6 +81,7 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
   const [plataformas, setPlataformas] = useState<Plataforma[]>([]);
   const [cargandoLista, setCargandoLista] = useState(true);
   const [errorLista, setErrorLista] = useState<string | null>(null);
+  const [pinInconsistente, setPinInconsistente] = useState<CuentaPinInconsistente[]>([]);
 
   const [filtroPlataforma, setFiltroPlataforma] = useState("");
   const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>("todas");
@@ -67,6 +89,9 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
   const [panelAbierto, setPanelAbierto] = useState(false);
   const [plataformaId, setPlataformaId] = useState("");
   const [correo, setCorreo] = useState("");
+  const [usuario, setUsuario] = useState("");
+  const [codigo, setCodigo] = useState("");
+  const [enlace, setEnlace] = useState("");
   const [password, setPassword] = useState("");
   const [notas, setNotas] = useState("");
 
@@ -108,6 +133,10 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
           id: d.plataformaId,
           nombre: d.nombre,
           usaPerfilPin: d.usaPerfilPin,
+          usaCorreo: d.usaCorreo,
+          usaUsuario: d.usaUsuario,
+          usaCodigo: d.usaCodigo,
+          usaEnlace: d.usaEnlace,
           capacidadPantallas: d.capacidadPantallas,
           activa: true,
         })),
@@ -125,9 +154,23 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtroPlataforma, filtroEstado, puedeAdministrar]);
 
+  // F4.7, arreglo 4 — el ADMIN es el único que sabe cuál PIN es el bueno
+  // entre dos pantallas del mismo perfil; GET /empresas/diagnostico-cuentas
+  // es el camino ADMIN-only acotado a su propia empresa (no el
+  // /:id/diagnostico de SUPER_ADMIN).
+  useEffect(() => {
+    if (!puedeAdministrar) return;
+    api.empresas["diagnostico-cuentas"].get().then(({ data }) => {
+      if (data) setPinInconsistente(data.cuentasConPinInconsistente);
+    });
+  }, [puedeAdministrar]);
+
   function abrirCrear() {
     setPlataformaId("");
     setCorreo("");
+    setUsuario("");
+    setCodigo("");
+    setEnlace("");
     setPassword("");
     setNotas("");
     setError(null);
@@ -142,6 +185,9 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
     const { error: errorRespuesta } = await api.cuentas.post({
       plataformaId,
       correo,
+      usuario,
+      codigo,
+      enlace,
       password,
       ...(notas ? { notas } : {}),
     });
@@ -232,6 +278,14 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
             </div>
           </div>
 
+          {pinInconsistente.length > 0 ? (
+            <Aviso variante="aviso" titulo="PIN distinto entre pantallas del mismo perfil">
+              {pinInconsistente
+                .map((fila) => `${fila.identificador} · perfil ${fila.perfil} (pantallas #${fila.numerosPantalla.join(", #")})`)
+                .join(" · ")}
+            </Aviso>
+          ) : null}
+
           {errorFila ? <Aviso variante="critico">{errorFila}</Aviso> : null}
 
           {errorLista ? (
@@ -265,7 +319,7 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
               <TablaCabecera>
                 <tr>
                   <TablaCeldaCabecera>Plataforma</TablaCeldaCabecera>
-                  <TablaCeldaCabecera>Correo</TablaCeldaCabecera>
+                  <TablaCeldaCabecera>Identificador</TablaCeldaCabecera>
                   <TablaCeldaCabecera>Pantallas</TablaCeldaCabecera>
                   <TablaCeldaCabecera>Estado</TablaCeldaCabecera>
                   <TablaCeldaCabecera></TablaCeldaCabecera>
@@ -275,7 +329,7 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
                 {cuentas.map((cuenta) => (
                   <TablaFila key={cuenta.id}>
                     <TablaCelda className="font-medium text-ink">{cuenta.nombrePlataforma}</TablaCelda>
-                    <TablaCelda>{cuenta.correo}</TablaCelda>
+                    <TablaCelda>{identificadorCuenta(cuenta)}</TablaCelda>
                     <TablaCelda className="tabular-nums">
                       {cuenta.pantallasLibres} libres / {cuenta.pantallasTotales} total
                     </TablaCelda>
@@ -344,11 +398,37 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
             )
           ) : null}
 
-          <Campo etiqueta="Correo" required>
-            {(props) => (
-              <EntradaCampo {...props} required type="email" value={correo} onChange={(e) => setCorreo(e.target.value)} />
-            )}
-          </Campo>
+          {plataformaSeleccionada?.usaCorreo ? (
+            <Campo etiqueta="Correo" required>
+              {(props) => (
+                <EntradaCampo {...props} required type="email" value={correo} onChange={(e) => setCorreo(e.target.value)} />
+              )}
+            </Campo>
+          ) : null}
+
+          {plataformaSeleccionada?.usaUsuario ? (
+            <Campo etiqueta="Usuario" required>
+              {(props) => (
+                <EntradaCampo {...props} required type="text" value={usuario} onChange={(e) => setUsuario(e.target.value)} />
+              )}
+            </Campo>
+          ) : null}
+
+          {plataformaSeleccionada?.usaCodigo ? (
+            <Campo etiqueta="Código" required>
+              {(props) => (
+                <EntradaCampo {...props} required type="text" value={codigo} onChange={(e) => setCodigo(e.target.value)} />
+              )}
+            </Campo>
+          ) : null}
+
+          {plataformaSeleccionada?.usaEnlace ? (
+            <Campo etiqueta="Enlace" required>
+              {(props) => (
+                <EntradaCampo {...props} required type="text" value={enlace} onChange={(e) => setEnlace(e.target.value)} />
+              )}
+            </Campo>
+          ) : null}
 
           <Campo etiqueta="Contraseña" required>
             {(props) => (
@@ -372,7 +452,7 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
         <Dialogo
           abierto={confirmando !== null}
           onCambiarAbierto={(abierto) => !abierto && setConfirmando(null)}
-          titulo={`Desactivar la cuenta "${confirmando?.correo}"`}
+          titulo={`Desactivar la cuenta "${confirmando ? identificadorCuenta(confirmando) : ""}"`}
           descripcion="Sus pantallas quedan desactivadas también."
           textoConfirmar="Desactivar"
           confirmando={desactivando}

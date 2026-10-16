@@ -8,6 +8,10 @@ const esquemaConteo = t.Object({
   plataformaId: t.String(),
   nombre: t.String(),
   usaPerfilPin: t.Boolean(),
+  usaCorreo: t.Boolean(),
+  usaUsuario: t.Boolean(),
+  usaCodigo: t.Boolean(),
+  usaEnlace: t.Boolean(),
   capacidadPantallas: t.Number(),
   libres: t.Number(),
   total: t.Number(),
@@ -42,7 +46,16 @@ export const disponibilidad = new Elysia({ prefix: "/disponibilidad" })
       const plataformas = await cliente.plataforma.findMany({
         where: { activa: true },
         orderBy: { nombre: "asc" },
-        select: { id: true, nombre: true, usaPerfilPin: true, capacidadPantallas: true },
+        select: {
+          id: true,
+          nombre: true,
+          usaPerfilPin: true,
+          usaCorreo: true,
+          usaUsuario: true,
+          usaCodigo: true,
+          usaEnlace: true,
+          capacidadPantallas: true,
+        },
       });
 
       const conteos = await Promise.all(
@@ -52,6 +65,10 @@ export const disponibilidad = new Elysia({ prefix: "/disponibilidad" })
             plataformaId: plataforma.id,
             nombre: plataforma.nombre,
             usaPerfilPin: plataforma.usaPerfilPin,
+            usaCorreo: plataforma.usaCorreo,
+            usaUsuario: plataforma.usaUsuario,
+            usaCodigo: plataforma.usaCodigo,
+            usaEnlace: plataforma.usaEnlace,
             capacidadPantallas: plataforma.capacidadPantallas,
             libres: estados.filter((p) => p.libre).length,
             total: estados.length,

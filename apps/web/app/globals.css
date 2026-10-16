@@ -17,6 +17,7 @@
   --primario-texto: #b42318;
   --secundario: #4f46e5;
   --secundario-suave: #eef2ff;
+  --secundario-texto: #4f46e5;
 
   /* Superficies e ink — valores claros (default) */
   --plano: #f7f7f8;
@@ -87,7 +88,8 @@
   /* Color de marca — valores oscuros elegidos, ver DISENO.md §2 */
   --primario-suave: #3a1412;
   --primario-texto: #ffb4a8;
-  --secundario-suave: #e4e2fa;
+  --secundario-suave: #23214a;
+  --secundario-texto: #c7d2fe;
 }
 
 @theme inline {
@@ -129,6 +131,7 @@
   --color-primario-texto: var(--primario-texto);
   --color-secundario: var(--secundario);
   --color-secundario-suave: var(--secundario-suave);
+  --color-secundario-texto: var(--secundario-texto);
   --color-plano: var(--plano);
   --color-superficie: var(--superficie);
   --color-borde: var(--borde);

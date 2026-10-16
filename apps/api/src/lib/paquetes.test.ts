@@ -253,6 +253,7 @@ describe("paquetesDisponibles — disponibilidad por inventario (R5)", () => {
         unidadDuracion: "DIAS",
         nombreTipoCliente: "Nuevo",
         precioVenta: "20000",
+        precioSugerido: "20000",
         costo: "10000",
         utilidad: "10000",
         fechaVencimientoMax: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -317,7 +318,6 @@ describe("costoComponentesPaquete (f) — usa el costo de cada componente en SU 
   let disneyId: string;
   let duracion28Id: string;
   let duracion30Id: string;
-  let tipoClienteId: string;
 
   beforeAll(async () => {
     const empresa = await prismaRaw.empresa.create({
@@ -345,11 +345,6 @@ describe("costoComponentesPaquete (f) — usa el costo de cada componente en SU 
     });
     duracion30Id = d30.id;
 
-    const tipoCliente = await prismaRaw.tipoCliente.create({
-      data: { empresaId, nombre: "Normal (costo-componentes.test)" },
-    });
-    tipoClienteId = tipoCliente.id;
-
     const paquete = await prismaRaw.paquete.create({
       data: { empresaId, nombre: "Básico 1 (costo-componentes.test)" },
     });
@@ -376,24 +371,24 @@ describe("costoComponentesPaquete (f) — usa el costo de cada componente en SU 
 
     // Costos deliberadamente distintos entre 28 y 30 días para que la prueba
     // falle si costoComponentesPaquete usara la duración vendida (30) en vez
-    // de la duración real resuelta (28) para Netflix.
-    await prismaRaw.precio.create({
-      data: { empresaId, plataformaId: netflixId, duracionId: duracion28Id, tipoClienteId, precioVenta: "15000", costo: "10000" },
+    // de la duración real resuelta (28) para Netflix. El costo ya no
+    // depende del tipo de cliente — una sola fila por plataforma+duración.
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: netflixId, duracionId: duracion28Id, costo: "10000" },
     });
-    await prismaRaw.precio.create({
-      data: { empresaId, plataformaId: netflixId, duracionId: duracion30Id, tipoClienteId, precioVenta: "16000", costo: "99999" },
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: netflixId, duracionId: duracion30Id, costo: "99999" },
     });
-    await prismaRaw.precio.create({
-      data: { empresaId, plataformaId: disneyId, duracionId: duracion30Id, tipoClienteId, precioVenta: "12000", costo: "5000" },
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: disneyId, duracionId: duracion30Id, costo: "5000" },
     });
   });
 
   afterAll(async () => {
-    await prismaRaw.precio.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.paqueteDuracionPlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.paquetePlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.paquete.deleteMany({ where: { empresaId } });
-    await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
     await prismaRaw.duracion.deleteMany({ where: { empresaId } });
     await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.empresa.delete({ where: { id: empresaId } });
@@ -401,29 +396,59 @@ describe("costoComponentesPaquete (f) — usa el costo de cada componente en SU 
 
   it("Básico 1 vendido a 30 días suma el costo de Netflix a 28 días (10000), no a 30 días (99999)", async () => {
     const cliente = prismaParaEmpresa(empresaId);
-    const { suma, faltantes } = await costoComponentesPaquete(cliente, paqueteId, duracion30Id, tipoClienteId);
+    const { suma, faltantes } = await costoComponentesPaquete(cliente, paqueteId, duracion30Id);
 
     expect(faltantes).toEqual([]);
-    expect(suma).not.toBeNull();
     // 10000 (Netflix a 28 días) + 5000 (Disney+ a 30 días) = 15000.
-    expect(suma?.toString()).toBe("15000");
+    expect(suma.toString()).toBe("15000");
   });
 
-  it("si falta el precio activo de un componente, suma es null y faltantes nombra la plataforma", async () => {
-    await prismaRaw.precio.updateMany({
+  it("detalle desglosa el aporte de cada componente — lo que la matriz de precios muestra en vez del costo manual", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const { detalle } = await costoComponentesPaquete(cliente, paqueteId, duracion30Id);
+
+    const netflix = detalle.find((d) => d.plataformaId === netflixId);
+    expect(netflix?.costoUnitario?.toString()).toBe("10000");
+    expect(netflix?.subtotal?.toString()).toBe("10000");
+
+    const disney = detalle.find((d) => d.plataformaId === disneyId);
+    expect(disney?.costoUnitario?.toString()).toBe("5000");
+    expect(disney?.subtotal?.toString()).toBe("5000");
+  });
+
+  it("si falta el costo registrado de un componente, suma queda parcial y faltantes nombra la plataforma", async () => {
+    await prismaRaw.costoPlataforma.deleteMany({
       where: { empresaId, plataformaId: disneyId, duracionId: duracion30Id },
-      data: { activo: false },
     });
 
     const cliente = prismaParaEmpresa(empresaId);
-    const { suma, faltantes } = await costoComponentesPaquete(cliente, paqueteId, duracion30Id, tipoClienteId);
+    const { suma, faltantes } = await costoComponentesPaquete(cliente, paqueteId, duracion30Id);
 
-    expect(suma).toBeNull();
+    // Solo Netflix (10000) — Disney+ falta, pero la suma parcial no se descarta.
+    expect(suma.toString()).toBe("10000");
     expect(faltantes).toContain("Disney+ Premium (costo-componentes.test)");
 
-    await prismaRaw.precio.updateMany({
-      where: { empresaId, plataformaId: disneyId, duracionId: duracion30Id },
-      data: { activo: true },
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: disneyId, duracionId: duracion30Id, costo: "5000" },
+    });
+  });
+
+  it("un componente con 2 pantallas suma su costo DOS veces", async () => {
+    await prismaRaw.paquetePlataforma.update({
+      where: { paqueteId_plataformaId: { paqueteId, plataformaId: disneyId } },
+      data: { cantidadPantallas: 2 },
+    });
+
+    const cliente = prismaParaEmpresa(empresaId);
+    const { suma, faltantes } = await costoComponentesPaquete(cliente, paqueteId, duracion30Id);
+
+    expect(faltantes).toEqual([]);
+    // 10000 (Netflix a 28 días, 1 pantalla) + 5000*2 (Disney+ a 30 días, 2 pantallas) = 20000.
+    expect(suma?.toString()).toBe("20000");
+
+    await prismaRaw.paquetePlataforma.update({
+      where: { paqueteId_plataformaId: { paqueteId, plataformaId: disneyId } },
+      data: { cantidadPantallas: 1 },
     });
   });
 });

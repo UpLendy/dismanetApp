@@ -74,6 +74,7 @@ describe("Rutas de garantías (/garantias)", () => {
     await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
+    await prismaRaw.costoPlataforma.deleteMany({ where: { empresaId } });
     await prismaRaw.precio.deleteMany({ where: { empresaId } });
     await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
     await prismaRaw.duracion.deleteMany({ where: { empresaId } });
@@ -103,7 +104,7 @@ describe("Rutas de garantías (/garantias)", () => {
       new Request("http://local/ventas", {
         method: "POST",
         headers: { "content-type": "application/json", cookie },
-        body: JSON.stringify({ tipoVenta: "UNIDAD", plataformaId, duracionId, tipoClienteId }),
+        body: JSON.stringify({ tipoVenta: "UNIDAD", plataformas: [plataformaId], duracionId, tipoClienteId }),
       }),
     );
     if (respuesta.status !== 201) throw new Error(`venta falló: ${await respuesta.text()}`);
@@ -130,6 +131,11 @@ describe("Rutas de garantías (/garantias)", () => {
     // fuga real si "costo"/"costoAsumido" se filtrara al EMPLEADO.
     await prismaRaw.precio.create({
       data: { empresaId, plataformaId: plataforma.id, duracionId, tipoClienteId, precioVenta: "15000", costo: "6000" },
+    });
+    // El costo real que realizarVenta/realizarGarantia consultan ya no sale
+    // de Precio.costo — ver CostoPlataforma (camino del dinero).
+    await prismaRaw.costoPlataforma.create({
+      data: { empresaId, plataformaId: plataforma.id, duracionId, costo: "6000" },
     });
     return plataforma.id;
   }
@@ -326,5 +332,118 @@ describe("Rutas de garantías (/garantias)", () => {
     expect(cuerpoTrasAnular.pantallas.some((p) => p.correoCuenta === "original-filtro@garantias-ruta.test")).toBe(
       false,
     );
+  });
+
+  // ---------------------------------------------------------------------
+  // F4.3 — POST /garantias/externa, GET /garantias/catalogo-externa y
+  // GET /garantias/costo-externo (garantía de una venta hecha fuera del
+  // sistema).
+  // ---------------------------------------------------------------------
+  async function postExterna(body: unknown, cookie: string) {
+    return garantias.handle(
+      new Request("http://local/garantias/externa", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  it("POST /externa con fecha en el pasado responde 400 FECHA_INVALIDA, sin tocar inventario", async () => {
+    const plataformaId = await crearPlataforma("fecha-pasada");
+    await crearCuentaConPantallaLibre(plataformaId, "libre-fecha-pasada@garantias-ruta.test", "clave-fecha-pasada");
+
+    const respuesta = await postExterna(
+      { plataformaId, duracionId, fechaVencimiento: "2000-01-01T00:00:00.000Z" },
+      cookieVendedor,
+    );
+    expect(respuesta.status).toBe(400);
+    const cuerpo = (await respuesta.json()) as { error: { codigo: string } };
+    expect(cuerpo.error.codigo).toBe("FECHA_INVALIDA");
+  });
+
+  it("POST /externa: entrega la pantalla y /pantallas-vendidas la muestra marcada esExterna con el celular, sin desactivarla", async () => {
+    const plataformaId = await crearPlataforma("externa-flujo");
+    await crearCuentaConPantallaLibre(plataformaId, "libre-externa-flujo@garantias-ruta.test", "clave-externa-flujo");
+
+    const fechaVencimiento = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const respuesta = await postExterna(
+      { plataformaId, duracionId, fechaVencimiento, celularCliente: "3009998888", motivo: "Vendida por Instagram" },
+      cookieVendedor,
+    );
+    expect(respuesta.status).toBe(201);
+    const cuerpo = (await respuesta.json()) as { mensajeGenerado: string };
+    expect(cuerpo.mensajeGenerado).toContain("*Reemplazo de pantalla*");
+
+    const listado = await get("/garantias/pantallas-vendidas", cookieAdmin);
+    const cuerpoListado = (await listado.json()) as {
+      pantallas: Array<{ correoCuenta: string; esExterna: boolean; celularExterno: string | null; estado: string }>;
+    };
+    const fila = cuerpoListado.pantallas.find((p) => p.correoCuenta === "libre-externa-flujo@garantias-ruta.test");
+    expect(fila).toBeDefined();
+    expect(fila?.esExterna).toBe(true);
+    expect(fila?.celularExterno).toBe("3009998888");
+    expect(fila?.estado).toBe("VIGENTE");
+  });
+
+  it("POST /externa sin pantallas libres de esa plataforma responde 409 SIN_PANTALLAS_DISPONIBLES", async () => {
+    const plataformaId = await crearPlataforma("externa-sininventario");
+    // A propósito: ninguna cuenta/pantalla para esta plataforma.
+
+    const fechaVencimiento = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const respuesta = await postExterna({ plataformaId, duracionId, fechaVencimiento }, cookieVendedor);
+    expect(respuesta.status).toBe(409);
+    const cuerpo = (await respuesta.json()) as { error: { codigo: string } };
+    expect(cuerpo.error.codigo).toBe("SIN_PANTALLAS_DISPONIBLES");
+  });
+
+  it("GET /catalogo-externa solo lista plataformas activas con al menos una pantalla libre", async () => {
+    const plataformaId = await crearPlataforma("catalogo");
+    await crearCuentaConPantallaLibre(plataformaId, "libre-catalogo@garantias-ruta.test", "clave-catalogo");
+
+    const antes = await get("/garantias/catalogo-externa", cookieVendedor);
+    expect(antes.status).toBe(200);
+    const cuerpoAntes = (await antes.json()) as {
+      plataformas: Array<{ id: string; pantallasLibres: number }>;
+      duraciones: Array<{ id: string }>;
+    };
+    const filaAntes = cuerpoAntes.plataformas.find((p) => p.id === plataformaId);
+    expect(filaAntes?.pantallasLibres).toBe(1);
+    expect(cuerpoAntes.duraciones.some((d) => d.id === duracionId)).toBe(true);
+
+    const fechaVencimiento = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const entrega = await postExterna({ plataformaId, duracionId, fechaVencimiento }, cookieVendedor);
+    expect(entrega.status).toBe(201);
+
+    // Sin pantallas libres, la plataforma ya no debe aparecer.
+    const despues = await get("/garantias/catalogo-externa", cookieVendedor);
+    const cuerpoDespues = (await despues.json()) as { plataformas: Array<{ id: string }> };
+    expect(cuerpoDespues.plataformas.some((p) => p.id === plataformaId)).toBe(false);
+  });
+
+  it("GET /costo-externo devuelve el costo de CostoPlataforma para esa combinación plataforma/duración (solo ADMIN)", async () => {
+    const plataformaId = await crearPlataforma("costo-externo");
+
+    const respuesta = await get(
+      `/garantias/costo-externo?plataformaId=${plataformaId}&duracionId=${duracionId}`,
+      cookieAdmin,
+    );
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { costoAsumido: string };
+    // crearPlataforma fija CostoPlataforma.costo = "6000" para esta combinación.
+    expect(cuerpo.costoAsumido).toBe("6000");
+  });
+
+  // F4.7, arreglo 2 — costoAsumido es cifra financiera (R4): un EMPLEADO
+  // puede registrar la garantía externa (ver pruebas arriba) pero no ver
+  // cuánto le cuesta a la empresa.
+  it("GET /costo-externo rechaza a un EMPLEADO con 403", async () => {
+    const plataformaId = await crearPlataforma("costo-externo-empleado");
+
+    const respuesta = await get(
+      `/garantias/costo-externo?plataformaId=${plataformaId}&duracionId=${duracionId}`,
+      cookieVendedor,
+    );
+    expect(respuesta.status).toBe(403);
   });
 });

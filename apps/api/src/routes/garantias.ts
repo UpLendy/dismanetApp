@@ -3,7 +3,8 @@ import { prismaParaEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol } from "../generated/prisma/client.ts";
 import { requiereRol } from "../plugins/guardas.ts";
 import { descifrar } from "../lib/cifrado.ts";
-import { realizarGarantia, GarantiaYaReemplazadaError } from "../lib/garantias.ts";
+import { realizarGarantia, realizarGarantiaExterna, GarantiaYaReemplazadaError } from "../lib/garantias.ts";
+import { plataformasConInventario } from "../lib/pantallas.ts";
 
 const esquemaError = t.Object({
   error: t.Object({ codigo: t.String(), mensaje: t.String() }),
@@ -20,7 +21,7 @@ const esquemaGarantiaDetalle = t.Composite([
     motivo: t.Union([t.String(), t.Null()]),
     creadoEn: t.String(),
     creadoPor: t.Object({ id: t.String(), nombre: t.String() }),
-    correoCuentaReemplazo: t.String(),
+    correoCuentaReemplazo: t.Union([t.String(), t.Null()]),
   }),
   t.Object({ costoAsumido: t.Optional(t.String()) }),
 ]);
@@ -36,7 +37,7 @@ const esquemaPantallaVendida = t.Object({
   id: t.String(),
   plataformaId: t.String(),
   nombrePlataforma: t.String(),
-  correoCuenta: t.String(),
+  correoCuenta: t.Union([t.String(), t.Null()]),
   claveCuenta: t.String(),
   perfil: t.Union([t.String(), t.Null()]),
   pin: t.Union([t.String(), t.Null()]),
@@ -47,6 +48,12 @@ const esquemaPantallaVendida = t.Object({
   estado: esquemaEstadoPantalla,
   puedeReemplazar: t.Boolean(),
   garantia: t.Union([esquemaGarantiaDetalle, t.Null()]),
+  // F4.3 — true si esta pantalla se entregó por una garantía externa (venta
+  // original hecha fuera del sistema): codigoCompra es el de la Venta
+  // mínima sintética, no el de una compra real. El frontend muestra
+  // celularExterno en su lugar.
+  esExterna: t.Boolean(),
+  celularExterno: t.Union([t.String(), t.Null()]),
 });
 
 const filtrosPantallasVendidas = t.Object({
@@ -109,7 +116,7 @@ const seleccionComun = {
       vendedor: { select: { id: true, nombre: true } },
     },
   },
-  garantiaReemplazo: { select: { createdAt: true } },
+  garantiaReemplazo: { select: { createdAt: true, esExterna: true, celularExterno: true } },
 } satisfies Prisma.VentaDetalleSelect;
 
 type FilaComun = Prisma.VentaDetalleGetPayload<{ select: typeof seleccionComun }>;
@@ -119,7 +126,7 @@ interface GarantiaOriginalComun {
   motivo: string | null;
   createdAt: Date;
   creadoPor: { id: string; nombre: string };
-  ventaDetalleReemplazo: { correoCuenta: string };
+  ventaDetalleReemplazo: { correoCuenta: string | null };
 }
 
 /** Misma forma de respuesta para ambos roles; `costoAsumido` solo llega
@@ -143,6 +150,8 @@ function mapearFila(
     fechaVencimiento: fila.fechaVencimiento.toISOString(),
     estado,
     puedeReemplazar: estado === "VIGENTE",
+    esExterna: fila.garantiaReemplazo?.esExterna ?? false,
+    celularExterno: fila.garantiaReemplazo?.celularExterno ?? null,
     garantia: fila.garantiaOriginal
       ? {
           id: fila.garantiaOriginal.id,
@@ -168,6 +177,41 @@ export const garantias = new Elysia({ prefix: "/garantias" })
       };
     }
   })
+  // F4.3 — catálogo para el diálogo "Registrar garantía externa": no puede
+  // usar GET /plataformas (ADMIN-only) ni GET /ventas/plataformas (exige
+  // tipoClienteId, que no aplica aquí: no hay precio que fijar).
+  .get(
+    "/catalogo-externa",
+    async ({ contexto }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const [plataformas, duraciones] = await Promise.all([
+        plataformasConInventario(cliente),
+        cliente.duracion.findMany({
+          where: { activa: true },
+          select: { id: true, nombre: true, cantidad: true, unidad: true },
+          orderBy: { cantidad: "asc" },
+        }),
+      ]);
+      return { plataformas, duraciones };
+    },
+    {
+      response: {
+        200: t.Object({
+          plataformas: t.Array(
+            t.Object({
+              id: t.String(),
+              nombre: t.String(),
+              condiciones: t.Union([t.String(), t.Null()]),
+              pantallasLibres: t.Number(),
+            }),
+          ),
+          duraciones: t.Array(
+            t.Object({ id: t.String(), nombre: t.String(), cantidad: t.Number(), unidad: t.String() }),
+          ),
+        }),
+      },
+    },
+  )
   .get(
     "/pantallas-vendidas",
     async ({ contexto, query }) => {
@@ -277,5 +321,88 @@ export const garantias = new Elysia({ prefix: "/garantias" })
         404: esquemaError,
         409: esquemaError,
       },
+    },
+  )
+  // F4.3 — garantía de una venta hecha fuera del sistema: entrega una
+  // pantalla del inventario, la deja ocupada, y registra la pérdida. No hay
+  // VentaDetalle original que reemplazar (ver lib/garantias.ts).
+  .post(
+    "/externa",
+    async ({ body, contexto, set }) => {
+      const fechaVencimiento = new Date(body.fechaVencimiento);
+      if (Number.isNaN(fechaVencimiento.getTime()) || fechaVencimiento.getTime() <= Date.now()) {
+        set.status = 400;
+        return {
+          error: { codigo: "FECHA_INVALIDA", mensaje: "La fecha de vencimiento debe ser una fecha futura." },
+        };
+      }
+
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const celularCliente = body.celularCliente?.trim() || null;
+      const motivo = body.motivo?.trim() || null;
+
+      const resultado = await cliente.$transaction((tx) =>
+        realizarGarantiaExterna(tx, contexto.empresaId!, contexto.usuarioId!, {
+          plataformaId: body.plataformaId,
+          duracionId: body.duracionId,
+          fechaVencimiento,
+          celularCliente,
+          motivo,
+        }),
+      );
+
+      if (resultado.tipo === "no_disponible") {
+        set.status = 409;
+        return { error: { codigo: "ITEM_NO_DISPONIBLE", mensaje: resultado.mensaje } };
+      }
+      if (resultado.tipo === "sin_inventario") {
+        set.status = 409;
+        return {
+          error: {
+            codigo: "SIN_PANTALLAS_DISPONIBLES",
+            mensaje: `No hay pantallas disponibles de ${resultado.nombrePlataforma} para registrar la garantía.`,
+          },
+        };
+      }
+
+      set.status = 201;
+      return { mensajeGenerado: resultado.garantia.mensajeGenerado };
+    },
+    {
+      body: t.Object({
+        plataformaId: t.String(),
+        duracionId: t.String(),
+        fechaVencimiento: t.String(),
+        celularCliente: t.Optional(t.String()),
+        motivo: t.Optional(t.String()),
+      }),
+      response: {
+        201: t.Object({ mensajeGenerado: t.String() }),
+        400: esquemaError,
+        409: esquemaError,
+      },
+    },
+  )
+
+  // F4.7 — el costo asumido es cifra financiera (R4): exclusivo de ADMIN,
+  // mismo patrón de escalada de rol que cuentas.ts y ventas.ts. El resto del
+  // router (arriba) sigue siendo EMPLEADO: puede registrar la garantía
+  // externa, solo no ver cuánto cuesta.
+  .use(requiereRol(Rol.ADMIN))
+
+  // F4.3 — costo previsto (CostoPlataforma o cero) para la pantalla de
+  // advertencia del diálogo, antes de confirmar la garantía externa.
+  .get(
+    "/costo-externo",
+    async ({ query, contexto }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const costoPlataforma = await cliente.costoPlataforma.findFirst({
+        where: { plataformaId: query.plataformaId, duracionId: query.duracionId },
+      });
+      return { costoAsumido: (costoPlataforma?.costo ?? new Prisma.Decimal(0)).toString() };
+    },
+    {
+      query: t.Object({ plataformaId: t.String(), duracionId: t.String() }),
+      response: { 200: t.Object({ costoAsumido: t.String() }) },
     },
   );

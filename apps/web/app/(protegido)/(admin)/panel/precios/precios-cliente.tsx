@@ -15,24 +15,39 @@ interface Fila {
   nombre: string;
 }
 
+// El costo ya no vive en la celda (punto 6, camino del dinero): para
+// unidades vive una vez por duración (ver CostoDuracion); para paquetes se
+// calcula a partir de sus componentes (ver DetalleComponente/CeldaPaquete).
 interface CeldaUnidad {
   duracionId: string;
   tipoClienteId: string;
   precioVenta: string;
-  costo: string;
   perdida: boolean;
 }
 
+interface CostoDuracion {
+  duracionId: string;
+  costo: string;
+}
+
+interface DetalleComponente {
+  plataformaId: string;
+  nombrePlataforma: string;
+  cantidadPantallas: number;
+  costoUnitario: string | null;
+  subtotal: string | null;
+}
+
 interface CeldaPaquete extends CeldaUnidad {
-  sumaComponentes: string | null;
-  componentesFaltantes: string[];
-  costoNoCoincide: boolean;
+  costoCalculado: string | null;
+  detalle: DetalleComponente[];
 }
 
 interface MatrizUnidades {
   duraciones: Fila[];
   tiposCliente: Fila[];
   celdas: CeldaUnidad[];
+  costos: CostoDuracion[];
   avisoCostoCero: { cantidad: number };
 }
 
@@ -45,7 +60,6 @@ interface MatrizPaquetes {
 
 interface ValorCelda {
   precioVenta: string;
-  costo: string;
 }
 
 interface CambioCelda {
@@ -53,7 +67,6 @@ interface CambioCelda {
   tipoClienteId: string;
   limpiar?: boolean;
   precioVenta?: string;
-  costo?: string;
 }
 
 type Tab = "unidades" | "paquetes";
@@ -65,6 +78,12 @@ function clave(duracionId: string, tipoClienteId: string): string {
 function mensajeDeError(errorRespuesta: unknown): string {
   const valor = (errorRespuesta as { value?: { error?: { mensaje?: string } } } | undefined)?.value;
   return valor?.error?.mensaje ?? "No se pudo completar la operación.";
+}
+
+function formatearPesos(valor: string): string {
+  const [entero, decimal] = valor.split(".");
+  const conPuntos = entero.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return decimal ? `$${conPuntos},${decimal}` : `$${conPuntos}`;
 }
 
 // Extraído de guardar() para que el mismo cálculo alimente tanto el envío
@@ -80,20 +99,19 @@ function calcularCambios<C extends CeldaUnidad>(
     for (const tipoCliente of tiposCliente) {
       const k = clave(duracion.id, tipoCliente.id);
       const original = celdaPorClave.get(k);
-      const actual = valores[k] ?? { precioVenta: "", costo: "" };
-      const actualVacio = actual.precioVenta.trim() === "" && actual.costo.trim() === "";
+      const actual = valores[k] ?? { precioVenta: "" };
+      const actualVacio = actual.precioVenta.trim() === "";
 
       if (actualVacio) {
         if (original) resultado.push({ duracionId: duracion.id, tipoClienteId: tipoCliente.id, limpiar: true });
         continue;
       }
 
-      if (!original || original.precioVenta !== actual.precioVenta || original.costo !== actual.costo) {
+      if (!original || original.precioVenta !== actual.precioVenta) {
         resultado.push({
           duracionId: duracion.id,
           tipoClienteId: tipoCliente.id,
           precioVenta: actual.precioVenta,
-          costo: actual.costo,
         });
       }
     }
@@ -134,7 +152,7 @@ export default function PreciosCliente() {
       <div>
         <h1 className="titulo-pagina text-ink">Precios</h1>
         <p className="cuerpo text-ink-muted">
-          Vaciar una celda la retira de la venta sin borrar su histórico; volver a llenarla la reactiva.
+          Vaciar una celda retira el precio de la venta sin borrar su histórico; volver a llenarla la reactiva.
         </p>
       </div>
 
@@ -165,11 +183,11 @@ export default function PreciosCliente() {
   );
 }
 
-// Matriz duraciones×tiposCliente compartida por ambas pestañas — cabeceras
-// y primera columna fijas (DISENO.md §4.4) para que no se pierda el
-// contexto al desplazarse por un catálogo largo. `renderExtra` agrega los
-// avisos propios de paquetes (componentes faltantes, costo que no coincide)
-// sin duplicar el resto del marcado.
+// Tabla compartida entre ambas pestañas — cabeceras y primera columna fijas
+// (DISENO.md §4.4) para que no se pierda el contexto al desplazarse por un
+// catálogo largo. `columnaExtra` agrega una columna por renglón de duración
+// (costo editable en unidades, costo calculado en paquetes): el costo ya no
+// varía por tipo de cliente, así que vive fuera de las columnas de precio.
 function MatrizPrecios<C extends CeldaUnidad>({
   duraciones,
   tiposCliente,
@@ -178,7 +196,8 @@ function MatrizPrecios<C extends CeldaUnidad>({
   clavesModificadas,
   erroresCelda,
   onCambiarValor,
-  renderExtra,
+  columnaExtraEtiqueta,
+  columnaExtra,
 }: {
   duraciones: Fila[];
   tiposCliente: Fila[];
@@ -186,8 +205,9 @@ function MatrizPrecios<C extends CeldaUnidad>({
   celdaPorClave: Map<string, C>;
   clavesModificadas: Set<string>;
   erroresCelda: Record<string, string>;
-  onCambiarValor: (duracionId: string, tipoClienteId: string, campo: keyof ValorCelda, valor: string) => void;
-  renderExtra?: (celda: C | undefined) => React.ReactNode;
+  onCambiarValor: (duracionId: string, tipoClienteId: string, valor: string) => void;
+  columnaExtraEtiqueta?: string;
+  columnaExtra?: (duracion: Fila) => React.ReactNode;
 }) {
   return (
     <div className="max-h-[70vh] overflow-auto rounded-control border border-borde">
@@ -197,6 +217,11 @@ function MatrizPrecios<C extends CeldaUnidad>({
             <th className="sticky top-0 left-0 z-20 border-b border-borde bg-superficie px-3 py-2 text-left etiqueta-dato">
               Duración
             </th>
+            {columnaExtraEtiqueta ? (
+              <th className="sticky top-0 z-10 min-w-48 border-b border-borde bg-superficie px-3 py-2 text-left etiqueta-dato">
+                {columnaExtraEtiqueta}
+              </th>
+            ) : null}
             {tiposCliente.map((tc) => (
               <th
                 key={tc.id}
@@ -211,28 +236,20 @@ function MatrizPrecios<C extends CeldaUnidad>({
           {duraciones.map((duracion) => (
             <tr key={duracion.id} className="border-b border-borde last:border-0">
               <td className="sticky left-0 z-10 bg-superficie px-3 py-2 align-top font-medium">{duracion.nombre}</td>
+              {columnaExtra ? <td className="px-3 py-2 align-top">{columnaExtra(duracion)}</td> : null}
               {tiposCliente.map((tipoCliente) => {
                 const k = clave(duracion.id, tipoCliente.id);
-                const valor = valores[k] ?? { precioVenta: "", costo: "" };
+                const valor = valores[k] ?? { precioVenta: "" };
                 const celdaOriginal = celdaPorClave.get(k);
                 const errorCelda = erroresCelda[k];
                 const modificada = clavesModificadas.has(k);
                 return (
-                  <td
-                    key={tipoCliente.id}
-                    className={cn("px-3 py-2 align-top", modificada && "bg-secundario-suave")}
-                  >
+                  <td key={tipoCliente.id} className={cn("px-3 py-2 align-top", modificada && "bg-secundario-suave")}>
                     <div className="space-y-1.5">
                       <EntradaCampo
                         placeholder="Precio"
                         value={valor.precioVenta}
-                        onChange={(e) => onCambiarValor(duracion.id, tipoCliente.id, "precioVenta", e.target.value)}
-                        className="h-9 w-28 text-xs"
-                      />
-                      <EntradaCampo
-                        placeholder="Costo"
-                        value={valor.costo}
-                        onChange={(e) => onCambiarValor(duracion.id, tipoCliente.id, "costo", e.target.value)}
+                        onChange={(e) => onCambiarValor(duracion.id, tipoCliente.id, e.target.value)}
                         className="h-9 w-28 text-xs"
                       />
                       {celdaOriginal?.perdida ? (
@@ -240,7 +257,6 @@ function MatrizPrecios<C extends CeldaUnidad>({
                           Estás vendiendo a pérdida
                         </Pastilla>
                       ) : null}
-                      {renderExtra ? renderExtra(celdaOriginal) : null}
                       {errorCelda ? (
                         <Pastilla tono="critico" icono={XOctagon} className="h-auto w-fit whitespace-normal py-1">
                           {errorCelda}
@@ -284,6 +300,12 @@ function TabUnidades({
   const [valores, setValores] = useState<Record<string, ValorCelda>>({});
   const [erroresCelda, setErroresCelda] = useState<Record<string, string>>({});
 
+  // El costo se guarda por renglón de duración, independiente de la matriz
+  // de precios (punto 6): cada fila tiene su propio campo y su propio botón.
+  const [costosValores, setCostosValores] = useState<Record<string, string>>({});
+  const [costosGuardando, setCostosGuardando] = useState<Record<string, boolean>>({});
+  const [costosErrores, setCostosErrores] = useState<Record<string, string>>({});
+
   async function cargar() {
     if (!plataformaId) return;
     setCargando(true);
@@ -299,10 +321,15 @@ function TabUnidades({
     setMatriz(data);
     const iniciales: Record<string, ValorCelda> = {};
     for (const celda of data.celdas) {
-      iniciales[clave(celda.duracionId, celda.tipoClienteId)] = { precioVenta: celda.precioVenta, costo: celda.costo };
+      iniciales[clave(celda.duracionId, celda.tipoClienteId)] = { precioVenta: celda.precioVenta };
     }
     setValores(iniciales);
     setErroresCelda({});
+
+    const costosIniciales: Record<string, string> = {};
+    for (const costo of data.costos) costosIniciales[costo.duracionId] = costo.costo;
+    setCostosValores(costosIniciales);
+    setCostosErrores({});
   }
 
   useEffect(() => {
@@ -320,16 +347,10 @@ function TabUnidades({
     () => calcularCambios(matriz?.duraciones ?? [], matriz?.tiposCliente ?? [], valores, celdaPorClave),
     [matriz, valores, celdaPorClave],
   );
-  const clavesModificadas = useMemo(
-    () => new Set(cambios.map((c) => clave(c.duracionId, c.tipoClienteId))),
-    [cambios],
-  );
+  const clavesModificadas = useMemo(() => new Set(cambios.map((c) => clave(c.duracionId, c.tipoClienteId))), [cambios]);
 
-  function actualizarValor(duracionId: string, tipoClienteId: string, campo: keyof ValorCelda, valor: string) {
-    setValores((anterior) => ({
-      ...anterior,
-      [clave(duracionId, tipoClienteId)]: { ...(anterior[clave(duracionId, tipoClienteId)] ?? { precioVenta: "", costo: "" }), [campo]: valor },
-    }));
+  function actualizarValor(duracionId: string, tipoClienteId: string, valor: string) {
+    setValores((anterior) => ({ ...anterior, [clave(duracionId, tipoClienteId)]: { precioVenta: valor } }));
   }
 
   async function guardar() {
@@ -366,6 +387,23 @@ function TabUnidades({
     await cargar();
   }
 
+  function actualizarCosto(duracionId: string, valor: string) {
+    setCostosValores((anterior) => ({ ...anterior, [duracionId]: valor }));
+  }
+
+  async function guardarCosto(duracionId: string) {
+    setCostosGuardando((anterior) => ({ ...anterior, [duracionId]: true }));
+    setCostosErrores((anterior) => ({ ...anterior, [duracionId]: "" }));
+    const costo = costosValores[duracionId] ?? "0";
+    const { error: errorRespuesta } = await api.precios.unidades.costo.put({ plataformaId, duracionId, costo });
+    setCostosGuardando((anterior) => ({ ...anterior, [duracionId]: false }));
+    if (errorRespuesta) {
+      setCostosErrores((anterior) => ({ ...anterior, [duracionId]: mensajeDeError(errorRespuesta) }));
+      return;
+    }
+    await cargar();
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -383,12 +421,16 @@ function TabUnidades({
         <EtiquetaCambios cantidad={cambios.length} />
       </div>
 
+      <p className="cuerpo text-xs text-ink-muted">
+        El costo se registra una sola vez por duración y es el mismo para todos los tipos de cliente.
+      </p>
+
       {error ? <Aviso variante="critico">{error}</Aviso> : null}
       {mensaje ? <Aviso variante="aviso">{mensaje}</Aviso> : null}
       {matriz && matriz.avisoCostoCero.cantidad > 0 ? (
         <Aviso variante="aviso">
-          {matriz.avisoCostoCero.cantidad} precio(s) activo(s) tienen costo en 0. La utilidad mostrada para esas
-          ventas no será real hasta que se cargue el costo correcto.
+          {matriz.avisoCostoCero.cantidad} duración(es) en uso no tienen costo registrado para esta plataforma. La
+          utilidad mostrada para esas ventas no será real hasta que se cargue el costo.
         </Aviso>
       ) : null}
 
@@ -404,9 +446,37 @@ function TabUnidades({
             clavesModificadas={clavesModificadas}
             erroresCelda={erroresCelda}
             onCambiarValor={actualizarValor}
+            columnaExtraEtiqueta="Costo"
+            columnaExtra={(duracion) => (
+              <div className="space-y-1.5">
+                <EntradaCampo
+                  placeholder="Costo"
+                  value={costosValores[duracion.id] ?? ""}
+                  onChange={(e) => actualizarCosto(duracion.id, e.target.value)}
+                  className="h-9 w-28 text-xs"
+                />
+                <Boton
+                  variante="contorno"
+                  tamano="sm"
+                  onClick={() => guardarCosto(duracion.id)}
+                  disabled={costosGuardando[duracion.id]}
+                >
+                  {costosGuardando[duracion.id] ? "Guardando…" : "Guardar costo"}
+                </Boton>
+                {costosErrores[duracion.id] ? (
+                  <Pastilla tono="critico" icono={XOctagon} className="h-auto w-fit whitespace-normal py-1">
+                    {costosErrores[duracion.id]}
+                  </Pastilla>
+                ) : null}
+              </div>
+            )}
           />
           <Boton variante="principal" onClick={guardar} disabled={guardando || cambios.length === 0}>
-            {guardando ? "Guardando…" : cambios.length > 0 ? `Guardar ${cambios.length} cambio${cambios.length === 1 ? "" : "s"}` : "Guardar cambios"}
+            {guardando
+              ? "Guardando…"
+              : cambios.length > 0
+                ? `Guardar ${cambios.length} cambio${cambios.length === 1 ? "" : "s"}`
+                : "Guardar cambios"}
           </Boton>
         </>
       )}
@@ -446,7 +516,7 @@ function TabPaquetes({
     setMatriz(data);
     const iniciales: Record<string, ValorCelda> = {};
     for (const celda of data.celdas) {
-      iniciales[clave(celda.duracionId, celda.tipoClienteId)] = { precioVenta: celda.precioVenta, costo: celda.costo };
+      iniciales[clave(celda.duracionId, celda.tipoClienteId)] = { precioVenta: celda.precioVenta };
     }
     setValores(iniciales);
     setErroresCelda({});
@@ -463,20 +533,27 @@ function TabPaquetes({
     return mapa;
   }, [matriz]);
 
+  // El costo calculado y su desglose no varían por tipoCliente (viene de la
+  // composición del paquete, no de la celda): basta tomarlos de la primera
+  // celda que aparezca para cada duración.
+  const costoPorDuracion = useMemo(() => {
+    const mapa = new Map<string, { costoCalculado: string | null; detalle: DetalleComponente[] }>();
+    for (const celda of matriz?.celdas ?? []) {
+      if (!mapa.has(celda.duracionId)) {
+        mapa.set(celda.duracionId, { costoCalculado: celda.costoCalculado, detalle: celda.detalle });
+      }
+    }
+    return mapa;
+  }, [matriz]);
+
   const cambios = useMemo(
     () => calcularCambios(matriz?.duraciones ?? [], matriz?.tiposCliente ?? [], valores, celdaPorClave),
     [matriz, valores, celdaPorClave],
   );
-  const clavesModificadas = useMemo(
-    () => new Set(cambios.map((c) => clave(c.duracionId, c.tipoClienteId))),
-    [cambios],
-  );
+  const clavesModificadas = useMemo(() => new Set(cambios.map((c) => clave(c.duracionId, c.tipoClienteId))), [cambios]);
 
-  function actualizarValor(duracionId: string, tipoClienteId: string, campo: keyof ValorCelda, valor: string) {
-    setValores((anterior) => ({
-      ...anterior,
-      [clave(duracionId, tipoClienteId)]: { ...(anterior[clave(duracionId, tipoClienteId)] ?? { precioVenta: "", costo: "" }), [campo]: valor },
-    }));
+  function actualizarValor(duracionId: string, tipoClienteId: string, valor: string) {
+    setValores((anterior) => ({ ...anterior, [clave(duracionId, tipoClienteId)]: { precioVenta: valor } }));
   }
 
   async function guardar() {
@@ -530,12 +607,16 @@ function TabPaquetes({
         <EtiquetaCambios cantidad={cambios.length} />
       </div>
 
+      <p className="cuerpo text-xs text-ink-muted">
+        El costo de un paquete se calcula automáticamente a partir del costo de sus componentes; no se edita aquí.
+      </p>
+
       {error ? <Aviso variante="critico">{error}</Aviso> : null}
       {mensaje ? <Aviso variante="aviso">{mensaje}</Aviso> : null}
       {matriz && matriz.avisoCostoCero.cantidad > 0 ? (
         <Aviso variante="aviso">
-          {matriz.avisoCostoCero.cantidad} precio(s) activo(s) tienen costo en 0. La utilidad mostrada para esas
-          ventas no será real hasta que se cargue el costo correcto.
+          {matriz.avisoCostoCero.cantidad} duración(es) de este paquete tienen componentes sin costo completo. La
+          utilidad mostrada no será real hasta que se complete el costo de cada componente.
         </Aviso>
       ) : null}
 
@@ -551,23 +632,38 @@ function TabPaquetes({
             clavesModificadas={clavesModificadas}
             erroresCelda={erroresCelda}
             onCambiarValor={actualizarValor}
-            renderExtra={(celda) => (
-              <>
-                {celda?.componentesFaltantes && celda.componentesFaltantes.length > 0 ? (
+            columnaExtraEtiqueta="Costo calculado"
+            columnaExtra={(duracion) => {
+              const info = costoPorDuracion.get(duracion.id);
+              if (!info) return null;
+              if (info.costoCalculado === null) {
+                const faltantes = info.detalle.filter((d) => d.subtotal === null).map((d) => d.nombrePlataforma);
+                return (
                   <Pastilla tono="aviso" icono={AlertTriangle} className="h-auto w-fit whitespace-normal py-1">
-                    No calculable: falta {celda.componentesFaltantes.join(", ")}
+                    No calculable: falta costo de {faltantes.join(", ")}
                   </Pastilla>
-                ) : celda?.costoNoCoincide ? (
-                  <Pastilla tono="aviso" icono={AlertTriangle} className="h-auto w-fit whitespace-normal py-1">
-                    El costo digitado no coincide con la suma de sus componentes
-                    {celda.sumaComponentes ? ` (suma: ${celda.sumaComponentes})` : ""}.
-                  </Pastilla>
-                ) : null}
-              </>
-            )}
+                );
+              }
+              return (
+                <div className="space-y-1 text-xs">
+                  <p className="font-medium text-ink">{formatearPesos(info.costoCalculado)}</p>
+                  <ul className="space-y-0.5 text-ink-muted">
+                    {info.detalle.map((d) => (
+                      <li key={d.plataformaId}>
+                        {d.nombrePlataforma} × {d.cantidadPantallas} = {d.subtotal ? formatearPesos(d.subtotal) : "—"}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            }}
           />
           <Boton variante="principal" onClick={guardar} disabled={guardando || cambios.length === 0}>
-            {guardando ? "Guardando…" : cambios.length > 0 ? `Guardar ${cambios.length} cambio${cambios.length === 1 ? "" : "s"}` : "Guardar cambios"}
+            {guardando
+              ? "Guardando…"
+              : cambios.length > 0
+                ? `Guardar ${cambios.length} cambio${cambios.length === 1 ? "" : "s"}`
+                : "Guardar cambios"}
           </Boton>
         </>
       )}

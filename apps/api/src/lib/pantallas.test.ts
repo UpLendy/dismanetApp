@@ -117,6 +117,7 @@ describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + in
         unidadDuracion: "DIAS",
         nombreTipoCliente: "Nuevo",
         precioVenta: "15000",
+        precioSugerido: "15000",
         costo: "7000",
         utilidad: "8000",
         fechaVencimientoMax: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),

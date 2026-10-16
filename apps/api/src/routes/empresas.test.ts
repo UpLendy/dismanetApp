@@ -234,4 +234,23 @@ describe("f) GET /empresas/:id/diagnostico — exclusivo de SUPER_ADMIN (R4)", (
     expect(status).toBe(404);
     expect(cuerpo.error.codigo).toBe("EMPRESA_NO_ENCONTRADA");
   });
+
+  // F4.7, arreglo 4 — el ADMIN de su propia empresa no ve /:id/diagnostico
+  // (arriba), pero sí debe poder ver la lista de PIN inconsistente por el
+  // camino nuevo, acotado a su propia empresa.
+  it("ADMIN obtiene su propio diagnóstico de PIN por /diagnostico-cuentas (200)", async () => {
+    const cookieAdmin = await iniciarSesion(adminEmail);
+    const { status, cuerpo } = await peticion("GET", "/empresas/diagnostico-cuentas", cookieAdmin);
+
+    expect(status).toBe(200);
+    expect(Array.isArray(cuerpo.cuentasConPinInconsistente)).toBe(true);
+  });
+
+  it("SUPER_ADMIN sin empresa activa recibe 400 SIN_EMPRESA_ACTIVA en /diagnostico-cuentas", async () => {
+    const cookieSuperAdmin = await iniciarSesion(superAdminEmail);
+    const { status, cuerpo } = await peticion("GET", "/empresas/diagnostico-cuentas", cookieSuperAdmin);
+
+    expect(status).toBe(400);
+    expect(cuerpo.error.codigo).toBe("SIN_EMPRESA_ACTIVA");
+  });
 });
