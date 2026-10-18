@@ -652,3 +652,88 @@ describe("ocultarPrecio (F4.3) — quita el bloque de {{precio}} sin dejar la et
     expect(mensaje).toContain("*CONTRASEÑA:* Net8123@");
   });
 });
+
+describe("Hotfix — limpieza de campos no usados en plantillas de un solo bloque y multilineas", () => {
+  const PLANTILLA_PRODUCCION = `*CORREO:* {{correo}}
+*CONTRASEÑA:* {{clave}}
+*CODIGO DE COMPRA* {{codigoCompra}}
+*PERFIL:* {{perfil}}
+*PIN:* {{pin}}`;
+
+  const datos: DatosMensajeUnidad = {
+    codigoCompra: "DIS995865",
+    fechaVenta: new Date("2026-09-27T15:00:00.000Z"),
+    nombreTipoCliente: "Cliente normal",
+    nombreDuracion: "30 días",
+    fechaVencimientoMax: new Date("2026-10-27T15:00:00.000Z"),
+    precioVenta: "15000",
+    nombrePlataformaMensaje: "Netflix",
+    usaPerfilPin: false,
+    usaCorreo: true,
+    usaUsuario: false,
+    usaCodigo: false,
+    usaEnlace: false,
+    perfil: null,
+    pin: null,
+    correo: "cuenta@dismanet.test",
+    usuario: null,
+    codigo: null,
+    enlace: null,
+    clave: "Net8123@",
+  };
+
+  it("(a) la plantilla real de producción conserva correo, contraseña y código de compra, y no tiene perfil ni pin", () => {
+    const mensaje = renderizarMensajeUnidad(PLANTILLA_PRODUCCION, datos);
+    expect(mensaje).toContain("*CORREO:* cuenta@dismanet.test");
+    expect(mensaje).toContain("*CONTRASEÑA:* Net8123@");
+    expect(mensaje).toContain("*CODIGO DE COMPRA* DIS995865");
+    expect(mensaje).not.toContain("PERFIL");
+    expect(mensaje).not.toContain("PIN");
+  });
+
+  it("(b) la plantilla por defecto (Anexo B) elimina el bloque de perfil y pin completo sin dejar etiqueta huérfana", () => {
+    const mensaje = renderizarMensajeUnidad(PLANTILLA_UNIDAD, datos);
+    expect(mensaje).not.toContain("PERFIL");
+    expect(mensaje).not.toContain("PIN");
+    expect(mensaje).toContain("*CORREO:*\ncuenta@dismanet.test");
+    expect(mensaje).toContain("*CONTRASEÑA:*\nNet8123@");
+    expect(mensaje).toContain("DIS995865");
+  });
+
+  it("en un bloque mixto multilínea, elimina la etiqueta huérfana de perfil/pin sin afectar los demás campos", () => {
+    const plantillaMixta = `*DATOS DE ACCESO*
+*CORREO:* {{correo}}
+*CONTRASEÑA:* {{clave}}
+*PERFIL:*
+{{perfil}}
+*PIN:*
+{{pin}}`;
+    const mensaje = renderizarMensajeUnidad(plantillaMixta, datos);
+    expect(mensaje).toContain("*DATOS DE ACCESO*");
+    expect(mensaje).toContain("*CORREO:* cuenta@dismanet.test");
+    expect(mensaje).toContain("*CONTRASEÑA:* Net8123@");
+    expect(mensaje).not.toContain("PERFIL");
+    expect(mensaje).not.toContain("PIN");
+  });
+
+  it("los marcadores comunes nunca cuentan como no usados ni justifican borrar nada", () => {
+    const plantillaComunes = `*INFO*
+Código: {{codigoCompra}}
+Precio: {{precio}}
+Duración: {{duracion}}
+Fecha: {{fecha}}
+Fecha letras: {{fechaEnLetras}}
+Vence: {{fechaVencimiento}}
+Cliente: {{tipoCliente}}
+Celular: {{celular}}
+Plataforma: {{plataforma}}
+*PERFIL:* {{perfil}}`;
+    const mensaje = renderizarMensajeUnidad(plantillaComunes, datos);
+    expect(mensaje).toContain("Código: DIS995865");
+    expect(mensaje).toContain("Precio:");
+    expect(mensaje).toContain("Duración: 30 días");
+    expect(mensaje).toContain("Cliente: Cliente normal");
+    expect(mensaje).toContain("Plataforma: Netflix");
+    expect(mensaje).not.toContain("PERFIL");
+  });
+});

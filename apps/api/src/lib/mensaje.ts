@@ -155,6 +155,10 @@ function quitarBloquesPorMarcadores(plantilla: string, marcadores: ReadonlySet<s
     .join("\n\n");
 }
 
+function extraerMarcadores(texto: string): string[] {
+  return [...texto.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1] ?? "");
+}
+
 function quitarBloquesDeCamposNoUsados(plantilla: string, banderas: BanderasCamposAcceso): string {
   const marcadoresNoUsados = new Set<string>();
   for (const [bandera, marcadores] of Object.entries(MARCADORES_POR_BANDERA) as [
@@ -166,7 +170,68 @@ function quitarBloquesDeCamposNoUsados(plantilla: string, banderas: BanderasCamp
     }
   }
 
-  return quitarBloquesPorMarcadores(plantilla, marcadoresNoUsados);
+  if (marcadoresNoUsados.size === 0) return plantilla;
+
+  const bloques = plantilla.split(/\n{2,}/);
+  const bloquesResultado: string[] = [];
+
+  for (const bloque of bloques) {
+    const marcadoresBloque = extraerMarcadores(bloque);
+
+    // Si el bloque no tiene marcadores, se conserva intacto
+    if (marcadoresBloque.length === 0) {
+      bloquesResultado.push(bloque);
+      continue;
+    }
+
+    // Regla 1: Un bloque se borra solo si todos sus marcadores son de campos no usados.
+    if (marcadoresBloque.every((m) => marcadoresNoUsados.has(m))) {
+      continue;
+    }
+
+    // Si el bloque no contiene ningún marcador no usado, se conserva intacto
+    if (!marcadoresBloque.some((m) => marcadoresNoUsados.has(m))) {
+      bloquesResultado.push(bloque);
+      continue;
+    }
+
+    // Reglas 2 y 3: Si el bloque mezcla usados y no usados, el bloque se conserva
+    // y se quitan solo las líneas que contienen únicamente marcadores no usados.
+    // Si al quitar esa línea queda arriba una línea de etiqueta sin ningún marcador
+    // (el caso `*PERFIL:*\n{{perfil}}`), esa etiqueta se va con ella.
+    const lineas = bloque.split(/\r?\n/);
+    const lineasAEliminar = new Set<number>();
+
+    for (let i = 0; i < lineas.length; i++) {
+      const linea = lineas[i] ?? "";
+      const marcadoresLinea = extraerMarcadores(linea);
+
+      if (marcadoresLinea.length > 0 && marcadoresLinea.every((m) => marcadoresNoUsados.has(m))) {
+        lineasAEliminar.add(i);
+
+        const tieneTextoPropio = /\p{L}|\p{N}/u.test(linea.replace(/\{\{\w+\}\}/g, ""));
+        if (!tieneTextoPropio) {
+          let anterior = i - 1;
+          while (anterior >= 0 && lineasAEliminar.has(anterior)) {
+            anterior--;
+          }
+          if (anterior >= 0) {
+            const lineaAnterior = lineas[anterior] ?? "";
+            if (extraerMarcadores(lineaAnterior).length === 0) {
+              lineasAEliminar.add(anterior);
+            }
+          }
+        }
+      }
+    }
+
+    const lineasFiltradas = lineas.filter((_, idx) => !lineasAEliminar.has(idx));
+    if (lineasFiltradas.length > 0) {
+      bloquesResultado.push(lineasFiltradas.join("\n"));
+    }
+  }
+
+  return bloquesResultado.join("\n\n");
 }
 
 /**
