@@ -11,7 +11,6 @@ import { SelectorEmpresaProvider } from "@/components/navegacion/selector-empres
 import { SelectorEmpresa } from "@/components/navegacion/selector-empresa";
 import { MenuUsuario } from "@/components/navegacion/menu-usuario";
 import { SaldoBarraSuperior } from "@/components/navegacion/saldo-barra";
-import { LogoMarca } from "@/components/navegacion/logo-marca";
 import { cn } from "@/lib/utils";
 
 function itemActivo(pathname: string, href: string): boolean {
@@ -81,11 +80,9 @@ export function AppShell({
           abierto ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        {/* pl-10 (40px): área de seguridad del logo — DISENO.md §3, margen
-            mínimo igual al ancho del símbolo (~36.5px a 120px de ancho). */}
-        <div className="flex h-16 items-center justify-between border-b border-borde pr-5 pl-10">
-          <Link href={inicioParaRol(usuario.rol)} aria-label="DISMANET — Inicio" onClick={cerrarDrawer}>
-            <LogoMarca />
+        <div className="flex h-16 items-center justify-between border-b border-borde px-5">
+          <Link href={inicioParaRol(usuario.rol)} className="titulo-tarjeta text-ink" onClick={cerrarDrawer}>
+            DISMANET
           </Link>
           <button
             type="button"

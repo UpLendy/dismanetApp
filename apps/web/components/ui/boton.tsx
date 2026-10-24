@@ -15,7 +15,7 @@ const variantesBoton = cva(
     variants: {
       variante: {
         principal: "bg-primario text-white hover:bg-primario-hover",
-        secundario: "bg-secundario text-secundario-contraste hover:bg-secundario/90",
+        secundario: "bg-secundario text-white hover:bg-secundario/90",
         contorno: "border border-borde bg-superficie text-ink hover:bg-black/4 dark:hover:bg-white/5",
         fantasma: "text-ink hover:bg-black/4 dark:hover:bg-white/5",
         destructivo: "border border-borde bg-superficie text-primario-texto hover:bg-primario-suave",
