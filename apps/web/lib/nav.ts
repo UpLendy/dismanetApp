@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3 } from "lucide-react";
+import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw } from "lucide-react";
 import type { Rol } from "@/lib/rol";
 
 export interface ItemNav {
@@ -33,7 +33,13 @@ const GRUPOS: GrupoNav[] = [
   },
   {
     titulo: "OPERACIÓN",
-    items: [{ etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "EMPLEADO" }],
+    items: [
+      { etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "EMPLEADO" },
+      // rolMinimo en ADMIN a propósito: GET /cuentas/por-reiniciar exige
+      // ADMIN (routes/cuentas.ts:342). Si ese endpoint se abre a EMPLEADO,
+      // este valor cambia en la misma entrega, no antes.
+      { etiqueta: "Cuentas por reiniciar", href: "/panel/cuentas/por-reiniciar", icono: RotateCcw, rolMinimo: "ADMIN" },
+    ],
   },
   {
     titulo: "CONFIGURACIÓN",
