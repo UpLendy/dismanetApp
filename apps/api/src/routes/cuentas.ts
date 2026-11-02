@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { letraPerfil, PIN_PATRON } from "@dismanet/shared";
 import { cifrar, descifrar } from "../lib/cifrado.ts";
 import { pantallasDeCuenta, pantallasDeCuentas, pinesPorPerfil } from "../lib/pantallas.ts";
+import { bloquearPantallasDeCuenta } from "../lib/bloqueo-pantallas.ts";
 import { datosSinEmpresa, prismaParaEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol } from "../generated/prisma/client.ts";
 import { requiereRol } from "../plugins/guardas.ts";
@@ -16,6 +17,30 @@ const esquemaError = t.Object({
 const esquemaErrorPantallaVendida = t.Object({
   error: t.Object({ codigo: t.String(), mensaje: t.String() }),
   codigosCompraAfectados: t.Array(t.String()),
+});
+
+// F4.11 — misma forma que esquemaErrorPantallaVendida (error + códigos de
+// compra afectados), para el 409 CUENTA_CON_VENTAS_VIGENTES del reinicio.
+const esquemaErrorCuentaConVentasVigentes = esquemaErrorPantallaVendida;
+
+const esquemaCuentaPorReiniciar = t.Object({
+  id: t.String(),
+  plataformaId: t.String(),
+  plataformaNombre: t.String(),
+  identificador: t.String(),
+  pantallasPorReiniciar: t.Number(),
+  pantallasConVentaVigente: t.Number(),
+  codigosCompraAfectados: t.Array(t.String()),
+  vencioEl: t.String(),
+  esMixta: t.Boolean(),
+});
+
+const cuerpoReiniciarCuenta = t.Object({
+  password: t.String({ minLength: 1 }),
+  // F4.2 parte 2.3 / F4.11 — nunca una casilla oculta: el frontend lo manda
+  // en true solo después de un segundo diálogo de confirmación explícito,
+  // nombrando los códigos de compra afectados.
+  confirmarVentasVigentes: t.Optional(t.Boolean()),
 });
 
 // Nunca incluye password ni codigo/pin (Parte 4): esos solo salen por
@@ -43,6 +68,10 @@ const esquemaPantalla = t.Object({
   perfil: t.Union([t.String(), t.Null()]),
   activa: t.Boolean(),
   libre: t.Boolean(),
+  // F4.11 — libre queda como atajo de compatibilidad; estado es la fuente
+  // real para distinguir "nunca retenida" de "retenida, pendiente de
+  // reiniciar la cuenta" en la interfaz (Parte 4.3).
+  estado: t.Union([t.Literal("LIBRE"), t.Literal("OCUPADA"), t.Literal("POR_REINICIAR")]),
   ocupadaHasta: t.Union([t.String(), t.Null()]),
   ventaId: t.Union([t.String(), t.Null()]),
 });
@@ -370,6 +399,7 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
           perfil: p.perfil,
           activa: p.activa,
           libre: p.libre,
+          estado: p.estado,
           ocupadaHasta: p.ocupadaHasta ? p.ocupadaHasta.toISOString() : null,
           ventaId: p.ventaId,
         })),
@@ -524,13 +554,23 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
       }
       if (resultado.tipo === "pantallas-ocupadas") {
         set.status = 400;
+        // F4.11 — ocupadaHasta es null en POR_REINICIAR (no hay VentaDetalle
+        // vigente): distinguir los dos casos, o el mensaje sale con un
+        // literal "undefined" para las pantallas que solo esperan reinicio.
         const detalle = resultado.ocupadas
-          .map((p) => `#${p.numero} (ocupada hasta ${p.ocupadaHasta?.toISOString()})`)
+          .map((p) =>
+            p.estado === "POR_REINICIAR"
+              ? `#${p.numero} (pendiente de reiniciar la cuenta)`
+              : `#${p.numero} (vendida hasta ${p.ocupadaHasta?.toISOString()})`,
+          )
           .join(", ");
+        const hayPorReiniciar = resultado.ocupadas.some((p) => p.estado === "POR_REINICIAR");
         return {
           error: {
             codigo: "PANTALLAS_OCUPADAS",
-            mensaje: `No se puede bajar la capacidad: las pantallas ${detalle} siguen ocupadas.`,
+            mensaje:
+              `No se puede bajar la capacidad: las pantallas ${detalle} siguen ocupadas.` +
+              (hayPorReiniciar ? " Reinicia la cuenta primero y luego baja la capacidad." : ""),
           },
         };
       }
@@ -687,6 +727,219 @@ export const cuentas = new Elysia({ prefix: "/cuentas" })
         }),
         404: esquemaError,
         409: esquemaErrorPantallaVendida,
+      },
+    },
+  )
+
+  // F4.11, Parte 3.1 — cuentas activas con ≥1 pantalla POR_REINICIAR, para
+  // la pantalla "Cuentas por reiniciar". Ruta estática: va antes de
+  // /:id en el archivo por legibilidad (el router de Elysia ya prioriza
+  // rutas estáticas sobre parámetros, así que el orden no cambia el
+  // comportamiento, pero sí ayuda a leer el archivo).
+  .get(
+    "/por-reiniciar",
+    async ({ contexto }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+
+      // F4.11 — estrechar antes de traer todo: con miles de cuentas activas,
+      // pasarlas todas a pantallasDeCuentas trae todas sus pantallas con un
+      // include anidado más un groupBy sobre todos sus VentaDetalle, para
+      // devolver típicamente un puñado de filas. Este `where` NO es la regla
+      // de R5 — es solo un filtro de candidatas, un SUPERCONJUNTO de las
+      // POR_REINICIAR (incluye pantallas ya liberadas por un reinicio
+      // posterior a su venta vencida): el estado exacto de cada una lo sigue
+      // calculando estadoDePantallas (vía pantallasDeCuentas) más abajo, que
+      // es el único sitio que decide R5. No es un cuarto sitio de la regla.
+      const ahora = new Date();
+      const pantallasCandidatas = await cliente.pantalla.findMany({
+        where: {
+          activa: true,
+          cuenta: { activa: true },
+          AND: [
+            { ventaDetalles: { none: { fechaVencimiento: { gt: ahora }, venta: { anulada: false } } } },
+            { ventaDetalles: { some: { venta: { anulada: false } } } },
+          ],
+        },
+        select: { cuentaId: true },
+      });
+      const cuentaIdsCandidatas = [...new Set(pantallasCandidatas.map((p) => p.cuentaId))];
+      if (cuentaIdsCandidatas.length === 0) return { cuentas: [] };
+
+      const cuentasActivas = await cliente.cuenta.findMany({
+        where: { activa: true, id: { in: cuentaIdsCandidatas } },
+        include: { plataforma: { select: { nombre: true } } },
+      });
+      if (cuentasActivas.length === 0) return { cuentas: [] };
+
+      const estados = await pantallasDeCuentas(cliente, cuentasActivas.map((c) => c.id));
+      const pantallasPorCuenta = new Map<string, typeof estados>();
+      for (const estado of estados) {
+        if (!estado.activa) continue;
+        const lista = pantallasPorCuenta.get(estado.cuentaId) ?? [];
+        lista.push(estado);
+        pantallasPorCuenta.set(estado.cuentaId, lista);
+      }
+
+      const cuentas = cuentasActivas
+        .map((cuenta) => {
+          const pantallas = pantallasPorCuenta.get(cuenta.id) ?? [];
+          const porReiniciar = pantallas.filter((p) => p.estado === "POR_REINICIAR");
+          if (porReiniciar.length === 0) return null;
+
+          const conVentaVigente = pantallas.filter((p) => p.estado === "OCUPADA");
+          const vencioEl = porReiniciar.reduce<Date | null>((maximo, p) => {
+            if (!p.ultimoVencimiento) return maximo;
+            return !maximo || p.ultimoVencimiento > maximo ? p.ultimoVencimiento : maximo;
+          }, null);
+
+          return {
+            id: cuenta.id,
+            plataformaId: cuenta.plataformaId,
+            plataformaNombre: cuenta.plataforma.nombre,
+            identificador: cuenta.correo ?? cuenta.usuario ?? `${cuenta.plataforma.nombre} #${cuenta.id.slice(0, 8)}`,
+            pantallasPorReiniciar: porReiniciar.length,
+            pantallasConVentaVigente: conVentaVigente.length,
+            codigosCompraAfectados: [...new Set(conVentaVigente.flatMap((p) => p.codigosCompraAfectados))],
+            // vencioEl nunca es null aquí: porReiniciar.length > 0 implica
+            // retenida === true, que exige un ultimoVencimiento no nulo.
+            vencioEl: (vencioEl as Date).toISOString(),
+            esMixta: conVentaVigente.length > 0,
+          };
+        })
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        .sort((a, b) => a.vencioEl.localeCompare(b.vencioEl));
+
+      return { cuentas };
+    },
+    { response: { 200: t.Object({ cuentas: t.Array(esquemaCuentaPorReiniciar) }) } },
+  )
+
+  // F4.11, Parte 3.2 — reinicia una cuenta: cambia la contraseña (que el
+  // ADMIN ya cambió en el proveedor) y libera sus pantallas retenidas.
+  .post(
+    "/:id/reiniciar",
+    async ({ params, body, contexto, set }) => {
+      const resultado = await prismaParaEmpresa(contexto.empresaId).$transaction(async (txCliente) => {
+        const cuenta = await txCliente.cuenta.findUnique({
+          where: { id: params.id },
+          include: { plataforma: { select: { nombre: true } } },
+        });
+        if (!cuenta) return { tipo: "no-encontrada" as const };
+
+        // R2 — mismo orden determinista que usa la venta (p."cuentaId",
+        // p.numero) para que un reinicio y una venta en curso sobre la
+        // misma cuenta no se bloqueen en direcciones opuestas. Bloquea
+        // TODAS las pantallas de la cuenta, no solo las POR_REINICIAR: hay
+        // que releer el estado real de todas bajo el lock antes de decidir
+        // nada, y liberadaEn se escribe sobre todas más abajo.
+        await bloquearPantallasDeCuenta(txCliente, contexto.empresaId!, cuenta.id);
+
+        if (descifrar(cuenta.password) === body.password) {
+          return { tipo: "password-sin-cambio" as const };
+        }
+
+        const estados = await pantallasDeCuenta(txCliente, cuenta.id);
+        const activas = estados.filter((p) => p.activa);
+        const porReiniciar = activas.filter((p) => p.estado === "POR_REINICIAR");
+        const conVentaVigente = activas.filter((p) => p.estado === "OCUPADA");
+
+        if (conVentaVigente.length > 0 && body.confirmarVentasVigentes !== true) {
+          return {
+            tipo: "con-ventas-vigentes" as const,
+            codigosCompraAfectados: [...new Set(conVentaVigente.flatMap((p) => p.codigosCompraAfectados))],
+          };
+        }
+
+        const codigosCompraAfectados = [...new Set(conVentaVigente.flatMap((p) => p.codigosCompraAfectados))];
+        const ahora = new Date();
+
+        // Parte 3.2.5 — liberadaEn = now() en TODAS las pantallas de la
+        // cuenta, no solo las POR_REINICIAR. Una pantalla OCUPADA tiene un
+        // VentaDetalle con fechaVencimiento futuro: fechaVencimiento >
+        // liberadaEn sigue siendo cierto justo después de este update, así
+        // que sigue OCUPADA — y cuando esa venta venza, volverá a pedir
+        // reinicio, que es lo correcto (el cliente también rotó esa
+        // contraseña). Si solo tocáramos las POR_REINICIAR no cambiaría el
+        // resultado hoy, pero obligaría a mantener ese filtro sincronizado
+        // con la regla de R5 cada vez que cambie.
+        await txCliente.pantalla.updateMany({
+          where: { cuentaId: cuenta.id },
+          data: { liberadaEn: ahora },
+        });
+
+        await txCliente.cuenta.update({
+          where: { id: cuenta.id },
+          data: { password: cifrar(body.password) },
+        });
+
+        await txCliente.reinicioCuenta.create({
+          data: datosSinEmpresa<Prisma.ReinicioCuentaUncheckedCreateInput>({
+            cuentaId: cuenta.id,
+            usuarioId: contexto.usuarioId!,
+            pantallasLiberadas: porReiniciar.length,
+            pantallasConVentaVigente: conVentaVigente.length,
+            codigosCompraAfectados,
+          }),
+        });
+
+        const estadosFinal = await pantallasDeCuenta(txCliente, cuenta.id);
+        const activasFinal = estadosFinal.filter((p) => p.activa);
+
+        return {
+          tipo: "ok" as const,
+          cuenta,
+          pantallasLiberadas: porReiniciar.length,
+          pantallasConVentaVigente: conVentaVigente.length,
+          pantallasLibres: activasFinal.filter((p) => p.libre).length,
+          pantallasTotales: activasFinal.length,
+        };
+      });
+
+      if (resultado.tipo === "no-encontrada") {
+        set.status = 404;
+        return { error: { codigo: "CUENTA_NO_ENCONTRADA", mensaje: "La cuenta no existe." } };
+      }
+      if (resultado.tipo === "password-sin-cambio") {
+        set.status = 409;
+        return {
+          error: {
+            codigo: "PASSWORD_SIN_CAMBIO",
+            mensaje: "La nueva contraseña es igual a la actual. Cámbiala primero en el proveedor y vuelve a intentarlo.",
+          },
+          codigosCompraAfectados: [],
+        };
+      }
+      if (resultado.tipo === "con-ventas-vigentes") {
+        set.status = 409;
+        const codigos = resultado.codigosCompraAfectados;
+        return {
+          error: {
+            codigo: "CUENTA_CON_VENTAS_VIGENTES",
+            mensaje:
+              `Esta cuenta tiene pantallas con venta vigente (código${codigos.length > 1 ? "s" : ""} de compra ` +
+              `${codigos.join(", ")}). Esos clientes perderán acceso al reiniciar. Confirma para continuar.`,
+          },
+          codigosCompraAfectados: codigos,
+        };
+      }
+
+      return {
+        cuenta: respuestaCuenta(resultado.cuenta, resultado.pantallasLibres, resultado.pantallasTotales),
+        pantallasLiberadas: resultado.pantallasLiberadas,
+        pantallasConVentaVigente: resultado.pantallasConVentaVigente,
+      };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: cuerpoReiniciarCuenta,
+      response: {
+        200: t.Object({
+          cuenta: esquemaCuenta,
+          pantallasLiberadas: t.Number(),
+          pantallasConVentaVigente: t.Number(),
+        }),
+        404: esquemaError,
+        409: esquemaErrorCuentaConVentasVigentes,
       },
     },
   );

@@ -131,7 +131,7 @@ describe("R5 (0d) — la disponibilidad se calcula por renglón, no por Venta.fe
     expect(detalleNetflix.fechaVencimiento.getTime()).toBeLessThan(detalleDisney.fechaVencimiento.getTime());
   });
 
-  it("al simular el día 29 (manipulando las fechas, sin esperar en tiempo real), Netflix queda libre y Disney+ sigue ocupado", async () => {
+  it("al simular el día 29 (manipulando las fechas, sin esperar en tiempo real), Netflix queda retenido por reiniciar y Disney+ sigue ocupado", async () => {
     const detallesOriginales = await prismaRaw.ventaDetalle.findMany({ where: { ventaId } });
     for (const detalle of detallesOriginales) {
       await prismaRaw.ventaDetalle.update({
@@ -146,9 +146,15 @@ describe("R5 (0d) — la disponibilidad se calcula por renglón, no por Venta.fe
       pantallasDisponibles(cliente, disneyId),
     ]);
 
+    // F4.11 — antes de la retención, Netflix volvía "libre" en cuanto pasaba
+    // su propio vencimiento. Ahora queda POR_REINICIAR: el cliente rota la
+    // contraseña con el proveedor, no Postgres solo, así que la pantalla
+    // sigue retenida (libre=false) hasta un reinicio explícito.
     expect(estadosNetflix).toHaveLength(1);
-    expect(estadosNetflix[0].libre).toBe(true);
+    expect(estadosNetflix[0].estado).toBe("POR_REINICIAR");
+    expect(estadosNetflix[0].libre).toBe(false);
     expect(estadosDisney).toHaveLength(1);
+    expect(estadosDisney[0].estado).toBe("OCUPADA");
     expect(estadosDisney[0].libre).toBe(false);
     expect(estadosDisney[0].ventaId).toBe(ventaId);
 
@@ -160,5 +166,25 @@ describe("R5 (0d) — la disponibilidad se calcula por renglón, no por Venta.fe
     // CLAUDE.md describe.
     const venta = await prismaRaw.venta.findUniqueOrThrow({ where: { id: ventaId } });
     expect(venta.fechaVencimientoMax.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("solo vuelve libre tras un reinicio explícito de la cuenta, y Disney+ no se ve afectado", async () => {
+    // Reinicio real: solo la cuenta de Netflix cambia su contraseña.
+    const pantallaNetflix = await prismaRaw.pantalla.findFirstOrThrow({
+      where: { empresaId, cuenta: { plataformaId: netflixId } },
+    });
+    await prismaRaw.pantalla.update({ where: { id: pantallaNetflix.id }, data: { liberadaEn: new Date() } });
+
+    const cliente = prismaParaEmpresa(empresaId);
+    const [estadosNetflix, estadosDisney] = await Promise.all([
+      pantallasDisponibles(cliente, netflixId),
+      pantallasDisponibles(cliente, disneyId),
+    ]);
+
+    expect(estadosNetflix[0].estado).toBe("LIBRE");
+    expect(estadosNetflix[0].libre).toBe(true);
+    // El reinicio de la cuenta de Netflix no toca la de Disney+: sigue
+    // ocupado por la misma venta, sin relación entre sus retenciones.
+    expect(estadosDisney[0].estado).toBe("OCUPADA");
   });
 });

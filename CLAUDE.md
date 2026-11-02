@@ -83,11 +83,34 @@ En particular: ningún endpoint devuelve `costo`, `utilidad` ni `margen` cuando 
 
 ### R5 — La disponibilidad se calcula por renglón
 
-Una pantalla está ocupada si existe un `VentaDetalle` con venta no anulada y `VentaDetalle.fechaVencimiento > now()`.
+Una pantalla vencida **no vuelve sola** al inventario. El cliente rota las cuentas: cuando una pantalla vence, hay que cambiar la contraseña de esa cuenta en el proveedor antes de poder revenderla. Hasta que un ADMIN reinicia la cuenta (F4.11, `POST /cuentas/:id/reiniciar`), la pantalla queda retenida.
+
+`Pantalla.liberadaEn` guarda el último momento en que se reinició la cuenta de esa pantalla (nulo = nunca). La fórmula, en una sola expresión sin ramas:
+
+```
+retenida ⟺ existe un VentaDetalle de esa pantalla, con venta no anulada,
+            cuya fechaVencimiento > COALESCE(liberadaEn, -infinity)
+```
+
+De ahí se deriva un estado de tres valores — **nunca persistido, nunca un enum de Postgres, siempre calculado al leer**:
+
+- `OCUPADA` — retenida y con ≥1 `VentaDetalle` vigente ahora mismo.
+- `POR_REINICIAR` — retenida pero sin ninguno vigente: venció y nadie ha reiniciado la cuenta desde entonces.
+- `LIBRE` — no retenida.
 
 **Nunca** usar `Venta.fechaVencimientoMax` para calcular disponibilidad. Ese campo existe solo para filtrar y ordenar listados.
 
 Un combo puede tener vencimientos distintos por plataforma: "Básico 1" vendido a 30 días lleva Netflix a 28 días y Disney+ a 30. Usar el vencimiento de la venta dejaría la pantalla de Netflix bloqueada dos días de más en cada combo, que es inventario sin vender.
+
+**Esta regla no vive en un solo lugar.** Vive en tres sitios independientes, en tres tecnologías distintas, y los tres tienen que coincidir o la pantalla se ve retenida en la interfaz y la venta la asigna igual (el bug clásico de este proyecto):
+
+- `apps/api/src/lib/pantallas.ts` — `estadoDePantallas()`: Prisma `findMany` + `groupBy` (Prisma no permite comparar un campo del padre con uno del hijo dentro de un solo `include`).
+- `apps/api/src/lib/bloqueo-pantallas.ts` — `tomarPantallasDisponibles()`: SQL crudo con `FOR UPDATE SKIP LOCKED`, porque la API de Prisma no expresa eso.
+- `apps/api/src/lib/diagnostico-empresa.ts` — delega en `contarPantallasPorEstado()` de `pantallas.ts` en vez de mantener su propio `count`; no reintroducir un conteo duplicado ahí.
+
+`apps/api/src/routes/garantias.ts` (`soloVigentes`) usa un filtro con nombre parecido pero significa otra cosa — vigencia de garantía de un renglón ya vendido, no disponibilidad de inventario — y no implementa esta regla.
+
+Cualquier cambio a esta fórmula se aplica a los tres sitios de la lista en la misma entrega, con una prueba que ejercite los tres contra los mismos datos y verifique que coinciden.
 
 ---
 

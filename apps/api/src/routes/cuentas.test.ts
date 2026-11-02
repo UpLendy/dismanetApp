@@ -379,6 +379,87 @@ describe("Cuentas, pantallas, perfiles y pines", () => {
     expect(pantallasFinal.find((p) => p.numero === 3)?.activa).toBe(false);
   });
 
+  // F4.11 — regresión: ocupadaHasta es null en POR_REINICIAR (no hay
+  // VentaDetalle vigente), así que el mensaje de PANTALLAS_OCUPADAS no debe
+  // formatearlo como si la pantalla siguiera vendida.
+  it("(e2) bajar la capacidad con una pantalla POR_REINICIAR se rechaza con un mensaje que distingue el caso, sin 'undefined'", async () => {
+    const duracion = await prismaRaw.duracion.create({
+      data: { empresaId, nombre: "30 días (cuentas.test, e2)", cantidad: 30, unidad: "DIAS" },
+    });
+    const tipoCliente = await prismaRaw.tipoCliente.create({
+      data: { empresaId, nombre: "Normal (cuentas.test, e2)" },
+    });
+    const vendedor = await prismaRaw.usuario.findFirstOrThrow({ where: { empresaId, rol: "VENDEDOR" } });
+
+    const respuesta = await post("/cuentas", {
+      plataformaId: plataformaPerfil3Id,
+      correo: `cuenta-bajar-por-reiniciar-${randomUUID()}@cuentas.test`,
+      password: "Secreto#6",
+    });
+    const { cuenta } = (await respuesta.json()) as { cuenta: { id: string } };
+
+    const detalle = await get(`/cuentas/${cuenta.id}`);
+    const { pantallas } = (await detalle.json()) as { pantallas: { id: string; numero: number }[] };
+    const pantalla3 = pantallas.find((p) => p.numero === 3)!;
+
+    const venta = await prismaRaw.venta.create({
+      data: {
+        empresaId,
+        vendedorId: vendedor.id,
+        codigoCompra: `CTA-${randomUUID()}`,
+        tipoVenta: "UNIDAD",
+        plataformaId: plataformaPerfil3Id,
+        duracionId: duracion.id,
+        tipoClienteId: tipoCliente.id,
+        nombreItem: "Netflix",
+        nombreDuracion: duracion.nombre,
+        cantidadDuracion: duracion.cantidad,
+        unidadDuracion: duracion.unidad,
+        nombreTipoCliente: tipoCliente.nombre,
+        precioVenta: "10000",
+        precioSugerido: "10000",
+        costo: "5000",
+        utilidad: "5000",
+        fechaVencimientoMax: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        mensajeGenerado: "mensaje de prueba",
+      },
+    });
+    await prismaRaw.ventaDetalle.create({
+      data: {
+        empresaId,
+        ventaId: venta.id,
+        pantallaId: pantalla3.id,
+        cuentaId: cuenta.id,
+        plataformaId: plataformaPerfil3Id,
+        nombrePlataforma: "Netflix",
+        correoCuenta: "correo@cuenta.test",
+        passwordCuenta: "cifrado",
+        duracionId: duracion.id,
+        cantidadDuracion: duracion.cantidad,
+        unidadDuracion: duracion.unidad,
+        // Ya vencida, sin anular: no hay VentaDetalle vigente ⇒
+        // POR_REINICIAR (R5), distinto de OCUPADA.
+        fechaVencimiento: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const bajarConPorReiniciar = await patch(`/cuentas/${cuenta.id}`, { capacidadPantallas: 1 });
+    expect(bajarConPorReiniciar.status).toBe(400);
+    const cuerpoError = (await bajarConPorReiniciar.json()) as { error: { codigo: string; mensaje: string } };
+    expect(cuerpoError.error.codigo).toBe("PANTALLAS_OCUPADAS");
+    expect(cuerpoError.error.mensaje).toContain("#3");
+    expect(cuerpoError.error.mensaje).not.toContain("undefined");
+    expect(cuerpoError.error.mensaje).toContain("pendiente de reiniciar la cuenta");
+    expect(cuerpoError.error.mensaje).toContain("Reinicia la cuenta primero");
+
+    // Reinicia la cuenta (simulado: liberadaEn posterior al vencimiento) y
+    // reintenta: ahora la pantalla queda LIBRE y la baja de capacidad pasa.
+    await prismaRaw.pantalla.update({ where: { id: pantalla3.id }, data: { liberadaEn: new Date() } });
+
+    const bajarConLibre = await patch(`/cuentas/${cuenta.id}`, { capacidadPantallas: 1 });
+    expect(bajarConLibre.status).toBe(200);
+  });
+
   it("(f) un VENDEDOR obtiene 403 en todos los endpoints de cuentas, y disponibilidad no expone ningún campo de credenciales", async () => {
     const respuestaListado = await get("/cuentas", cookieVendedor);
     expect(respuestaListado.status).toBe(403);
@@ -401,6 +482,7 @@ describe("Cuentas, pantallas, perfiles y pines", () => {
         "libres",
         "nombre",
         "plataformaId",
+        "porReiniciar",
         "total",
         "usaCodigo",
         "usaCorreo",

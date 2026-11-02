@@ -75,6 +75,7 @@ model Empresa {
   plantillasMensaje          PlantillaMensaje[]
   movimientoSaldos           MovimientoSaldo[]
   garantias                  Garantia[]
+  reiniciosCuenta            ReinicioCuenta[]
 
   @@unique([prefijoCodigo])
 }
@@ -117,6 +118,7 @@ model Usuario {
   movimientosSaldo        MovimientoSaldo[] @relation("MovimientoSaldoUsuario")
   movimientosSaldoCreados MovimientoSaldo[] @relation("MovimientoSaldoCreadoPor")
   garantiasCreadas        Garantia[]        @relation("GarantiaCreadaPor")
+  reiniciosCuenta         ReinicioCuenta[]  @relation("ReinicioCuentaUsuario")
 
   @@index([empresaId])
 }
@@ -356,8 +358,9 @@ model Cuenta {
   empresa    Empresa    @relation(fields: [empresaId], references: [id])
   plataforma Plataforma @relation(fields: [plataformaId], references: [id])
 
-  pantallas     Pantalla[]
-  ventaDetalles VentaDetalle[]
+  pantallas       Pantalla[]
+  ventaDetalles   VentaDetalle[]
+  reiniciosCuenta ReinicioCuenta[]
 
   @@index([empresaId])
 }
@@ -373,6 +376,13 @@ model Pantalla {
   /// Cifrado reversible (AES-256-GCM), no hash.
   pin       String?
   activa    Boolean @default(true)
+
+  /// F4.11 — último momento en que un operador devolvió esta pantalla al
+  /// inventario reiniciando la cuenta (cambiando la contraseña en el
+  /// proveedor). Nulo = nunca se ha reiniciado. R5 usa este campo, no
+  /// Venta.fechaVencimientoMax, para decidir disponibilidad: ver
+  /// src/lib/pantallas.ts.
+  liberadaEn DateTime?
 
   empresa Empresa @relation(fields: [empresaId], references: [id])
   cuenta  Cuenta  @relation(fields: [cuentaId], references: [id])
@@ -560,6 +570,30 @@ model Garantia {
   plataformaExterna     Plataforma?   @relation(fields: [plataformaExternaId], references: [id])
 
   @@index([empresaId])
+}
+
+/// F4.11 — rastro de auditoría de cada reinicio de cuenta (cambio de
+/// contraseña en el proveedor tras rotar las credenciales). Es lo que libera
+/// las pantallas POR_REINICIAR de esa cuenta (ver Pantalla.liberadaEn y
+/// src/lib/pantallas.ts). codigosCompraAfectados guarda los códigos de las
+/// ventas vigentes que quedaron sin acceso por el reinicio — copia
+/// inmutable, como las demás copias de R3.
+model ReinicioCuenta {
+  id                       String   @id @default(cuid())
+  empresaId                String
+  cuentaId                 String
+  usuarioId                String
+  pantallasLiberadas       Int
+  pantallasConVentaVigente Int
+  codigosCompraAfectados   String[]
+  createdAt                DateTime @default(now())
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+  cuenta  Cuenta  @relation(fields: [cuentaId], references: [id])
+  usuario Usuario @relation("ReinicioCuentaUsuario", fields: [usuarioId], references: [id])
+
+  @@index([empresaId])
+  @@index([cuentaId])
 }
 
 /// Texto exacto por tipo de venta, con placeholders {{...}}. Editar la

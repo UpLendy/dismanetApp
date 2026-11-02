@@ -32,6 +32,9 @@ const esquemaPlataformaDisponible = t.Object({
   nombre: t.String(),
   condiciones: t.Union([t.String(), t.Null()]),
   pantallasLibres: t.Number(),
+  // F4.11 — sin esto el vendedor ve 0 libres sin ninguna explicación de por
+  // qué: hay cuentas vencidas esperando a que ADMIN las reinicie.
+  pantallasPorReiniciar: t.Number(),
   precioVenta: t.String(),
 });
 
