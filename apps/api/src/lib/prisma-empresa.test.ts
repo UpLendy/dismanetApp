@@ -37,6 +37,7 @@ interface FixtureEmpresa {
   plantillaMensajeId: string;
   movimientoSaldoId: string;
   garantiaId: string;
+  reinicioCuentaId: string;
 }
 
 // Nombre de la propiedad del cliente de Prisma para un modelo del esquema:
@@ -225,6 +226,17 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  const reinicioCuenta = await prismaRaw.reinicioCuenta.create({
+    data: {
+      empresaId: empresa.id,
+      cuentaId: cuenta.id,
+      usuarioId: usuario.id,
+      pantallasLiberadas: 1,
+      pantallasConVentaVigente: 0,
+      codigosCompraAfectados: [],
+    },
+  });
+
   return {
     empresaId: empresa.id,
     usuarioId: usuario.id,
@@ -245,6 +257,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     plantillaMensajeId: plantillaMensaje.id,
     movimientoSaldoId: movimientoSaldo.id,
     garantiaId: garantia.id,
+    reinicioCuentaId: reinicioCuenta.id,
   };
 }
 
@@ -255,6 +268,8 @@ async function borrarEmpresaCompleta(empresaId: string) {
   // como su referencia a Venta), así que debe irse antes que el usuario.
   await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
   await prismaRaw.garantia.deleteMany({ where: { empresaId } });
+  // ReinicioCuenta referencia Cuenta y Usuario: antes de ambas.
+  await prismaRaw.reinicioCuenta.deleteMany({ where: { empresaId } });
   await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
   await prismaRaw.venta.deleteMany({ where: { empresaId } });
   await prismaRaw.precio.deleteMany({ where: { empresaId } });
@@ -287,8 +302,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 17 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(17);
+  it("cubre los 18 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(18);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -308,6 +323,9 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         "PlantillaMensaje",
         "MovimientoSaldo",
         "Garantia",
+        // F4.11 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "ReinicioCuenta",
       ].sort(),
     );
   });

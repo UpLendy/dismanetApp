@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { es } from "date-fns/locale";
 import { format, isSameDay, startOfDay, subDays } from "date-fns";
-import { Receipt, Wallet, TrendingUp, MonitorPlay, ShoppingCart, CircleDollarSign, RefreshCw } from "lucide-react";
+import { Receipt, Wallet, TrendingUp, MonitorPlay, ShoppingCart, CircleDollarSign, RefreshCw, RotateCcw } from "lucide-react";
 import { api } from "@/lib/api";
 import { contarCostosFaltantes, type CostosFaltantes } from "@/lib/costo-cero";
 import { AvisoCostoFaltante } from "@/components/aviso-costo-faltante";
@@ -51,6 +51,7 @@ export default function DashboardClientePanel() {
     perdidaGarantias: string;
   } | null>(null);
   const [pantallasLibres, setPantallasLibres] = useState(0);
+  const [cuentasPorReiniciar, setCuentasPorReiniciar] = useState(0);
   const [costosFaltantes, setCostosFaltantes] = useState<CostosFaltantes | null>(null);
   const [ventas7Dias, setVentas7Dias] = useState<VentaAdmin[]>([]);
 
@@ -60,10 +61,11 @@ export default function DashboardClientePanel() {
 
     const desde = startOfDay(subDays(new Date(), 6)).toISOString();
 
-    const [resTotales, resDisponibilidad, resListado, costosFaltantesCargados] = await Promise.all([
+    const [resTotales, resDisponibilidad, resListado, resPorReiniciar, costosFaltantesCargados] = await Promise.all([
       api.ventas.totales.get(),
       api.disponibilidad.get(),
       api.ventas.listado.get({ query: { desde } }),
+      api.cuentas["por-reiniciar"].get(),
       contarCostosFaltantes(),
     ]);
 
@@ -85,6 +87,9 @@ export default function DashboardClientePanel() {
 
     setTotalesHoy(resTotales.data.hoy);
     setPantallasLibres(resDisponibilidad.data.disponibilidad.reduce((acc, p) => acc + p.libres, 0));
+    // F4.11 — no bloquea el resto del dashboard si falla: es un badge
+    // informativo, no una cifra financiera.
+    setCuentasPorReiniciar(resPorReiniciar.data?.cuentas.length ?? 0);
     setVentas7Dias(resListado.data.ventas);
     setCostosFaltantes(costosFaltantesCargados);
 
@@ -158,6 +163,13 @@ export default function DashboardClientePanel() {
       <div className="grid gap-4 sm:grid-cols-3">
         <TarjetaAcceso href="/vender" icono={ShoppingCart} titulo="Vender" descripcion="Registrar una venta" tono="primario" />
         <TarjetaAcceso href="/panel/cuentas" icono={MonitorPlay} titulo="Cuentas" descripcion="Gestionar cuentas e inventario" />
+        <TarjetaAcceso
+          href="/panel/cuentas/por-reiniciar"
+          icono={RotateCcw}
+          titulo="Cuentas por reiniciar"
+          descripcion="Pantallas vencidas esperando cambio de contraseña"
+          badge={cuentasPorReiniciar}
+        />
         <TarjetaAcceso href="/panel/precios" icono={CircleDollarSign} titulo="Precios" descripcion="Editar la matriz de precios" />
       </div>
 

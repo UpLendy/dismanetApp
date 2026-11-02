@@ -1,5 +1,5 @@
 import { Prisma } from "../generated/prisma/client.ts";
-import { pantallasDisponibles } from "./pantallas.ts";
+import { contarPantallasPorEstado, pantallasDisponibles } from "./pantallas.ts";
 import { resolverComposicionDePaquete } from "./paquetes.ts";
 import { descifrar } from "./cifrado.ts";
 
@@ -25,6 +25,8 @@ export interface DiagnosticoEmpresa {
   cuentasActivas: number;
   pantallasActivas: number;
   pantallasLibres: number;
+  // F4.11 — pantallas vencidas sin reiniciar la cuenta (R5).
+  pantallasPorReiniciar: number;
   cuentasConPinInconsistente: CuentaPinInconsistente[];
   puedeVender: boolean;
 }
@@ -141,7 +143,7 @@ export async function diagnosticoDeEmpresa(cliente: ClienteEmpresa): Promise<Dia
     preciosActivos,
     cuentasActivas,
     pantallasActivas,
-    pantallasLibresPorCuenta,
+    conteoPantallas,
     cuentasConPinInconsistente,
   ] = await Promise.all([
     cliente.plantillaMensaje.findFirst({ where: { tipo: "UNIDAD" }, select: { id: true } }),
@@ -153,16 +155,11 @@ export async function diagnosticoDeEmpresa(cliente: ClienteEmpresa): Promise<Dia
     cliente.precio.count({ where: { activo: true } }),
     cliente.cuenta.count({ where: { activa: true } }),
     cliente.pantalla.count({ where: { activa: true } }),
-    // Libre = sin VentaDetalle vigente (R5) — mismo criterio que
-    // estadoDePantallas, pero contado directo en SQL porque aquí solo
-    // interesa el total, no el detalle por pantalla.
-    cliente.pantalla.count({
-      where: {
-        activa: true,
-        cuenta: { activa: true },
-        ventaDetalles: { none: { fechaVencimiento: { gt: new Date() }, venta: { anulada: false } } },
-      },
-    }),
+    // F4.11 — antes había un `count` propio aquí duplicando la regla de R5
+    // (ver CLAUDE.md: "arreglar el dato no es arreglar la fuente"). Ahora
+    // delega en el mismo helper que usan estadoDePantallas y
+    // tomarPantallasDisponibles, para no volver a quedarse atrás.
+    contarPantallasPorEstado(cliente),
     buscarCuentasConPinInconsistente(cliente),
   ]);
 
@@ -177,7 +174,8 @@ export async function diagnosticoDeEmpresa(cliente: ClienteEmpresa): Promise<Dia
     preciosActivos,
     cuentasActivas,
     pantallasActivas,
-    pantallasLibres: pantallasLibresPorCuenta,
+    pantallasLibres: conteoPantallas.libres,
+    pantallasPorReiniciar: conteoPantallas.porReiniciar,
     cuentasConPinInconsistente,
     puedeVender,
   };

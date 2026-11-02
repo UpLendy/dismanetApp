@@ -65,10 +65,36 @@ export async function tomarPantallasDisponibles(
         INNER JOIN "Venta" v ON v.id = vd."ventaId"
         WHERE vd."pantallaId" = p.id
           AND v.anulada = false
-          AND vd."fechaVencimiento" > now()
+          AND vd."fechaVencimiento" > COALESCE(p."liberadaEn", '-infinity'::timestamptz)
       )
     ORDER BY p."cuentaId" ASC, p.numero ASC
     FOR UPDATE OF p SKIP LOCKED
     LIMIT ${cantidad}
+  `);
+}
+
+/**
+ * F4.11 — bloquea TODAS las pantallas de una cuenta (sin filtrar por estado:
+ * el reinicio libera tanto las POR_REINICIAR como relee las OCUPADAS para
+ * saber a quién afecta) dentro de la transacción de reinicio de cuenta.
+ *
+ * Mismo motivo que tomarPantallasDisponibles para usar SQL crudo: Prisma no
+ * expresa FOR UPDATE. Orden determinista por `numero` ascendente — el mismo
+ * orden interno que usa la venta (p."cuentaId", p.numero) — para que un
+ * reinicio y una venta en curso sobre la misma cuenta no se bloqueen entre
+ * sí en direcciones opuestas.
+ */
+export async function bloquearPantallasDeCuenta(
+  tx: ClienteTx,
+  empresaId: string,
+  cuentaId: string,
+): Promise<PantallaBloqueada[]> {
+  return tx.$queryRaw<PantallaBloqueada[]>(Prisma.sql`
+    SELECT p.id, p."cuentaId"
+    FROM "Pantalla" p
+    WHERE p."empresaId" = ${empresaId}
+      AND p."cuentaId" = ${cuentaId}
+    ORDER BY p.numero ASC
+    FOR UPDATE OF p
   `);
 }

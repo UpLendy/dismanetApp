@@ -52,8 +52,24 @@ export interface EstadoPantalla {
   numero: number;
   perfil: string | null;
   activa: boolean;
+  /**
+   * F4.11 — estado derivado, nunca persistido (no es un enum de Postgres):
+   * OCUPADA tiene ≥1 VentaDetalle vigente; POR_REINICIAR está retenida pero
+   * sin ninguno vigente (venció y nadie cambió la contraseña en el
+   * proveedor); LIBRE no está retenida. `libre` abajo sigue existiendo como
+   * atajo (`estado === "LIBRE"`) para no reescribir los ~15 sitios que ya
+   * filtran por ese booleano.
+   */
+  estado: "LIBRE" | "OCUPADA" | "POR_REINICIAR";
   libre: boolean;
+  liberadaEn: Date | null;
   ocupadaHasta: Date | null;
+  // F4.11 — el mayor fechaVencimiento de un VentaDetalle no anulado de esta
+  // pantalla, sin importar si ya pasó: es lo que GET /cuentas/por-reiniciar
+  // necesita para mostrar "venció el ...", y ocupadaHasta no sirve porque
+  // solo mira VentaDetalle vigentes (null en POR_REINICIAR, que es
+  // justamente el caso que hay que mostrar).
+  ultimoVencimiento: Date | null;
   ventaId: string | null;
   // F4.7, arreglo 6 — el cliente sobrevende a propósito: una pantalla puede
   // tener más de un VentaDetalle vigente a la vez. Antes esta función solo
@@ -64,12 +80,25 @@ export interface EstadoPantalla {
 }
 
 /**
- * R5 — una pantalla está ocupada si existe un VentaDetalle con venta no
- * anulada y fechaVencimiento > now(). Esta es la ÚNICA consulta del proyecto
- * que implementa esa regla: todo lo que necesite disponibilidad (conteos
- * para VENDEDOR, paquetesDisponibles, la validación de baja de capacidad en
- * cuentas.ts, el detalle de una cuenta) pasa por aquí o por
- * pantallasDisponibles/pantallasDeCuenta debajo.
+ * R5 — una pantalla está retenida (OCUPADA o POR_REINICIAR) si existe un
+ * VentaDetalle con venta no anulada y
+ * fechaVencimiento > COALESCE(liberadaEn, -infinity). Dentro de "retenida",
+ * OCUPADA es tener ≥1 VentaDetalle vigente ahora mismo; POR_REINICIAR es
+ * estar retenida sin ninguno vigente — venció y nadie reinició la cuenta
+ * (cambió la contraseña en el proveedor) desde entonces.
+ *
+ * Esta regla NO vive en un solo lugar, aunque antes este comentario dijera
+ * lo contrario — ver CLAUDE.md R5 para la lista completa de sitios que
+ * deben coincidir: esta función, bloqueo-pantallas.ts (SQL crudo, para
+ * asignar) y el conteo de diagnóstico, que delega en contarPantallasPorEstado
+ * de aquí mismo en vez de mantener su propia consulta.
+ *
+ * El `liberadaEn` de la pantalla no se puede comparar contra el máximo
+ * vencimiento de sus VentaDetalle dentro de un solo `include` de Prisma (no
+ * hay forma de referenciar un campo del padre en el filtro del hijo), así
+ * que se resuelve con un `groupBy` aparte — nunca trayendo todos los
+ * VentaDetalle sin filtrar a memoria, que sobre miles de pantallas sería una
+ * lectura sin límite.
  *
  * Si la pregunta abierta P1 del PRD se resuelve (las cuentas que compra
  * DISMANET tienen su propio vencimiento), el único cambio que hace falta es
@@ -88,6 +117,7 @@ async function estadoDePantallas(
       numero: true,
       perfil: true,
       activa: true,
+      liberadaEn: true,
       ventaDetalles: {
         where: { fechaVencimiento: { gt: ahora }, venta: { anulada: false } },
         select: { fechaVencimiento: true, ventaId: true, venta: { select: { codigoCompra: true } } },
@@ -96,22 +126,61 @@ async function estadoDePantallas(
     },
     orderBy: { numero: "asc" },
   });
+  if (pantallas.length === 0) return [];
+
+  const maximos = await cliente.ventaDetalle.groupBy({
+    by: ["pantallaId"],
+    where: { pantallaId: { in: pantallas.map((p) => p.id) }, venta: { anulada: false } },
+    _max: { fechaVencimiento: true },
+  });
+  const maxVencimientoPorPantalla = new Map(maximos.map((m) => [m.pantallaId, m._max.fechaVencimiento]));
 
   return pantallas.map((p) => {
     const ocupaciones = p.ventaDetalles;
     const masReciente = ocupaciones[0];
+    const maxVencimiento = maxVencimientoPorPantalla.get(p.id) ?? null;
+    const retenida = maxVencimiento !== null && (p.liberadaEn === null || maxVencimiento > p.liberadaEn);
+    const estado: EstadoPantalla["estado"] =
+      ocupaciones.length > 0 ? "OCUPADA" : retenida ? "POR_REINICIAR" : "LIBRE";
     return {
       id: p.id,
       cuentaId: p.cuentaId,
       numero: p.numero,
       perfil: p.perfil,
       activa: p.activa,
-      libre: ocupaciones.length === 0,
+      estado,
+      libre: estado === "LIBRE",
+      liberadaEn: p.liberadaEn,
       ocupadaHasta: masReciente?.fechaVencimiento ?? null,
+      ultimoVencimiento: maxVencimiento,
       ventaId: masReciente?.ventaId ?? null,
       codigosCompraAfectados: ocupaciones.map((o) => o.venta.codigoCompra),
     };
   });
+}
+
+export interface ConteoPantallas {
+  libres: number;
+  porReiniciar: number;
+  ocupadas: number;
+}
+
+/**
+ * Conteo global de pantallas activas, de cuentas activas, por estado (R5) —
+ * el total que alimenta el diagnóstico de empresa. Pasa por estadoDePantallas
+ * en vez de mantener su propio `count`, para no duplicar la regla (ver el
+ * historial de diagnostico-empresa.ts antes de F4.11: tenía un `count` propio
+ * que ya se había quedado atrás de la regla nueva).
+ */
+export async function contarPantallasPorEstado(cliente: ClienteEmpresa): Promise<ConteoPantallas> {
+  const estados = await estadoDePantallas(cliente, { activa: true, cuenta: { activa: true } });
+  const conteo: ConteoPantallas = { libres: 0, porReiniciar: 0, ocupadas: 0 };
+  for (const e of estados) {
+    if (e.estado === "LIBRE") conteo.libres++;
+    else if (e.estado === "POR_REINICIAR") conteo.porReiniciar++;
+    else conteo.ocupadas++;
+  }
+  return conteo;
 }
 
 /**
@@ -143,6 +212,9 @@ export interface PlataformaDisponible {
   nombre: string;
   condiciones: string | null;
   pantallasLibres: number;
+  // F4.11 — sin esto, VENDEDOR ve 0 pantallas sin ninguna explicación cuando
+  // en realidad hay cuentas vencidas esperando que ADMIN las reinicie.
+  pantallasPorReiniciar: number;
 }
 
 /**
@@ -179,11 +251,22 @@ export async function plataformasDisponibles(
       .filter((plataforma) => plataformasConPrecio.has(plataforma.id))
       .map(async (plataforma) => {
         const estados = await pantallasDisponibles(cliente, plataforma.id);
-        return { ...plataforma, pantallasLibres: estados.filter((e) => e.libre).length };
+        return {
+          ...plataforma,
+          pantallasLibres: estados.filter((e) => e.libre).length,
+          pantallasPorReiniciar: estados.filter((e) => e.estado === "POR_REINICIAR").length,
+        };
       }),
   );
 
-  return conDisponibilidad.filter((plataforma) => plataforma.pantallasLibres > 0);
+  // F4.11 — antes este filtro era `pantallasLibres > 0`: una plataforma con
+  // todas sus pantallas POR_REINICIAR (0 libres) desaparecía sin dejar
+  // rastro, y el vendedor veía 0 opciones sin ninguna explicación. Ahora se
+  // queda en la lista si tiene algo que explicar, aunque no tenga nada que
+  // vender hoy; el frontend decide si la deshabilita.
+  return conDisponibilidad.filter(
+    (plataforma) => plataforma.pantallasLibres > 0 || plataforma.pantallasPorReiniciar > 0,
+  );
 }
 
 export interface PlataformaConInventario {

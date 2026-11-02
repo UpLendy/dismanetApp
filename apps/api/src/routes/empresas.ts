@@ -24,6 +24,7 @@ const esquemaDiagnostico = t.Object({
   cuentasActivas: t.Number(),
   pantallasActivas: t.Number(),
   pantallasLibres: t.Number(),
+  pantallasPorReiniciar: t.Number(),
   cuentasConPinInconsistente: t.Array(
     t.Object({
       cuentaId: t.String(),

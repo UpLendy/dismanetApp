@@ -85,6 +85,13 @@ function whereDesdeFiltros(query: FiltrosPantallasVendidas): Prisma.VentaDetalle
   return {
     ...(query.plataformaId ? { plataformaId: query.plataformaId } : {}),
     ...(query.correoCuenta ? { correoCuenta: { contains: query.correoCuenta, mode: "insensitive" } } : {}),
+    // F4.11 — NO es R5 y no cambia con liberadaEn: esto filtra el LISTADO de
+    // pantallas vendidas (¿este renglón de garantía/venta sigue vigente
+    // para cubrirlo?), no la disponibilidad de inventario. Una pantalla
+    // puede salir aquí como "vigente" y a la vez estar OCUPADA (es lo
+    // normal: tiene una venta activa) — nunca POR_REINICIAR, porque
+    // POR_REINICIAR implica que no hay VentaDetalle vigente, que es
+    // justamente lo que este filtro exige.
     ...(query.soloVigentes ? { fechaVencimiento: { gt: new Date() }, garantiaOriginal: null } : {}),
     ...(Object.keys(ventaWhere).length > 0 ? { venta: ventaWhere } : {}),
   };

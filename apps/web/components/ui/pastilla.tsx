@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Circle, CheckCircle2, XCircle, Ban, Clock } from "lucide-react";
+import { Circle, CheckCircle2, XCircle, Ban, Clock, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const tonos = {
@@ -47,6 +47,9 @@ const ESTADOS_PASTILLA = {
   inactivo: { tono: "neutral" as Tono, icono: XCircle, texto: "Inactivo" },
   libre: { tono: "bien" as Tono, icono: CheckCircle2, texto: "Libre" },
   ocupada: { tono: "secundario" as Tono, icono: Clock, texto: "Ocupada" },
+  // F4.11 — retenida: venció pero el cliente no ha rotado la contraseña con
+  // el proveedor, así que la pantalla no vuelve al inventario sola.
+  por_reiniciar: { tono: "aviso" as Tono, icono: RotateCcw, texto: "Por reiniciar" },
   anulada: { tono: "critico" as Tono, icono: Ban, texto: "Anulada" },
   desactivada: { tono: "neutral" as Tono, icono: Circle, texto: "Desactivada" },
 } as const;

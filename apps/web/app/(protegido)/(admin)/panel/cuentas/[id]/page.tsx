@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, Ban, CheckCircle2, Eye, Pencil } from "lucide-react";
+import { ArrowLeft, Ban, CheckCircle2, Eye, Pencil, RotateCcw } from "lucide-react";
 import { PIN_LONGITUD_MAX, PIN_LONGITUD_MIN, PIN_PATRON } from "@dismanet/shared";
 import { api } from "@/lib/api";
 import { Boton } from "@/components/ui/boton";
@@ -11,6 +11,7 @@ import { Campo, EntradaCampo, AreaCampo } from "@/components/ui/campo";
 import { Aviso } from "@/components/ui/aviso";
 import { PastillaEstado } from "@/components/ui/pastilla";
 import { Dialogo } from "@/components/ui/dialogo";
+import { DialogoReiniciarCuenta } from "@/components/dialogo-reiniciar-cuenta";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { CargandoTarjeta } from "@/components/ui/cargando";
 import { Tabla, TablaCabecera, TablaCuerpo, TablaFila, TablaCeldaCabecera, TablaCelda } from "@/components/ui/tabla";
@@ -44,6 +45,9 @@ interface Pantalla {
   perfil: string | null;
   activa: boolean;
   libre: boolean;
+  // F4.11 — libre queda como atajo de compatibilidad; estado distingue
+  // "nunca retenida" de "retenida, pendiente de reiniciar la cuenta".
+  estado: "LIBRE" | "OCUPADA" | "POR_REINICIAR";
   ocupadaHasta: string | null;
   ventaId: string | null;
 }
@@ -104,6 +108,7 @@ export default function PaginaDetalleCuenta() {
   const [confirmandoPantallaVendidaEnvio, setConfirmandoPantallaVendidaEnvio] = useState(false);
 
   const [confirmandoEstado, setConfirmandoEstado] = useState<"activar" | "desactivar" | null>(null);
+  const [reiniciando, setReiniciando] = useState(false);
   const [procesandoEstado, setProcesandoEstado] = useState(false);
 
   async function cargarPlataforma(plataformaId: string) {
@@ -302,9 +307,10 @@ export default function PaginaDetalleCuenta() {
     );
   }
 
-  function estadoPantalla(pantalla: Pantalla): "libre" | "ocupada" | "desactivada" {
+  function estadoPantalla(pantalla: Pantalla): "libre" | "ocupada" | "por_reiniciar" | "desactivada" {
     if (!pantalla.activa) return "desactivada";
-    return pantalla.libre ? "libre" : "ocupada";
+    if (pantalla.estado === "POR_REINICIAR") return "por_reiniciar";
+    return pantalla.estado === "LIBRE" ? "libre" : "ocupada";
   }
 
   return (
@@ -326,17 +332,25 @@ export default function PaginaDetalleCuenta() {
             {cuenta.nombrePlataforma} · {cuenta.pantallasLibres} libres / {cuenta.pantallasTotales} total
           </p>
         </div>
-        {cuenta.activa ? (
-          <Boton variante="destructivo" onClick={() => setConfirmandoEstado("desactivar")}>
-            <Ban />
-            Desactivar
-          </Boton>
-        ) : (
-          <Boton variante="contorno" onClick={() => setConfirmandoEstado("activar")}>
-            <CheckCircle2 />
-            Activar
-          </Boton>
-        )}
+        <div className="flex gap-2">
+          {cuenta.activa && pantallas.some((p) => p.activa && p.estado === "POR_REINICIAR") ? (
+            <Boton variante="principal" onClick={() => setReiniciando(true)}>
+              <RotateCcw />
+              Reiniciar cuenta
+            </Boton>
+          ) : null}
+          {cuenta.activa ? (
+            <Boton variante="destructivo" onClick={() => setConfirmandoEstado("desactivar")}>
+              <Ban />
+              Desactivar
+            </Boton>
+          ) : (
+            <Boton variante="contorno" onClick={() => setConfirmandoEstado("activar")}>
+              <CheckCircle2 />
+              Activar
+            </Boton>
+          )}
+        </div>
       </div>
 
       {error ? <Aviso variante="critico">{error}</Aviso> : null}
@@ -527,6 +541,13 @@ export default function PaginaDetalleCuenta() {
         textoConfirmar="Cambiar de todos modos"
         confirmando={confirmandoPantallaVendidaEnvio}
         onConfirmar={confirmarCambioPantallaVendida}
+      />
+
+      <DialogoReiniciarCuenta
+        cuenta={{ id: cuenta.id, identificador: identificadorCuenta(cuenta) }}
+        abierto={reiniciando}
+        onCambiarAbierto={setReiniciando}
+        onExito={cargarDetalle}
       />
     </div>
   );

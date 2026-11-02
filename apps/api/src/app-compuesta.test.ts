@@ -233,11 +233,22 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuestaDisponibilidad.status).toBe(200);
   });
 
-  it("un VENDEDOR puede usar /disponibilidad pero recibe 403 en /cuentas", async () => {
+  // F4.11 — /cuentas/por-reiniciar y /cuentas/:id/reiniciar son rutas
+  // nuevas del mismo router que /cuentas: la guarda de rol que ya protege
+  // ese router debe alcanzarlas igual, dentro de la app compuesta (no solo
+  // montado solo, que es lo único que cubre cuentas.test.ts).
+  it("un ADMIN puede usar /cuentas/por-reiniciar aunque /empresas también esté montado", async () => {
+    const respuesta = await get("/cuentas/por-reiniciar");
+    expect(respuesta.status).toBe(200);
+  });
+
+  it("un VENDEDOR puede usar /disponibilidad pero recibe 403 en /cuentas y en /cuentas/por-reiniciar", async () => {
     const respuestaDisponibilidad = await get("/disponibilidad", cookieVendedor);
     expect(respuestaDisponibilidad.status).toBe(200);
     const respuestaCuentas = await get("/cuentas", cookieVendedor);
     expect(respuestaCuentas.status).toBe(403);
+    const respuestaPorReiniciar = await get("/cuentas/por-reiniciar", cookieVendedor);
+    expect(respuestaPorReiniciar.status).toBe(403);
   });
 
   it("un VENDEDOR puede usar los selectores de /ventas aunque /empresas y /cuentas también estén montados", async () => {
@@ -545,6 +556,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
 
     for (const ruta of [
       "/cuentas",
+      "/cuentas/por-reiniciar",
       "/disponibilidad",
       "/plantillas",
       "/paquetes",
@@ -594,6 +606,8 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
         "/garantias/externa",
         { plataformaId: "cualquier-id", duracionId: "cualquier-id", fechaVencimiento: "2099-01-01T00:00:00.000Z" },
       ],
+      // F4.11 — misma guarda ADMIN que el resto de /cuentas.
+      ["POST", "/cuentas/cualquier-id/reiniciar", { password: "Lo#Que#Sea1" }],
     ] as const) {
       const respuesta = await sinCookieConMetodo(metodo, ruta, cuerpo);
       expect(respuesta.status).toBe(403);

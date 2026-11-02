@@ -14,6 +14,9 @@ const esquemaConteo = t.Object({
   usaEnlace: t.Boolean(),
   capacidadPantallas: t.Number(),
   libres: t.Number(),
+  // F4.11 — pantallas retenidas (vencidas sin reiniciar la cuenta). Sin este
+  // número, el vendedor ve 0 libres sin ninguna explicación de por qué.
+  porReiniciar: t.Number(),
   total: t.Number(),
 });
 
@@ -71,6 +74,7 @@ export const disponibilidad = new Elysia({ prefix: "/disponibilidad" })
             usaEnlace: plataforma.usaEnlace,
             capacidadPantallas: plataforma.capacidadPantallas,
             libres: estados.filter((p) => p.libre).length,
+            porReiniciar: estados.filter((p) => p.estado === "POR_REINICIAR").length,
             total: estados.length,
           };
         }),

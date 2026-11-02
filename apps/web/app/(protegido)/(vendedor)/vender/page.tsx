@@ -23,6 +23,11 @@ interface PlataformaDisponible {
   nombre: string;
   condiciones: string | null;
   pantallasLibres: number;
+  // F4.11 — pantallas vencidas esperando que ADMIN reinicie la cuenta. Sin
+  // mostrar esto, una plataforma en 0 libres se ve igual que una sin
+  // pantallas de verdad, y el vendedor no tiene forma de saber que es
+  // temporal.
+  pantallasPorReiniciar: number;
   precioVenta: string;
 }
 
@@ -37,6 +42,15 @@ type ProductoDisponible = PlataformaDisponible | PaqueteDisponible;
 
 function esPlataforma(p: ProductoDisponible): p is PlataformaDisponible {
   return "pantallasLibres" in p;
+}
+
+// F4.11 — una plataforma en 0 libres con pantallas por reiniciar no es
+// "sin inventario": es temporal hasta que ADMIN reinicie la cuenta. Mostrar
+// ambas cifras evita que el vendedor la confunda con un producto muerto.
+function textoDisponibilidad(p: PlataformaDisponible): string {
+  return p.pantallasPorReiniciar > 0
+    ? `${p.pantallasLibres} libre(s) · ${p.pantallasPorReiniciar} por reiniciar`
+    : `${p.pantallasLibres} libre(s)`;
 }
 
 interface VentaRealizada {
@@ -643,9 +657,9 @@ export default function PaginaVender() {
                       >
                         <option value="">{cargandoOpciones ? "Cargando…" : "Selecciona…"}</option>
                         {productosVisibles.map((p) => (
-                          <option key={p.id} value={p.id}>
+                          <option key={p.id} value={p.id} disabled={esPlataforma(p) && p.pantallasLibres === 0}>
                             {p.nombre}
-                            {esPlataforma(p) ? ` — ${p.pantallasLibres} libre(s)` : ""}
+                            {esPlataforma(p) ? ` — ${textoDisponibilidad(p)}` : ""}
                           </option>
                         ))}
                       </SelectCampo>
@@ -765,7 +779,7 @@ export default function PaginaVender() {
           <div className="flex items-start justify-between gap-3">
             <p className="titulo-tarjeta text-ink">{productoSeleccionado.nombre}</p>
             {esPlataforma(productoSeleccionado) ? (
-              <span className="shrink-0 text-xs text-ink-muted">{productoSeleccionado.pantallasLibres} libre(s)</span>
+              <span className="shrink-0 text-xs text-ink-muted">{textoDisponibilidad(productoSeleccionado)}</span>
             ) : null}
           </div>
           {esPlataforma(productoSeleccionado) && productoSeleccionado.condiciones ? (

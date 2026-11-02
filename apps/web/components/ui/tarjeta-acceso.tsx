@@ -12,6 +12,7 @@ function TarjetaAcceso({
   titulo,
   descripcion,
   tono = "secundario",
+  badge,
   className,
 }: {
   href: string;
@@ -19,6 +20,8 @@ function TarjetaAcceso({
   titulo: string;
   descripcion: string;
   tono?: "secundario" | "primario";
+  /** Contador opcional (p. ej. cuentas pendientes) junto al chevron. */
+  badge?: number;
   className?: string;
 }) {
   return (
@@ -41,6 +44,11 @@ function TarjetaAcceso({
         <span className="titulo-tarjeta block text-ink">{titulo}</span>
         <span className="cuerpo block text-ink-muted">{descripcion}</span>
       </span>
+      {badge && badge > 0 ? (
+        <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-aviso/15 px-1.5 text-xs font-semibold text-aviso">
+          {badge}
+        </span>
+      ) : null}
       <ChevronRight className="size-5 shrink-0 text-ink-muted transition-transform group-hover:translate-x-0.5" />
     </Link>
   );
