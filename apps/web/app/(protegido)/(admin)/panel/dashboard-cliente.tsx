@@ -160,7 +160,7 @@ export default function DashboardClientePanel() {
         </Tarjeta>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <TarjetaAcceso href="/vender" icono={ShoppingCart} titulo="Vender" descripcion="Registrar una venta" tono="primario" />
         <TarjetaAcceso href="/panel/cuentas" icono={MonitorPlay} titulo="Cuentas" descripcion="Gestionar cuentas e inventario" />
         <TarjetaAcceso

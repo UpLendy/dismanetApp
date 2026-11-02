@@ -13,18 +13,34 @@ import { MenuUsuario } from "@/components/navegacion/menu-usuario";
 import { SaldoBarraSuperior } from "@/components/navegacion/saldo-barra";
 import { cn } from "@/lib/utils";
 
-function itemActivo(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(`${href}/`);
+// Un item coincide si su href es el pathname o un prefijo de ruta suyo. Entre
+// los que coinciden, gana el href más largo (la coincidencia más
+// específica): así /panel/cuentas/por-reiniciar no deja encendido también
+// /panel/cuentas, sin un caso especial por ruta — cualquier anidamiento
+// futuro queda resuelto igual.
+function hrefsActivos(pathname: string, hrefs: string[]): Set<string> {
+  const coinciden = hrefs.filter((href) => pathname === href || pathname.startsWith(`${href}/`));
+  if (coinciden.length === 0) return new Set();
+  const masLargo = Math.max(...coinciden.map((href) => href.length));
+  return new Set(coinciden.filter((href) => href.length === masLargo));
 }
 
-function NavGrupo({ grupo, pathname, onNavegar }: { grupo: GrupoNav; pathname: string; onNavegar: () => void }) {
+function NavGrupo({
+  grupo,
+  activos,
+  onNavegar,
+}: {
+  grupo: GrupoNav;
+  activos: Set<string>;
+  onNavegar: () => void;
+}) {
   return (
     <div className="space-y-1">
       {grupo.titulo ? (
         <p className="px-3 pb-1 text-[11px] font-semibold tracking-wide text-ink-muted uppercase">{grupo.titulo}</p>
       ) : null}
       {grupo.items.map((item) => {
-        const activo = itemActivo(pathname, item.href);
+        const activo = activos.has(item.href);
         const Icono = item.icono;
         return (
           <Link
@@ -60,6 +76,7 @@ export function AppShell({
   const [abierto, setAbierto] = useState(false);
   const pathname = usePathname();
   const grupos = gruposParaRol(usuario.rol);
+  const activos = hrefsActivos(pathname, grupos.flatMap((grupo) => grupo.items.map((item) => item.href)));
   const cerrarDrawer = () => setAbierto(false);
 
   return (
@@ -95,7 +112,7 @@ export function AppShell({
         </div>
         <nav className="flex-1 space-y-5 overflow-y-auto p-3">
           {grupos.map((grupo, i) => (
-            <NavGrupo key={grupo.titulo ?? `grupo-${i}`} grupo={grupo} pathname={pathname} onNavegar={cerrarDrawer} />
+            <NavGrupo key={grupo.titulo ?? `grupo-${i}`} grupo={grupo} activos={activos} onNavegar={cerrarDrawer} />
           ))}
         </nav>
         <div className="border-t border-borde p-3">

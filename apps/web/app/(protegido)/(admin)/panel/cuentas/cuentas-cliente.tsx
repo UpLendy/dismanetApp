@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { Plus, Ban, CheckCircle2, ChevronRight, MonitorPlay } from "lucide-react";
+import { Plus, Ban, CheckCircle2, ChevronRight, MonitorPlay, RotateCcw } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { satisfaceRol, type Rol } from "@/lib/rol";
@@ -82,6 +82,7 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
   const [cargandoLista, setCargandoLista] = useState(true);
   const [errorLista, setErrorLista] = useState<string | null>(null);
   const [pinInconsistente, setPinInconsistente] = useState<CuentaPinInconsistente[]>([]);
+  const [cuentasPorReiniciar, setCuentasPorReiniciar] = useState(0);
 
   const [filtroPlataforma, setFiltroPlataforma] = useState("");
   const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>("todas");
@@ -165,6 +166,15 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
     });
   }, [puedeAdministrar]);
 
+  // F4.11 — solo el contador para el enlace de la cabecera; el ADMIN entra
+  // al detalle real en /panel/cuentas/por-reiniciar.
+  useEffect(() => {
+    if (!puedeAdministrar) return;
+    api.cuentas["por-reiniciar"].get().then(({ data }) => {
+      if (data) setCuentasPorReiniciar(data.cuentas.length);
+    });
+  }, [puedeAdministrar]);
+
   function abrirCrear() {
     setPlataformaId("");
     setCorreo("");
@@ -238,10 +248,25 @@ export default function CuentasCliente({ rol }: { rol: Rol }) {
               : "Crea cuentas de streaming para tu empresa. Al crear una cuenta se generan automáticamente sus pantallas según la plantilla de la plataforma. Ver, editar y desactivar el inventario completo lo hace tu administrador."}
           </p>
         </div>
-        <Boton variante="principal" onClick={abrirCrear}>
-          <Plus />
-          Nueva cuenta
-        </Boton>
+        <div className="flex items-center gap-2">
+          {puedeAdministrar ? (
+            <Boton variante="contorno" asChild>
+              <Link href="/panel/cuentas/por-reiniciar">
+                <RotateCcw />
+                Cuentas por reiniciar
+                {cuentasPorReiniciar > 0 ? (
+                  <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-aviso/15 px-1.5 text-xs font-semibold text-aviso">
+                    {cuentasPorReiniciar}
+                  </span>
+                ) : null}
+              </Link>
+            </Boton>
+          ) : null}
+          <Boton variante="principal" onClick={abrirCrear}>
+            <Plus />
+            Nueva cuenta
+          </Boton>
+        </div>
       </div>
 
       {puedeAdministrar ? (
