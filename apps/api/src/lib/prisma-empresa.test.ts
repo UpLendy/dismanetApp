@@ -25,6 +25,7 @@ interface FixtureEmpresa {
   duracionId: string;
   duracionRealId: string;
   tipoClienteId: string;
+  cargoId: string;
   paqueteId: string;
   paquetePlataformaId: string;
   paqueteDuracionPlataformaId: string;
@@ -85,6 +86,10 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
 
   const tipoCliente = await prismaRaw.tipoCliente.create({
     data: { empresaId: empresa.id, nombre: `Tipo cliente ${nombre}` },
+  });
+
+  const cargo = await prismaRaw.cargo.create({
+    data: { empresaId: empresa.id, nombre: `Cargo ${nombre}` },
   });
 
   const paquete = await prismaRaw.paquete.create({
@@ -245,6 +250,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     duracionId: duracionVendida.id,
     duracionRealId: duracionReal.id,
     tipoClienteId: tipoCliente.id,
+    cargoId: cargo.id,
     paqueteId: paquete.id,
     paquetePlataformaId: paquetePlataforma.id,
     paqueteDuracionPlataformaId: paqueteDuracionPlataforma.id,
@@ -281,6 +287,7 @@ async function borrarEmpresaCompleta(empresaId: string) {
   await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
   await prismaRaw.paquete.deleteMany({ where: { empresaId } });
   await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
+  await prismaRaw.cargo.deleteMany({ where: { empresaId } });
   await prismaRaw.duracion.deleteMany({ where: { empresaId } });
   await prismaRaw.plataformaPantalla.deleteMany({ where: { empresaId } });
   await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
@@ -302,8 +309,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 18 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(18);
+  it("cubre los 19 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(19);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -311,6 +318,9 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         "PlataformaPantalla",
         "Duracion",
         "TipoCliente",
+        // F6.1 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "Cargo",
         "Paquete",
         "PaquetePlataforma",
         "PaqueteDuracionPlataforma",

@@ -62,6 +62,7 @@ model Empresa {
   plataformas                Plataforma[]
   duraciones                 Duracion[]
   tiposCliente               TipoCliente[]
+  cargos                     Cargo[]
   paquetes                   Paquete[]
   paquetePlataformas         PaquetePlataforma[]
   paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
@@ -109,7 +110,12 @@ model Usuario {
   /// poder auditar sin recalcular (ver MovimientoSaldo.saldoResultante).
   saldo    Decimal @default(0) @db.Decimal(14, 2)
 
+  /// El oficio, no el permiso (ver Cargo). Nullable: los usuarios ya
+  /// existentes no tienen uno y eso es válido.
+  cargoId String?
+
   empresa Empresa? @relation("UsuariosDeEmpresa", fields: [empresaId], references: [id])
+  cargo   Cargo?   @relation(fields: [cargoId], references: [id])
 
   empresasCreadas Empresa[] @relation("EmpresasCreadas")
 
@@ -221,6 +227,23 @@ model TipoCliente {
 
   precios Precio[]
   ventas  Venta[]
+
+  @@index([empresaId])
+}
+
+/// El oficio (Gerencia, Coordinación, Soporte técnico...), no la escala de
+/// permisos: eso es Rol (ver CLAUDE.md, "la decisión que define esta
+/// entrega"). Un Cargo no ordena nada ni concede nada por sí mismo.
+model Cargo {
+  id        String   @id @default(cuid())
+  empresaId String
+  nombre    String
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  usuarios Usuario[]
 
   @@index([empresaId])
 }

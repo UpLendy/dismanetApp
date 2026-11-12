@@ -7,6 +7,7 @@ import { usuarios } from "./routes/usuarios.ts";
 import { plataformas } from "./routes/plataformas.ts";
 import { duraciones } from "./routes/duraciones.ts";
 import { tiposCliente } from "./routes/tipos-cliente.ts";
+import { cargos } from "./routes/cargos.ts";
 import { paquetes } from "./routes/paquetes.ts";
 import { precios } from "./routes/precios.ts";
 import { cuentas } from "./routes/cuentas.ts";
@@ -41,6 +42,7 @@ const app = new Elysia()
   .use(plataformas)
   .use(duraciones)
   .use(tiposCliente)
+  .use(cargos)
   .use(paquetes)
   .use(precios)
   .use(cuentas)

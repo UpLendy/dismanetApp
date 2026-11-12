@@ -12,6 +12,7 @@ import {
 import { requiereRol } from "../plugins/guardas.ts";
 import { PLANTILLA_PAQUETE_POR_DEFECTO, PLANTILLA_UNIDAD_POR_DEFECTO } from "../lib/plantillas-default.ts";
 import { TIPOS_CLIENTE_POR_DEFECTO } from "../lib/tipos-cliente-default.ts";
+import { CARGOS_POR_DEFECTO } from "../lib/cargos-default.ts";
 import { diagnosticoDeEmpresa, buscarCuentasConPinInconsistente } from "../lib/diagnostico-empresa.ts";
 
 const esquemaDiagnostico = t.Object({
@@ -130,6 +131,14 @@ export const empresas = new Elysia({ prefix: "/empresas" })
           for (const nombre of TIPOS_CLIENTE_POR_DEFECTO) {
             await clienteEmpresa.tipoCliente.create({
               data: datosSinEmpresa<Prisma.TipoClienteUncheckedCreateInput>({ nombre }),
+            });
+          }
+
+          // Cargos por defecto (F6.1): el oficio, no el Rol — no conceden
+          // ningún permiso. El admin los renombra o desactiva después.
+          for (const nombre of CARGOS_POR_DEFECTO) {
+            await clienteEmpresa.cargo.create({
+              data: datosSinEmpresa<Prisma.CargoUncheckedCreateInput>({ nombre }),
             });
           }
 

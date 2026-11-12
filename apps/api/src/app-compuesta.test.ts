@@ -11,6 +11,7 @@ import { usuarios } from "./routes/usuarios.ts";
 import { plataformas } from "./routes/plataformas.ts";
 import { duraciones } from "./routes/duraciones.ts";
 import { tiposCliente } from "./routes/tipos-cliente.ts";
+import { cargos } from "./routes/cargos.ts";
 import { paquetes } from "./routes/paquetes.ts";
 import { precios } from "./routes/precios.ts";
 import { cuentas } from "./routes/cuentas.ts";
@@ -40,6 +41,7 @@ const app = new Elysia()
   .use(plataformas)
   .use(duraciones)
   .use(tiposCliente)
+  .use(cargos)
   .use(paquetes)
   .use(precios)
   .use(cuentas)
@@ -191,10 +193,20 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     );
   }
 
-  it("un ADMIN puede usar /usuarios, /plataformas, /duraciones, /tipos-cliente y /paquetes aunque /empresas también esté montado", async () => {
-    for (const ruta of ["/usuarios", "/plataformas", "/duraciones", "/tipos-cliente", "/paquetes"]) {
+  it("un ADMIN puede usar /usuarios, /plataformas, /duraciones, /tipos-cliente, /cargos y /paquetes aunque /empresas también esté montado", async () => {
+    for (const ruta of ["/usuarios", "/plataformas", "/duraciones", "/tipos-cliente", "/cargos", "/paquetes"]) {
       const respuesta = await get(ruta);
       expect(respuesta.status).toBe(200);
+    }
+  });
+
+  // F6.1: /cargos es ADMIN-only, igual que el resto del catálogo — esta
+  // guarda tiene que llegar hasta aquí sin filtrarse a otros routers
+  // montados después (ver CLAUDE.md, "scope de las guardas de Elysia").
+  it("EMPLEADO y VENDEDOR reciben 403 en todas las rutas de /cargos", async () => {
+    for (const cookie of [cookieEmpleado, cookieVendedor]) {
+      expect((await get("/cargos", cookie)).status).toBe(403);
+      expect((await post("/cargos", { nombre: "Cargo de prueba" }, cookie)).status).toBe(403);
     }
   });
 
