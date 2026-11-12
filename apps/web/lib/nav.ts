@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw, Briefcase } from "lucide-react";
+import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, CalendarDays, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw, Briefcase } from "lucide-react";
 import type { Rol } from "@/lib/rol";
 
 export interface ItemNav {
@@ -17,11 +17,12 @@ export interface GrupoNav {
 
 const RANGO: Record<Rol, number> = { VENDEDOR: 0, EMPLEADO: 1, ADMIN: 2, SUPER_ADMIN: 3 };
 
-// Agrupación exacta de DISENO.md §3. El primer grupo no tiene encabezado y
-// es lo único que un VENDEDOR ve — los demás grupos se filtran por completo,
-// nunca se muestran deshabilitados. Un EMPLEADO ve además "Cuentas" (solo
-// el botón de crear dentro de esa pantalla, ver cuentas/page.tsx), porque
-// crear cuentas es parte de su trabajo diario.
+// Agrupación exacta de DISENO.md §3. El primer grupo no tiene encabezado;
+// los demás grupos se filtran por completo, nunca se muestran deshabilitados.
+// Un EMPLEADO ve además "Cuentas" (solo el botón de crear dentro de esa
+// pantalla, ver cuentas/page.tsx), porque crear cuentas es parte de su
+// trabajo diario. F6.2: "Calendario" va en OPERACIÓN con rolMinimo VENDEDOR
+// a propósito — un VENDEDOR también ve ese grupo, pero solo ese ítem.
 const GRUPOS: GrupoNav[] = [
   {
     titulo: null,
@@ -34,6 +35,7 @@ const GRUPOS: GrupoNav[] = [
   {
     titulo: "OPERACIÓN",
     items: [
+      { etiqueta: "Calendario", href: "/calendario", icono: CalendarDays, rolMinimo: "VENDEDOR" },
       { etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "EMPLEADO" },
       // rolMinimo en ADMIN a propósito: GET /cuentas/por-reiniciar exige
       // ADMIN (routes/cuentas.ts:342). Si ese endpoint se abre a EMPLEADO,

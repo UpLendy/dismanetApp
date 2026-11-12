@@ -29,20 +29,28 @@ const esquemaUsuario = t.Object({
   usaSaldo: t.Boolean(),
   saldo: t.String(),
   cargo: esquemaCargoAsignado,
+  // F6.2: derivado (existe un turno suyo con inicio <= ahora < fin), nunca
+  // una columna de la base — ver lib/turnos.ts. Opcional porque solo
+  // GET /usuarios lo calcula; las demás rutas que devuelven esquemaUsuario
+  // operan sobre un solo registro y no necesitan el estado "ahora mismo".
+  enTurno: t.Optional(t.Boolean()),
 });
 
 // usaSaldo en la respuesta se deriva del rol, nunca de la columna Usuario.usaSaldo
 // (que ya no se lee en código): el saldo es exclusivo de VENDEDOR desde que
 // EMPLEADO existe como rol separado.
-const respuestaUsuario = (usuario: {
-  id: string;
-  nombre: string;
-  email: string;
-  rol: Rol;
-  activo: boolean;
-  saldo: Prisma.Decimal;
-  cargo: { id: string; nombre: string } | null;
-}) => ({
+const respuestaUsuario = (
+  usuario: {
+    id: string;
+    nombre: string;
+    email: string;
+    rol: Rol;
+    activo: boolean;
+    saldo: Prisma.Decimal;
+    cargo: { id: string; nombre: string } | null;
+  },
+  enTurno?: boolean,
+) => ({
   id: usuario.id,
   nombre: usuario.nombre,
   email: usuario.email,
@@ -51,6 +59,7 @@ const respuestaUsuario = (usuario: {
   usaSaldo: usuario.rol === Rol.VENDEDOR,
   saldo: usuario.saldo.toString(),
   cargo: usuario.cargo,
+  ...(enTurno !== undefined ? { enTurno } : {}),
 });
 
 const SELECT_CARGO = { cargo: { select: { id: true, nombre: true } } } as const;
@@ -133,7 +142,18 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
     async ({ contexto }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
       const filas = await cliente.usuario.findMany({ orderBy: { createdAt: "asc" }, include: SELECT_CARGO });
-      return { usuarios: filas.map(respuestaUsuario) };
+
+      // F6.2, Parte 3: "está de turno ahora" no se guarda, se deriva — un
+      // turno suyo con inicio <= ahora < fin. Una sola consulta para todos
+      // los usuarios de la página, no una por fila.
+      const ahora = new Date();
+      const turnosActivos = await cliente.turno.findMany({
+        where: { usuarioId: { in: filas.map((f) => f.id) }, inicio: { lte: ahora }, fin: { gt: ahora } },
+        select: { usuarioId: true },
+      });
+      const idsEnTurno = new Set(turnosActivos.map((t) => t.usuarioId));
+
+      return { usuarios: filas.map((f) => respuestaUsuario(f, idsEnTurno.has(f.id))) };
     },
     { response: { 200: t.Object({ usuarios: t.Array(esquemaUsuario) }) } },
   )

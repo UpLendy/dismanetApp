@@ -77,6 +77,8 @@ model Empresa {
   movimientoSaldos           MovimientoSaldo[]
   garantias                  Garantia[]
   reiniciosCuenta            ReinicioCuenta[]
+  turnos                     Turno[]
+  festivos                   Festivo[]
 
   @@unique([prefijoCodigo])
 }
@@ -125,6 +127,7 @@ model Usuario {
   movimientosSaldoCreados MovimientoSaldo[] @relation("MovimientoSaldoCreadoPor")
   garantiasCreadas        Garantia[]        @relation("GarantiaCreadaPor")
   reiniciosCuenta         ReinicioCuenta[]  @relation("ReinicioCuentaUsuario")
+  turnos                  Turno[]
 
   @@index([empresaId])
 }
@@ -670,4 +673,52 @@ model MovimientoSaldo {
   @@unique([empresaId, ventaId, tipo])
   @@index([empresaId])
   @@index([usuarioId])
+}
+
+// ---------------------------------------------------------------------------
+// Calendario laboral (F6.2)
+// ---------------------------------------------------------------------------
+
+/// `inicio`/`fin` son instantes absolutos (no fecha + hora): un turno de
+/// 22:00 a 06:00 cruza la medianoche y su duración es una resta simple, sin
+/// caso especial nocturno. El día al que pertenece el turno es la fecha en
+/// Bogotá de `inicio` (ver lib/periodos.ts, nunca aritmética de zona horaria
+/// nueva). Sin solapamiento para el mismo usuario (lib/turnos.ts): esas horas
+/// son el denominador del reparto de comisiones, y contarlas dos veces es un
+/// error de plata. DELETE sí borra de verdad (routes/turnos.ts): un turno mal
+/// digitado es error de captura, no historia del negocio — revisar esta
+/// decisión el día que existan comisiones liquidadas sobre un turno.
+model Turno {
+  id        String   @id @default(cuid())
+  empresaId String
+  usuarioId String
+  inicio    DateTime
+  fin       DateTime
+  notas     String?
+  createdAt DateTime @default(now())
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@index([empresaId, usuarioId])
+  @@index([empresaId, inicio])
+}
+
+/// Festivos colombianos, por empresa (R1) aunque sean nacionales: son ~18
+/// filas por año, y así cada empresa corrige los suyos sin tocar a las
+/// otras. `fecha` es medianoche Bogotá del día festivo (mismo instante que
+/// devuelve inicioDiaBogota para ese día). `generado: false` marca una fila
+/// creada o corregida a mano por un ADMIN — POST /festivos/generar nunca la
+/// sobrescribe (ver lib/festivos.ts).
+model Festivo {
+  id        String   @id @default(cuid())
+  empresaId String
+  fecha     DateTime
+  nombre    String
+  generado  Boolean  @default(true)
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  @@unique([empresaId, fecha])
+  @@index([empresaId])
 }

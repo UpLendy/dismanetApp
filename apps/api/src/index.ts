@@ -16,6 +16,8 @@ import { ventas } from "./routes/ventas.ts";
 import { garantias } from "./routes/garantias.ts";
 import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
+import { turnos } from "./routes/turnos.ts";
+import { festivos } from "./routes/festivos.ts";
 import { manejadorErrores } from "./plugins/errores.ts";
 import { validarOrigen } from "./plugins/origen.ts";
 
@@ -50,7 +52,9 @@ const app = new Elysia()
   .use(ventas)
   .use(garantias)
   .use(plantillas)
-  .use(perfil);
+  .use(perfil)
+  .use(turnos)
+  .use(festivos);
 
 export type App = typeof app;
 

@@ -39,6 +39,8 @@ interface FixtureEmpresa {
   movimientoSaldoId: string;
   garantiaId: string;
   reinicioCuentaId: string;
+  turnoId: string;
+  festivoId: string;
 }
 
 // Nombre de la propiedad del cliente de Prisma para un modelo del esquema:
@@ -242,6 +244,24 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  const turno = await prismaRaw.turno.create({
+    data: {
+      empresaId: empresa.id,
+      usuarioId: usuario.id,
+      inicio: new Date(Date.now() - 60 * 60 * 1000),
+      fin: new Date(Date.now() + 60 * 60 * 1000),
+    },
+  });
+
+  // Fecha única por empresa (prefijo) para no chocar con @@unique([empresaId, fecha]).
+  const festivo = await prismaRaw.festivo.create({
+    data: {
+      empresaId: empresa.id,
+      fecha: new Date(`2099-01-01T05:00:00.000Z`),
+      nombre: `Festivo de prueba ${prefijo}`,
+    },
+  });
+
   return {
     empresaId: empresa.id,
     usuarioId: usuario.id,
@@ -264,6 +284,8 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     movimientoSaldoId: movimientoSaldo.id,
     garantiaId: garantia.id,
     reinicioCuentaId: reinicioCuenta.id,
+    turnoId: turno.id,
+    festivoId: festivo.id,
   };
 }
 
@@ -291,7 +313,10 @@ async function borrarEmpresaCompleta(empresaId: string) {
   await prismaRaw.duracion.deleteMany({ where: { empresaId } });
   await prismaRaw.plataformaPantalla.deleteMany({ where: { empresaId } });
   await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
+  // Turno referencia Usuario (requerido, sin onDelete): antes del usuario.
+  await prismaRaw.turno.deleteMany({ where: { empresaId } });
   await prismaRaw.usuario.deleteMany({ where: { empresaId } });
+  await prismaRaw.festivo.deleteMany({ where: { empresaId } });
   await prismaRaw.empresa.delete({ where: { id: empresaId } });
 }
 
@@ -309,8 +334,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 19 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(19);
+  it("cubre los 21 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(21);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -336,6 +361,10 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         // F4.11 — cubierto automáticamente por el escaneo del esquema (tiene
         // empresaId), sin cambiar prisma-empresa.ts.
         "ReinicioCuenta",
+        // F6.2 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "Turno",
+        "Festivo",
       ].sort(),
     );
   });

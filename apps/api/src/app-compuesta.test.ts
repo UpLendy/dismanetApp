@@ -20,6 +20,8 @@ import { ventas } from "./routes/ventas.ts";
 import { garantias } from "./routes/garantias.ts";
 import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
+import { turnos } from "./routes/turnos.ts";
+import { festivos } from "./routes/festivos.ts";
 
 /** Forma de error del API: `{ error: { codigo, mensaje } }` (CLAUDE.md). */
 type RespuestaError = { error: { codigo: string; mensaje: string } };
@@ -49,7 +51,9 @@ const app = new Elysia()
   .use(ventas)
   .use(garantias)
   .use(plantillas)
-  .use(perfil);
+  .use(perfil)
+  .use(turnos)
+  .use(festivos);
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -576,6 +580,9 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       "/garantias/catalogo-externa",
       "/garantias/costo-externo?plataformaId=cualquier-id&duracionId=cualquier-id",
       "/plataformas/cualquier-id/pantallas",
+      // F6.2 — mismo escalón base que /cuentas y /disponibilidad.
+      "/turnos?desde=2026-01-01&hasta=2026-01-07",
+      "/festivos?anio=2026",
     ]) {
       const respuesta = await sinCookie(ruta);
       expect(respuesta.status).toBe(403);
@@ -649,5 +656,39 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     // Misma cookie de antes: si el rol viniera del JWT, esto seguiría en 403.
     const despues = await get("/garantias/pantallas-vendidas", cookie);
     expect(despues.status).toBe(200);
+  });
+
+  // F6.2 — /turnos y /festivos son routers nuevos, montados al final de la
+  // cadena: esta prueba confirma que su guarda base (VENDEDOR en adelante)
+  // llega hasta aquí sin que nada de lo montado antes la contamine, y que
+  // escala a ADMIN exactamente donde el router lo hace (misma mecánica que
+  // /cuentas y /disponibilidad arriba).
+  it("un ADMIN puede usar /turnos y /festivos aunque el resto de la app compuesta también esté montado", async () => {
+    const respuestaTurnos = await get("/turnos?desde=2026-01-01&hasta=2026-01-07");
+    expect(respuestaTurnos.status).toBe(200);
+    const respuestaFestivos = await get("/festivos?anio=2026");
+    expect(respuestaFestivos.status).toBe(200);
+  });
+
+  it("un VENDEDOR y un EMPLEADO pueden listar /turnos y /festivos (forzados a sus propios turnos), pero reciben 403 en las rutas de administración de /turnos y /festivos", async () => {
+    for (const cookie of [cookieVendedor, cookieEmpleado]) {
+      const listadoTurnos = await get("/turnos?desde=2026-01-01&hasta=2026-01-07", cookie);
+      expect(listadoTurnos.status).toBe(200);
+      const listadoFestivos = await get("/festivos?anio=2026", cookie);
+      expect(listadoFestivos.status).toBe(200);
+
+      expect(
+        (
+          await post(
+            "/turnos",
+            { usuarioId: vendedorId, inicio: "2026-01-05T08:00:00.000Z", fin: "2026-01-05T12:00:00.000Z" },
+            cookie,
+          )
+        ).status,
+      ).toBe(403);
+      expect((await get("/turnos/horas?desde=2026-01-01&hasta=2026-01-07", cookie)).status).toBe(403);
+      expect((await post("/festivos/generar", { anio: 2026 }, cookie)).status).toBe(403);
+      expect((await post("/festivos", { fecha: "2026-01-02", nombre: "Festivo de prueba" }, cookie)).status).toBe(403);
+    }
   });
 });

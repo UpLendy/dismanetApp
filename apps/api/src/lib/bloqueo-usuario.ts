@@ -62,3 +62,27 @@ export async function bloquearUsuarioParaVenta(
   `);
   return filas[0] ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Calendario (F6.2) — mismo mecanismo, otro consumidor: bloquea la fila de
+// Usuario antes de comprobar solapamiento de Turno y crear uno nuevo. Sin
+// esto, dos peticiones simultáneas para el mismo usuario pueden leer "libre"
+// cada una antes de que la otra inserte, y terminar con dos turnos que se
+// pisan — exactamente lo que lib/turnos.ts existe para impedir, porque esas
+// horas son el denominador del reparto de comisiones. Devuelve solo si la
+// fila existe (id Y empresaId, mismo motivo que arriba): no hace falta ni
+// rol ni saldo aquí, solo el bloqueo.
+export async function bloquearUsuarioParaTurno(
+  tx: ClienteTx,
+  empresaId: string,
+  usuarioId: string,
+): Promise<{ id: string } | null> {
+  const filas = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+    SELECT id
+    FROM "Usuario"
+    WHERE id = ${usuarioId}
+      AND "empresaId" = ${empresaId}
+    FOR UPDATE
+  `);
+  return filas[0] ?? null;
+}
