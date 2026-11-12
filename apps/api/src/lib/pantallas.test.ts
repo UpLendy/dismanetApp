@@ -5,7 +5,123 @@ import { randomUUID } from "node:crypto";
 // paquetes.test.ts.
 import { prismaRaw } from "./prisma.ts";
 import { prismaParaEmpresa } from "./prisma-empresa.ts";
-import { plataformasDisponibles } from "./pantallas.ts";
+import { plataformasDisponibles, estadoDesde, contarPantallasPorPlataforma } from "./pantallas.ts";
+
+// ---------------------------------------------------------------------------
+// F4.12 — estadoDesde es el único hogar de R5 en TypeScript, pura y sin base
+// de datos: las cuatro filas de la tabla de derivación (CLAUDE.md R5 /
+// PROMPT-F4.12-Y-F4.13-RENDIMIENTO.md), probadas directamente contra la
+// función, sin pasar por fixtures de Prisma.
+// ---------------------------------------------------------------------------
+describe("estadoDesde (R5, función pura)", () => {
+  const ahora = new Date("2026-06-15T12:00:00Z");
+
+  it("ultimoVencimiento null ⇒ LIBRE (nunca vendida)", () => {
+    expect(estadoDesde(null, null, ahora)).toBe("LIBRE");
+    // liberadaEn no importa si nunca hubo un VentaDetalle.
+    expect(estadoDesde(new Date(ahora.getTime() - 1000), null, ahora)).toBe("LIBRE");
+  });
+
+  it("ultimoVencimiento > ahora ⇒ OCUPADA, sin importar liberadaEn", () => {
+    const futuro = new Date(ahora.getTime() + 1000);
+    expect(estadoDesde(null, futuro, ahora)).toBe("OCUPADA");
+    expect(estadoDesde(futuro, futuro, ahora)).toBe("OCUPADA");
+  });
+
+  it("ultimoVencimiento <= ahora y liberadaEn null ⇒ POR_REINICIAR (venció, nadie reinició la cuenta)", () => {
+    const vencida = new Date(ahora.getTime() - 1000);
+    expect(estadoDesde(null, vencida, ahora)).toBe("POR_REINICIAR");
+  });
+
+  it("ultimoVencimiento <= ahora y liberadaEn ANTERIOR al vencimiento ⇒ POR_REINICIAR (se revendió tras un reinicio y volvió a vencer, sin un segundo reinicio desde entonces)", () => {
+    const vencimiento = new Date(ahora.getTime() - 1000);
+    const liberadaAntes = new Date(vencimiento.getTime() - 5000);
+    expect(estadoDesde(liberadaAntes, vencimiento, ahora)).toBe("POR_REINICIAR");
+  });
+
+  it("ultimoVencimiento <= ahora y liberadaEn POSTERIOR al vencimiento ⇒ LIBRE (reinicio real)", () => {
+    const vencimiento = new Date(ahora.getTime() - 5000);
+    const liberadaDespues = new Date(vencimiento.getTime() + 1000);
+    expect(estadoDesde(liberadaDespues, vencimiento, ahora)).toBe("LIBRE");
+  });
+
+  it("liberadaEn exactamente igual al vencimiento ⇒ LIBRE (la comparación es estrictamente mayor, no ≥)", () => {
+    const vencimiento = new Date(ahora.getTime() - 1000);
+    expect(estadoDesde(vencimiento, vencimiento, ahora)).toBe("LIBRE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F4.12 — contarPantallasPorPlataforma reemplaza los 2N viajes a la base
+// (uno por plataforma) por dos consultas para TODAS las plataformas juntas.
+// La prueba de abajo usa varias plataformas a propósito: si alguien
+// reintrodujera un `await` dentro de un `map` sobre plataformas, el conteo
+// de consultas crecería con el número de plataformas y la prueba fallaría.
+// ---------------------------------------------------------------------------
+describe("contarPantallasPorPlataforma (F4.12) — dos consultas para todas las plataformas", () => {
+  let empresaId: string;
+  const plataformaIds: string[] = [];
+
+  beforeAll(async () => {
+    const empresa = await prismaRaw.empresa.create({
+      data: { nombre: "Empresa contar-por-plataforma (pantallas.test)", prefijoCodigo: "CPP" },
+    });
+    empresaId = empresa.id;
+
+    for (let i = 0; i < 4; i++) {
+      const plataforma = await prismaRaw.plataforma.create({
+        data: {
+          empresaId,
+          nombre: `Plataforma ${i} (pantallas.test contar-por-plataforma)`,
+          capacidadPantallas: 1,
+          usaPerfilPin: false,
+        },
+      });
+      plataformaIds.push(plataforma.id);
+      for (let j = 0; j < 3; j++) {
+        const cuenta = await prismaRaw.cuenta.create({
+          data: {
+            empresaId,
+            plataformaId: plataforma.id,
+            correo: `cpp-${i}-${j}@test.local`,
+            password: "cifrado",
+            capacidadPantallas: 1,
+          },
+        });
+        await prismaRaw.pantalla.create({ data: { empresaId, cuentaId: cuenta.id, numero: 1 } });
+      }
+    }
+  });
+
+  afterAll(async () => {
+    await prismaRaw.pantalla.deleteMany({ where: { empresaId } });
+    await prismaRaw.cuenta.deleteMany({ where: { empresaId } });
+    await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
+    await prismaRaw.empresa.delete({ where: { id: empresaId } });
+  });
+
+  it("hace exactamente dos consultas para las 4 plataformas juntas, y cuenta bien cada una", async () => {
+    let consultas = 0;
+    const clienteContado = prismaRaw.$extends({
+      query: {
+        $allModels: {
+          async $allOperations({ query, args }) {
+            consultas++;
+            return query(args);
+          },
+        },
+      },
+    });
+    const cliente = prismaParaEmpresa(empresaId, clienteContado as unknown as typeof prismaRaw);
+
+    const conteos = await contarPantallasPorPlataforma(cliente, plataformaIds);
+
+    expect(consultas).toBe(2);
+    for (const id of plataformaIds) {
+      expect(conteos.get(id)).toEqual({ libres: 3, porReiniciar: 0, ocupadas: 0 });
+    }
+  });
+});
 
 describe("plataformasDisponibles (entrega 8, modo UNIDAD) — precio activo + inventario libre (R5)", () => {
   let empresaId: string;

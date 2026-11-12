@@ -1,5 +1,5 @@
 import { Elysia, t } from "elysia";
-import { pantallasDisponibles } from "../lib/pantallas.ts";
+import { contarPantallasPorPlataforma } from "../lib/pantallas.ts";
 import { prismaParaEmpresa } from "../lib/prisma-empresa.ts";
 import { Rol } from "../generated/prisma/client.ts";
 import { requiereRol } from "../plugins/guardas.ts";
@@ -61,24 +61,26 @@ export const disponibilidad = new Elysia({ prefix: "/disponibilidad" })
         },
       });
 
-      const conteos = await Promise.all(
-        plataformas.map(async (plataforma) => {
-          const estados = await pantallasDisponibles(cliente, plataforma.id);
-          return {
-            plataformaId: plataforma.id,
-            nombre: plataforma.nombre,
-            usaPerfilPin: plataforma.usaPerfilPin,
-            usaCorreo: plataforma.usaCorreo,
-            usaUsuario: plataforma.usaUsuario,
-            usaCodigo: plataforma.usaCodigo,
-            usaEnlace: plataforma.usaEnlace,
-            capacidadPantallas: plataforma.capacidadPantallas,
-            libres: estados.filter((p) => p.libre).length,
-            porReiniciar: estados.filter((p) => p.estado === "POR_REINICIAR").length,
-            total: estados.length,
-          };
-        }),
+      const conteosPorPlataforma = await contarPantallasPorPlataforma(
+        cliente,
+        plataformas.map((p) => p.id),
       );
+      const conteos = plataformas.map((plataforma) => {
+        const conteo = conteosPorPlataforma.get(plataforma.id) ?? { libres: 0, porReiniciar: 0, ocupadas: 0 };
+        return {
+          plataformaId: plataforma.id,
+          nombre: plataforma.nombre,
+          usaPerfilPin: plataforma.usaPerfilPin,
+          usaCorreo: plataforma.usaCorreo,
+          usaUsuario: plataforma.usaUsuario,
+          usaCodigo: plataforma.usaCodigo,
+          usaEnlace: plataforma.usaEnlace,
+          capacidadPantallas: plataforma.capacidadPantallas,
+          libres: conteo.libres,
+          porReiniciar: conteo.porReiniciar,
+          total: conteo.libres + conteo.porReiniciar + conteo.ocupadas,
+        };
+      });
 
       return { disponibilidad: conteos };
     },

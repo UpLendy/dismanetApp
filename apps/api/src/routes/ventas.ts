@@ -106,6 +106,10 @@ const esquemaDetalleVenta = t.Object({
   fechaVencimiento: t.String(),
 });
 
+// F4.13 — mensajeGenerado (~800 caracteres de WhatsApp) NO va en el
+// listado: con miles de ventas es el grueso del peso de la respuesta y casi
+// nunca se usa (el vendedor copia el mensaje de UNA venta, no de todas).
+// Vive en su propia ruta, GET /ventas/:id/mensaje, más abajo.
 const camposComunesListado = {
   id: t.String(),
   codigoCompra: t.String(),
@@ -117,7 +121,6 @@ const camposComunesListado = {
   celularCliente: t.Union([t.String(), t.Null()]),
   fechaVenta: t.String(),
   fechaVencimientoMax: t.String(),
-  mensajeGenerado: t.String(),
   anulada: t.Boolean(),
   esPromocion: t.Boolean(),
   detalles: t.Array(esquemaDetalleVenta),
@@ -189,6 +192,42 @@ function whereDesdeFiltros(query: {
     ...(query.codigoCompra ? { codigoCompra: { contains: query.codigoCompra, mode: "insensitive" } } : {}),
     ...(query.celularCliente ? { celularCliente: { contains: query.celularCliente, mode: "insensitive" } } : {}),
   };
+}
+
+// F4.13 — paginación por cursor de /mias y /listado. fechaVenta NO es única
+// (dos ventas pueden caer en el mismo segundo): ordenar solo por fechaVenta
+// desc haría que el cursor salte o repita filas en ese empate. El segundo
+// criterio (id desc) desempata de forma determinista.
+const TAKE_POR_DEFECTO = 25;
+const TAKE_MAXIMO = 100;
+const ORDEN_LISTADO: Prisma.VentaOrderByWithRelationInput[] = [{ fechaVenta: "desc" }, { id: "desc" }];
+
+const paginacionListado = {
+  cursor: t.Optional(t.String()),
+  take: t.Optional(t.Numeric()),
+};
+
+const filtrosListadoPaginado = t.Object({ ...filtrosListado.properties, ...paginacionListado });
+
+function resolverTake(take?: number): number {
+  if (take === undefined || !Number.isFinite(take) || take < 1) return TAKE_POR_DEFECTO;
+  return Math.min(Math.trunc(take), TAKE_MAXIMO);
+}
+
+/** Los llamadores piden `take + 1` filas. Si llega una fila de más, existe
+ * una página siguiente y su cursor es el id de la última fila que SÍ se
+ * entrega — la fila extra nunca viaja en la respuesta. Sin este truco, una
+ * página exactamente llena (ni una fila de más) sería indistinguible de la
+ * última: ambas devuelven `take` filas. */
+function cortarPagina<T extends { id: string }>(
+  filas: T[],
+  take: number,
+): { pagina: T[]; siguienteCursor: string | null } {
+  if (filas.length > take) {
+    const pagina = filas.slice(0, take);
+    return { pagina, siguienteCursor: pagina[pagina.length - 1].id };
+  }
+  return { pagina: filas, siguienteCursor: null };
 }
 
 const esquemaTotalesPeriodo = t.Object({
@@ -595,13 +634,16 @@ export const ventas = new Elysia({ prefix: "/ventas" })
   // excluir después — no pueden "escaparse" por un cambio futuro al mapeo.
   .get(
     "/mias",
-    async ({ contexto }) => {
+    async ({ contexto, query }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-      const ventas = await cliente.venta.findMany({
+      const take = resolverTake(query.take);
+      const filas = await cliente.venta.findMany({
         // F4.3: una venta externa no es una venta del vendedor, es el
         // registro de una garantía — no pertenece a este listado.
         where: { vendedorId: contexto.usuarioId!, esExterna: false },
-        orderBy: { fechaVenta: "desc" },
+        orderBy: ORDEN_LISTADO,
+        take: take + 1,
+        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
         select: {
           id: true,
           codigoCompra: true,
@@ -613,7 +655,6 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           celularCliente: true,
           fechaVenta: true,
           fechaVencimientoMax: true,
-          mensajeGenerado: true,
           anulada: true,
           esPromocion: true,
           detalles: {
@@ -621,9 +662,10 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           },
         },
       });
+      const { pagina, siguienteCursor } = cortarPagina(filas, take);
 
       return {
-        ventas: ventas.map((venta) => ({
+        ventas: pagina.map((venta) => ({
           id: venta.id,
           codigoCompra: venta.codigoCompra,
           tipoVenta: venta.tipoVenta,
@@ -634,14 +676,46 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           celularCliente: venta.celularCliente,
           fechaVenta: venta.fechaVenta.toISOString(),
           fechaVencimientoMax: venta.fechaVencimientoMax.toISOString(),
-          mensajeGenerado: venta.mensajeGenerado,
           anulada: venta.anulada,
           esPromocion: venta.esPromocion,
           detalles: venta.detalles.map(esquemaDetalleVentaMap),
         })),
+        siguienteCursor,
       };
     },
-    { response: { 200: t.Object({ ventas: t.Array(esquemaVentaListadoVendedor) }) } },
+    {
+      query: t.Object(paginacionListado),
+      response: {
+        200: t.Object({ ventas: t.Array(esquemaVentaListadoVendedor), siguienteCursor: t.Union([t.String(), t.Null()]) }),
+      },
+    },
+  )
+
+  // F4.13 — el mensaje completo de WhatsApp vive aparte del listado (ver
+  // comentario en camposComunesListado). Mismos permisos que /mias y
+  // /listado: VENDEDOR solo el de una venta propia, ADMIN+ cualquiera de su
+  // empresa — R1 ya lo garantiza prismaParaEmpresa. Declarada después de
+  // las rutas estáticas del vendedor por legibilidad, y ANTES de la
+  // escalada a ADMIN de abajo: un VENDEDOR tiene que poder pedir esta ruta.
+  .get(
+    "/:id/mensaje",
+    async ({ params, contexto, set }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const esAdmin = contexto.rol === Rol.ADMIN || contexto.rol === Rol.SUPER_ADMIN;
+      const venta = await cliente.venta.findFirst({
+        where: { id: params.id, ...(esAdmin ? {} : { vendedorId: contexto.usuarioId! }) },
+        select: { mensajeGenerado: true },
+      });
+      if (!venta) {
+        set.status = 404;
+        return { error: { codigo: "VENTA_NO_ENCONTRADA", mensaje: "La venta no existe." } };
+      }
+      return { mensajeGenerado: venta.mensajeGenerado };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      response: { 200: t.Object({ mensajeGenerado: t.String() }), 404: esquemaError },
+    },
   )
 
   // Todo lo demás (listado completo con cifras, totales, anular) es
@@ -654,10 +728,13 @@ export const ventas = new Elysia({ prefix: "/ventas" })
     async ({ contexto, query }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
       const where = whereDesdeFiltros(query);
+      const take = resolverTake(query.take);
 
-      const ventas = await cliente.venta.findMany({
+      const filas = await cliente.venta.findMany({
         where,
-        orderBy: { fechaVenta: "desc" },
+        orderBy: ORDEN_LISTADO,
+        take: take + 1,
+        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
         select: {
           id: true,
           codigoCompra: true,
@@ -671,7 +748,6 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           utilidad: true,
           fechaVenta: true,
           fechaVencimientoMax: true,
-          mensajeGenerado: true,
           anulada: true,
           anuladaEn: true,
           esPromocion: true,
@@ -682,9 +758,10 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           },
         },
       });
+      const { pagina, siguienteCursor } = cortarPagina(filas, take);
 
       return {
-        ventas: ventas.map((venta) => ({
+        ventas: pagina.map((venta) => ({
           id: venta.id,
           codigoCompra: venta.codigoCompra,
           tipoVenta: venta.tipoVenta,
@@ -697,7 +774,6 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           utilidad: venta.utilidad.toString(),
           fechaVenta: venta.fechaVenta.toISOString(),
           fechaVencimientoMax: venta.fechaVencimientoMax.toISOString(),
-          mensajeGenerado: venta.mensajeGenerado,
           anulada: venta.anulada,
           anuladaEn: venta.anuladaEn?.toISOString() ?? null,
           esPromocion: venta.esPromocion,
@@ -705,11 +781,14 @@ export const ventas = new Elysia({ prefix: "/ventas" })
           anuladaPor: venta.anuladaPor,
           detalles: venta.detalles.map(esquemaDetalleVentaMap),
         })),
+        siguienteCursor,
       };
     },
     {
-      query: filtrosListado,
-      response: { 200: t.Object({ ventas: t.Array(esquemaVentaListadoAdmin) }) },
+      query: filtrosListadoPaginado,
+      response: {
+        200: t.Object({ ventas: t.Array(esquemaVentaListadoAdmin), siguienteCursor: t.Union([t.String(), t.Null()]) }),
+      },
     },
   )
 
