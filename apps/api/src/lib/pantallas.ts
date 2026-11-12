@@ -49,6 +49,10 @@ export function pinesPorPerfil(
 export interface EstadoPantalla {
   id: string;
   cuentaId: string;
+  // F4.12 — necesario para agrupar por plataforma sin repetir la consulta
+  // (ver contarPantallasPorPlataforma, que agrupa sobre su propia consulta
+  // mínima, y la prueba de concordancia que cruza ambos caminos).
+  plataformaId: string;
   numero: number;
   perfil: string | null;
   activa: boolean;
@@ -80,18 +84,40 @@ export interface EstadoPantalla {
 }
 
 /**
- * R5 — una pantalla está retenida (OCUPADA o POR_REINICIAR) si existe un
- * VentaDetalle con venta no anulada y
- * fechaVencimiento > COALESCE(liberadaEn, -infinity). Dentro de "retenida",
- * OCUPADA es tener ≥1 VentaDetalle vigente ahora mismo; POR_REINICIAR es
- * estar retenida sin ninguno vigente — venció y nadie reinició la cuenta
- * (cambió la contraseña en el proveedor) desde entonces.
+ * R5, en una sola expresión sin ramas ocultas — el único hogar de la regla
+ * en TypeScript (ver CLAUDE.md R5 para la lista completa de sitios que
+ * deben coincidir, incluido el SQL crudo de bloqueo-pantallas.ts, que la
+ * reescribe a propósito porque Prisma no expresa FOR UPDATE SKIP LOCKED).
+ * Pura y sin base de datos: toda ruta de lectura que necesite el estado de
+ * una pantalla llama a esta función en vez de volver a escribir la
+ * condición.
  *
- * Esta regla NO vive en un solo lugar, aunque antes este comentario dijera
- * lo contrario — ver CLAUDE.md R5 para la lista completa de sitios que
- * deben coincidir: esta función, bloqueo-pantallas.ts (SQL crudo, para
- * asignar) y el conteo de diagnóstico, que delega en contarPantallasPorEstado
- * de aquí mismo en vez de mantener su propia consulta.
+ * | ultimoVencimiento | condición                                        | estado        |
+ * |---|---|---|
+ * | null               | —                                                 | LIBRE         |
+ * | > ahora             | —                                                 | OCUPADA       |
+ * | <= ahora            | liberadaEn === null o ultimoVencimiento > liberadaEn | POR_REINICIAR |
+ * | <= ahora            | resto                                            | LIBRE         |
+ */
+export function estadoDesde(
+  liberadaEn: Date | null,
+  ultimoVencimiento: Date | null,
+  ahora: Date,
+): "LIBRE" | "OCUPADA" | "POR_REINICIAR" {
+  if (ultimoVencimiento === null) return "LIBRE";
+  if (ultimoVencimiento > ahora) return "OCUPADA";
+  if (liberadaEn === null || ultimoVencimiento > liberadaEn) return "POR_REINICIAR";
+  return "LIBRE";
+}
+
+/**
+ * El detalle completo por pantalla (perfil, ocupadaHasta, ventaId,
+ * códigos de compra afectados) para el detalle de cuenta y el 409 de
+ * pantalla vendida — el único lugar que todavía necesita el `include`
+ * anidado de VentaDetalle. Cualquier sitio que solo necesite CONTEOS debe
+ * usar contarPantallasPorPlataforma/contarPantallasPorEstado en su lugar
+ * (F4.12): con miles de pantallas, el `include` + `groupBy` de aquí carga
+ * el inventario completo a memoria, dos veces.
  *
  * El `liberadaEn` de la pantalla no se puede comparar contra el máximo
  * vencimiento de sus VentaDetalle dentro de un solo `include` de Prisma (no
@@ -118,6 +144,7 @@ async function estadoDePantallas(
       perfil: true,
       activa: true,
       liberadaEn: true,
+      cuenta: { select: { plataformaId: true } },
       ventaDetalles: {
         where: { fechaVencimiento: { gt: ahora }, venta: { anulada: false } },
         select: { fechaVencimiento: true, ventaId: true, venta: { select: { codigoCompra: true } } },
@@ -139,12 +166,11 @@ async function estadoDePantallas(
     const ocupaciones = p.ventaDetalles;
     const masReciente = ocupaciones[0];
     const maxVencimiento = maxVencimientoPorPantalla.get(p.id) ?? null;
-    const retenida = maxVencimiento !== null && (p.liberadaEn === null || maxVencimiento > p.liberadaEn);
-    const estado: EstadoPantalla["estado"] =
-      ocupaciones.length > 0 ? "OCUPADA" : retenida ? "POR_REINICIAR" : "LIBRE";
+    const estado = estadoDesde(p.liberadaEn, maxVencimiento, ahora);
     return {
       id: p.id,
       cuentaId: p.cuentaId,
+      plataformaId: p.cuenta.plataformaId,
       numero: p.numero,
       perfil: p.perfil,
       activa: p.activa,
@@ -185,11 +211,57 @@ export async function contarPantallasPorEstado(cliente: ClienteEmpresa): Promise
 
 /**
  * Pantallas activas, de cuentas activas, de una plataforma — con su estado
- * de ocupación (R5). Úsala para cualquier cálculo de disponibilidad: el
- * conteo que ve VENDEDOR, paquetesDisponibles, etc.
+ * de ocupación (R5). Trae el detalle completo (perfil, ocupadaHasta,
+ * códigos de compra): úsala solo donde haga falta ESE detalle (confirmar un
+ * 409, el selector de pantalla puntual). Para contar libres/por-reiniciar
+ * de una o varias plataformas, usa contarPantallasPorPlataforma — hace dos
+ * consultas para todas las plataformas en vez de dos por cada una.
  */
 export async function pantallasDisponibles(cliente: ClienteEmpresa, plataformaId: string): Promise<EstadoPantalla[]> {
   return estadoDePantallas(cliente, { activa: true, cuenta: { activa: true, plataformaId } });
+}
+
+/**
+ * F4.12 — conteo de pantallas por plataforma (R5), sin el `include`
+ * anidado de VentaDetalle: dos consultas en total para TODAS las
+ * plataformas (o el subconjunto de `plataformaIds`), en vez de 2N
+ * recorriendo pantallasDisponibles una plataforma a la vez. Úsala en
+ * cualquier sitio que solo necesite CONTEOS — que son casi todos; el
+ * detalle completo (ocupadaHasta, códigos de compra) solo hace falta para
+ * el 409 de pantalla vendida y el detalle de cuenta, que siguen usando
+ * pantallasDisponibles/pantallasDeCuenta.
+ */
+export async function contarPantallasPorPlataforma(
+  cliente: ClienteEmpresa,
+  plataformaIds?: string[],
+): Promise<Map<string, ConteoPantallas>> {
+  const ahora = new Date();
+  const pantallas = await cliente.pantalla.findMany({
+    where: {
+      activa: true,
+      cuenta: { activa: true, ...(plataformaIds ? { plataformaId: { in: plataformaIds } } : {}) },
+    },
+    select: { id: true, liberadaEn: true, cuenta: { select: { plataformaId: true } } },
+  });
+  if (pantallas.length === 0) return new Map();
+
+  const maximos = await cliente.ventaDetalle.groupBy({
+    by: ["pantallaId"],
+    where: { pantallaId: { in: pantallas.map((p) => p.id) }, venta: { anulada: false } },
+    _max: { fechaVencimiento: true },
+  });
+  const maxVencimientoPorPantalla = new Map(maximos.map((m) => [m.pantallaId, m._max.fechaVencimiento]));
+
+  const conteos = new Map<string, ConteoPantallas>();
+  for (const p of pantallas) {
+    const estado = estadoDesde(p.liberadaEn, maxVencimientoPorPantalla.get(p.id) ?? null, ahora);
+    const actual = conteos.get(p.cuenta.plataformaId) ?? { libres: 0, porReiniciar: 0, ocupadas: 0 };
+    if (estado === "LIBRE") actual.libres++;
+    else if (estado === "POR_REINICIAR") actual.porReiniciar++;
+    else actual.ocupadas++;
+    conteos.set(p.cuenta.plataformaId, actual);
+  }
+  return conteos;
 }
 
 /**
@@ -246,18 +318,16 @@ export async function plataformasDisponibles(
   });
   const plataformasConPrecio = new Set(preciosActivos.map((p) => p.plataformaId));
 
-  const conDisponibilidad = await Promise.all(
-    plataformas
-      .filter((plataforma) => plataformasConPrecio.has(plataforma.id))
-      .map(async (plataforma) => {
-        const estados = await pantallasDisponibles(cliente, plataforma.id);
-        return {
-          ...plataforma,
-          pantallasLibres: estados.filter((e) => e.libre).length,
-          pantallasPorReiniciar: estados.filter((e) => e.estado === "POR_REINICIAR").length,
-        };
-      }),
-  );
+  const plataformasFiltradas = plataformas.filter((plataforma) => plataformasConPrecio.has(plataforma.id));
+  const conteosPorPlataforma = await contarPantallasPorPlataforma(cliente, plataformasFiltradas.map((p) => p.id));
+  const conDisponibilidad = plataformasFiltradas.map((plataforma) => {
+    const conteo = conteosPorPlataforma.get(plataforma.id) ?? { libres: 0, porReiniciar: 0, ocupadas: 0 };
+    return {
+      ...plataforma,
+      pantallasLibres: conteo.libres,
+      pantallasPorReiniciar: conteo.porReiniciar,
+    };
+  });
 
   // F4.11 — antes este filtro era `pantallasLibres > 0`: una plataforma con
   // todas sus pantallas POR_REINICIAR (0 libres) desaparecía sin dejar
@@ -288,12 +358,11 @@ export async function plataformasConInventario(cliente: ClienteEmpresa): Promise
     select: { id: true, nombre: true, condiciones: true },
   });
 
-  const conDisponibilidad = await Promise.all(
-    plataformas.map(async (plataforma) => {
-      const estados = await pantallasDisponibles(cliente, plataforma.id);
-      return { ...plataforma, pantallasLibres: estados.filter((e) => e.libre).length };
-    }),
-  );
+  const conteosPorPlataforma = await contarPantallasPorPlataforma(cliente, plataformas.map((p) => p.id));
+  const conDisponibilidad = plataformas.map((plataforma) => ({
+    ...plataforma,
+    pantallasLibres: conteosPorPlataforma.get(plataforma.id)?.libres ?? 0,
+  }));
 
   return conDisponibilidad.filter((plataforma) => plataforma.pantallasLibres > 0);
 }

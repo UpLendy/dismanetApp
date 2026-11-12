@@ -1,5 +1,5 @@
 import { Prisma, type UnidadDuracion } from "../generated/prisma/client.ts";
-import { pantallasDisponibles } from "./pantallas.ts";
+import { contarPantallasPorPlataforma } from "./pantallas.ts";
 
 // Prisma.TransactionClient (no PrismaClient completo): la venta rápida
 // (entrega 8) llama estas funciones DESDE DENTRO de su propia transacción —
@@ -117,13 +117,8 @@ export async function paquetesDisponibles(
 
   const plataformaIds = [...new Set(paquetes.flatMap((p) => p.paquetePlataformas.map((c) => c.plataformaId)))];
 
-  const conteos = await Promise.all(
-    plataformaIds.map(async (plataformaId) => {
-      const estados = await pantallasDisponibles(cliente, plataformaId);
-      return [plataformaId, estados.filter((p) => p.libre).length] as const;
-    }),
-  );
-  const libresPorPlataforma = new Map(conteos);
+  const conteosPorPlataforma = await contarPantallasPorPlataforma(cliente, plataformaIds);
+  const libresPorPlataforma = new Map(plataformaIds.map((id) => [id, conteosPorPlataforma.get(id)?.libres ?? 0]));
 
   return paquetes
     .filter((paquete) => paquetesConPrecio.has(paquete.id))

@@ -5,6 +5,7 @@ import argon2 from "argon2";
 // empresa autenticado — mismo patrón que ventas.test.ts.
 import { prismaRaw } from "../lib/prisma.ts";
 import { cifrar } from "../lib/cifrado.ts";
+import { Prisma } from "../generated/prisma/client.ts";
 import { auth } from "./auth.ts";
 import { ventas } from "./ventas.ts";
 import { garantias } from "./garantias.ts";
@@ -579,5 +580,239 @@ describe("F4.4 — filtrar /listado por plataforma encuentra ventas de 2+ renglo
     const codigos = cuerpo.ventas.map((v) => v.codigoCompra);
     expect(codigos).toContain(codigoVentaMulti);
     expect(codigos).toContain(codigoVentaUnica); // esa sí llevó Disney+
+  });
+});
+
+// F4.13 — paginación por cursor de /mias y /listado, más la ruta nueva
+// /:id/mensaje. Las ventas de esta fixture se crean directamente con
+// prismaRaw.venta.createMany (sin pasar por POST /ventas ni por pantallas
+// reales): lo único que importa aquí es el ORDEN y el CONTEO de filas, no
+// el camino de asignación de inventario, que ya tiene sus propias pruebas.
+describe("F4.13 — paginación por cursor en /mias y /listado, y GET /ventas/:id/mensaje", () => {
+  const TOTAL_VENDEDOR1 = 130;
+  const EMPATADAS = 10; // comparten exactamente el mismo fechaVenta
+  const TOTAL_VENDEDOR2 = 5;
+
+  let empresaId: string;
+  let cookieAdmin: string;
+  let plataformaId: string;
+  let duracionId: string;
+  let tipoClienteId: string;
+  let vendedor1Id: string;
+  let cookieVendedor1: string;
+  let cookieVendedor2: string;
+
+  function filaVenta(opciones: {
+    empresaId: string;
+    vendedorId: string;
+    codigoCompra: string;
+    fechaVenta: Date;
+    mensajeGenerado: string;
+  }): Prisma.VentaCreateManyInput {
+    return {
+      empresaId: opciones.empresaId,
+      vendedorId: opciones.vendedorId,
+      codigoCompra: opciones.codigoCompra,
+      tipoVenta: "UNIDAD",
+      plataformaId,
+      duracionId,
+      tipoClienteId,
+      nombreItem: "Netflix",
+      nombreDuracion: "30 días",
+      cantidadDuracion: 30,
+      unidadDuracion: "DIAS",
+      nombreTipoCliente: "Nuevo",
+      precioSugerido: "15000",
+      precioVenta: "15000",
+      costo: "8000",
+      utilidad: "7000",
+      fechaVencimientoMax: new Date(opciones.fechaVenta.getTime() + 30 * 24 * 60 * 60 * 1000),
+      mensajeGenerado: opciones.mensajeGenerado,
+      fechaVenta: opciones.fechaVenta,
+    };
+  }
+
+  beforeAll(async () => {
+    const empresa = await crearEmpresaLista("F41", "Empresa paginación (ventas-listado.test)", 1);
+    empresaId = empresa.empresaId;
+    cookieAdmin = empresa.cookieAdmin;
+    plataformaId = empresa.plataformaId;
+    duracionId = empresa.duracionId;
+    tipoClienteId = empresa.tipoClienteId;
+
+    const hash = await argon2.hash(CONTRASENA, { type: argon2.argon2id });
+    const vendedor1Email = `vendedor1-f413-${randomUUID()}@test.local`;
+    const vendedor1 = await prismaRaw.usuario.create({
+      data: { empresaId, email: vendedor1Email, passwordHash: hash, nombre: "Vendedor Uno", rol: "EMPLEADO" },
+    });
+    vendedor1Id = vendedor1.id;
+    cookieVendedor1 = await iniciarSesion(vendedor1Email);
+
+    const vendedor2Email = `vendedor2-f413-${randomUUID()}@test.local`;
+    const vendedor2 = await prismaRaw.usuario.create({
+      data: { empresaId, email: vendedor2Email, passwordHash: hash, nombre: "Vendedor Dos", rol: "EMPLEADO" },
+    });
+    cookieVendedor2 = await iniciarSesion(vendedor2Email);
+
+    const base = new Date("2026-01-01T12:00:00.000Z").getTime();
+    const filasVendedor1 = Array.from({ length: TOTAL_VENDEDOR1 }, (_, i) =>
+      filaVenta({
+        empresaId,
+        vendedorId: vendedor1Id,
+        codigoCompra: `F413-${i.toString().padStart(4, "0")}-${randomUUID()}`,
+        mensajeGenerado: `mensaje-vendedor1-${i}`,
+        // Las primeras EMPATADAS filas comparten el mismo instante: sin el
+        // id como segundo criterio de orden, el cursor las saltaría o las
+        // repetiría al pasar de una página a otra.
+        fechaVenta: new Date(i < EMPATADAS ? base : base - (i - EMPATADAS + 1) * 1000),
+      }),
+    );
+    const filasVendedor2 = Array.from({ length: TOTAL_VENDEDOR2 }, (_, i) =>
+      filaVenta({
+        empresaId,
+        vendedorId: vendedor2.id,
+        codigoCompra: `F413B-${i.toString().padStart(4, "0")}-${randomUUID()}`,
+        mensajeGenerado: `mensaje-vendedor2-${i}`,
+        fechaVenta: new Date(base - (TOTAL_VENDEDOR1 + i) * 1000),
+      }),
+    );
+    await prismaRaw.venta.createMany({ data: [...filasVendedor1, ...filasVendedor2] });
+  });
+
+  afterAll(async () => {
+    await borrarEmpresa(empresaId);
+  });
+
+  it("GET /mias sin parámetros trae 25 por defecto y señala que hay más", async () => {
+    const respuesta = await get("/ventas/mias", cookieVendedor1);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { ventas: unknown[]; siguienteCursor: string | null };
+    expect(cuerpo.ventas).toHaveLength(25);
+    expect(cuerpo.siguienteCursor).not.toBeNull();
+  });
+
+  it("take se limita a 100 aunque se pida más", async () => {
+    const respuesta = await get("/ventas/mias?take=1000", cookieVendedor1);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { ventas: unknown[]; siguienteCursor: string | null };
+    expect(cuerpo.ventas).toHaveLength(100);
+    expect(cuerpo.siguienteCursor).not.toBeNull();
+  });
+
+  it("take inválido (0) cae al valor por defecto en vez de llegar así a Prisma", async () => {
+    const respuesta = await get("/ventas/mias?take=0", cookieVendedor1);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { ventas: unknown[] };
+    expect(cuerpo.ventas).toHaveLength(25);
+  });
+
+  it("recorrer todas las páginas con el cursor cubre cada venta una sola vez, en el mismo orden que la base — incluso con fechaVenta empatada", async () => {
+    const idsVistos: string[] = [];
+    let cursor: string | undefined;
+    let paginas = 0;
+    do {
+      const query = cursor ? `?cursor=${cursor}` : "";
+      const respuesta = await get(`/ventas/mias${query}`, cookieVendedor1);
+      expect(respuesta.status).toBe(200);
+      const cuerpo = (await respuesta.json()) as { ventas: Array<{ id: string }>; siguienteCursor: string | null };
+      idsVistos.push(...cuerpo.ventas.map((v) => v.id));
+      cursor = cuerpo.siguienteCursor ?? undefined;
+      paginas++;
+      // Salvaguarda: si el cursor se rompiera y nunca llegara a null, esto
+      // evita que la prueba cuelgue en un bucle infinito.
+      expect(paginas).toBeLessThan(20);
+    } while (cursor);
+
+    expect(idsVistos).toHaveLength(TOTAL_VENDEDOR1);
+    expect(new Set(idsVistos).size).toBe(TOTAL_VENDEDOR1); // sin repetidos
+
+    const ordenReal = await prismaRaw.venta.findMany({
+      where: { empresaId, vendedorId: vendedor1Id },
+      orderBy: [{ fechaVenta: "desc" }, { id: "desc" }],
+      select: { id: true },
+    });
+    expect(idsVistos).toEqual(ordenReal.map((v) => v.id)); // ni salteado ni repetido
+  });
+
+  it("ni /mias ni /listado incluyen ya mensajeGenerado en la respuesta", async () => {
+    const respuestaMias = await get("/ventas/mias?take=1", cookieVendedor1);
+    expect(await respuestaMias.text()).not.toContain("mensajeGenerado");
+
+    const respuestaListado = await get("/ventas/listado?take=1", cookieAdmin);
+    expect(await respuestaListado.text()).not.toContain("mensajeGenerado");
+  });
+
+  it("los filtros existentes (vendedorId) siguen funcionando combinados con el cursor en /listado", async () => {
+    const idsVistos: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const query = cursor
+        ? `?vendedorId=${vendedor1Id}&take=20&cursor=${cursor}`
+        : `?vendedorId=${vendedor1Id}&take=20`;
+      const respuesta = await get(`/ventas/listado${query}`, cookieAdmin);
+      expect(respuesta.status).toBe(200);
+      const cuerpo = (await respuesta.json()) as { ventas: Array<{ id: string }>; siguienteCursor: string | null };
+      idsVistos.push(...cuerpo.ventas.map((v) => v.id));
+      cursor = cuerpo.siguienteCursor ?? undefined;
+    } while (cursor);
+
+    // 130 del vendedor1, nunca los 5 del vendedor2 que también están en la empresa.
+    expect(idsVistos).toHaveLength(TOTAL_VENDEDOR1);
+    expect(new Set(idsVistos).size).toBe(TOTAL_VENDEDOR1);
+  });
+
+  it("GET /ventas/:id/mensaje: un VENDEDOR solo puede pedir el mensaje de una venta propia", async () => {
+    const propia = await prismaRaw.venta.findFirstOrThrow({ where: { empresaId, vendedorId: vendedor1Id } });
+
+    const respuestaPropia = await get(`/ventas/${propia.id}/mensaje`, cookieVendedor1);
+    expect(respuestaPropia.status).toBe(200);
+    const cuerpoPropia = (await respuestaPropia.json()) as { mensajeGenerado: string };
+    expect(cuerpoPropia.mensajeGenerado).toBe(propia.mensajeGenerado);
+
+    // La misma venta, pedida por el OTRO vendedor: no existe para él.
+    const respuestaAjena = await get(`/ventas/${propia.id}/mensaje`, cookieVendedor2);
+    expect(respuestaAjena.status).toBe(404);
+  });
+
+  it("GET /ventas/:id/mensaje: ADMIN puede pedir el de cualquier venta de su empresa", async () => {
+    const propia = await prismaRaw.venta.findFirstOrThrow({ where: { empresaId, vendedorId: vendedor1Id } });
+    const respuesta = await get(`/ventas/${propia.id}/mensaje`, cookieAdmin);
+    expect(respuesta.status).toBe(200);
+    const cuerpo = (await respuesta.json()) as { mensajeGenerado: string };
+    expect(cuerpo.mensajeGenerado).toBe(propia.mensajeGenerado);
+  });
+
+  it("GET /ventas/:id/mensaje responde 404 para un id inexistente y para una venta de OTRA empresa (R1)", async () => {
+    const respuestaInexistente = await get("/ventas/no-existe/mensaje", cookieAdmin);
+    expect(respuestaInexistente.status).toBe(404);
+
+    const otraEmpresa = await crearEmpresaLista("F4B", "Empresa ajena (ventas-listado.test)", 1);
+    const ventaAjena = await prismaRaw.venta.create({
+      data: {
+        empresaId: otraEmpresa.empresaId,
+        vendedorId: otraEmpresa.adminId,
+        codigoCompra: `F413B-AJENA-${randomUUID()}`,
+        tipoVenta: "UNIDAD",
+        plataformaId: otraEmpresa.plataformaId,
+        duracionId: otraEmpresa.duracionId,
+        tipoClienteId: otraEmpresa.tipoClienteId,
+        nombreItem: "Netflix",
+        nombreDuracion: "30 días",
+        cantidadDuracion: 30,
+        unidadDuracion: "DIAS",
+        nombreTipoCliente: "Nuevo",
+        precioSugerido: "15000",
+        precioVenta: "15000",
+        costo: "8000",
+        utilidad: "7000",
+        fechaVencimientoMax: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        mensajeGenerado: "mensaje de otra empresa",
+      },
+    });
+
+    const respuestaCruzada = await get(`/ventas/${ventaAjena.id}/mensaje`, cookieAdmin);
+    expect(respuestaCruzada.status).toBe(404);
+
+    await borrarEmpresa(otraEmpresa.empresaId);
   });
 });

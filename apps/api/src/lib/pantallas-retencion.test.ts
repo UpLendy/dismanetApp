@@ -6,7 +6,12 @@ import { addDays, subDays } from "date-fns";
 import { prismaRaw } from "./prisma.ts";
 import { prismaParaEmpresa } from "./prisma-empresa.ts";
 import { cifrar } from "./cifrado.ts";
-import { pantallasDeCuenta, pantallasDisponibles, contarPantallasPorEstado } from "./pantallas.ts";
+import {
+  pantallasDeCuenta,
+  pantallasDisponibles,
+  contarPantallasPorEstado,
+  contarPantallasPorPlataforma,
+} from "./pantallas.ts";
 import { tomarPantallasDisponibles } from "./bloqueo-pantallas.ts";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +25,11 @@ import { tomarPantallasDisponibles } from "./bloqueo-pantallas.ts";
 // empresa y verifica que los tres sitios concuerden sobre el mismo conjunto
 // de pantallas al mismo tiempo — que es justo donde una reescritura parcial
 // de la regla (cambiar un sitio y olvidar otro) se delataría.
+//
+// F4.12 agrega un cuarto participante: contarPantallasPorPlataforma, el
+// conteo de dos consultas que reemplaza a pantallasDisponibles en los
+// cuatro sitios que solo necesitaban un número. Tiene que coincidir con los
+// otros tres sobre el mismo conjunto de datos.
 // ---------------------------------------------------------------------------
 
 describe("R5 — concordancia entre los tres sitios que calculan disponibilidad", () => {
@@ -249,5 +259,21 @@ describe("R5 — concordancia entre los tres sitios que calculan disponibilidad"
     expect(conteo.libres).toBe(3);
     expect(conteo.ocupadas).toBe(3);
     expect(conteo.porReiniciar).toBe(3);
+  });
+
+  it("sitio 4 (pantallas.ts / contarPantallasPorPlataforma, F4.12): el conteo por plataforma coincide con los otros tres sitios", async () => {
+    const cliente = prismaParaEmpresa(empresaId);
+    const conteos = await contarPantallasPorPlataforma(cliente, [plataformaId]);
+    const conteo = conteos.get(plataformaId);
+
+    // Mismos números que contarPantallasPorEstado (sitio 3) y que la
+    // cuenta directa de estados del sitio 1: libres 1, 4, 7; ocupadas 2, 6,
+    // 8a; por reiniciar 3, 5, 8b.
+    expect(conteo).toEqual({ libres: 3, ocupadas: 3, porReiniciar: 3 });
+
+    // Sin filtrar por plataforma (todas las plataformas de la empresa):
+    // esta empresa solo tiene una, así que el resultado debe ser idéntico.
+    const conteosSinFiltro = await contarPantallasPorPlataforma(cliente);
+    expect(conteosSinFiltro.get(plataformaId)).toEqual(conteo);
   });
 });

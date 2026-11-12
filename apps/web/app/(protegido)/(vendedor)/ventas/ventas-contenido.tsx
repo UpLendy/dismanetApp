@@ -37,7 +37,6 @@ interface VentaVendedor {
   celularCliente: string | null;
   fechaVenta: string;
   fechaVencimientoMax: string;
-  mensajeGenerado: string;
   anulada: boolean;
   esPromocion: boolean;
   detalles: DetalleVenta[];
@@ -145,6 +144,10 @@ function VentasVendedor() {
   const [errorLista, setErrorLista] = useState<string | null>(null);
   const [expandidoId, setExpandidoId] = useState<string | null>(null);
   const [copiadoId, setCopiadoId] = useState<string | null>(null);
+  const [cargandoMensajeId, setCargandoMensajeId] = useState<string | null>(null);
+  const [errorMensaje, setErrorMensaje] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [cargandoMas, setCargandoMas] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -156,14 +159,38 @@ function VentasVendedor() {
     }
     setErrorLista(null);
     setVentas(data.ventas);
+    setCursor(data.siguienteCursor);
   }, []);
 
   useEffect(() => {
     cargar();
   }, [cargar]);
 
+  async function cargarMas() {
+    if (!cursor) return;
+    setCargandoMas(true);
+    const { data, error: errorRespuesta } = await api.ventas.mias.get({ query: { cursor } });
+    setCargandoMas(false);
+    if (errorRespuesta || !data) {
+      setErrorLista(mensajeDeError(errorRespuesta));
+      return;
+    }
+    setVentas((previo) => [...previo, ...data.ventas]);
+    setCursor(data.siguienteCursor);
+  }
+
+  // F4.13 — el mensaje ya no viaja con cada fila del listado (pesa ~800
+  // caracteres y casi nunca se usa): se pide aparte, solo al copiar.
   async function copiarMensaje(venta: VentaVendedor) {
-    await navigator.clipboard.writeText(venta.mensajeGenerado);
+    setErrorMensaje(null);
+    setCargandoMensajeId(venta.id);
+    const { data, error: errorRespuesta } = await api.ventas({ id: venta.id }).mensaje.get();
+    setCargandoMensajeId(null);
+    if (errorRespuesta || !data) {
+      setErrorMensaje(mensajeDeError(errorRespuesta));
+      return;
+    }
+    await navigator.clipboard.writeText(data.mensajeGenerado);
     setCopiadoId(venta.id);
     setTimeout(() => setCopiadoId(null), 2000);
   }
@@ -187,7 +214,13 @@ function VentasVendedor() {
         >
           {errorLista}
         </Aviso>
-      ) : cargando ? (
+      ) : null}
+      {errorMensaje ? (
+        <Aviso variante="critico" titulo="No se pudo obtener el mensaje">
+          {errorMensaje}
+        </Aviso>
+      ) : null}
+      {errorLista ? null : cargando ? (
         <CargandoTabla filas={6} columnas={6} />
       ) : ventas.length === 0 ? (
         <EstadoVacio
@@ -242,9 +275,14 @@ function VentasVendedor() {
                           {expandido ? <ChevronUp /> : <ChevronDown />}
                           Cuentas
                         </Boton>
-                        <Boton variante="contorno" tamano="sm" onClick={() => copiarMensaje(venta)}>
+                        <Boton
+                          variante="contorno"
+                          tamano="sm"
+                          disabled={cargandoMensajeId === venta.id}
+                          onClick={() => copiarMensaje(venta)}
+                        >
                           <Copy />
-                          Copiar
+                          {cargandoMensajeId === venta.id ? "Copiando..." : "Copiar"}
                         </Boton>
                         {copiadoId === venta.id ? (
                           <Pastilla tono="bien" icono={Check}>
@@ -267,6 +305,13 @@ function VentasVendedor() {
           </TablaCuerpo>
         </Tabla>
       )}
+      {cursor && !cargando ? (
+        <div className="flex justify-center">
+          <Boton variante="contorno" onClick={cargarMas} disabled={cargandoMas}>
+            {cargandoMas ? "Cargando..." : "Cargar más"}
+          </Boton>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -288,6 +333,8 @@ function VentasAdmin() {
 
   const [filtros, setFiltros] = useState(FILTROS_VACIOS);
   const [expandidoId, setExpandidoId] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [cargandoMas, setCargandoMas] = useState(false);
 
   const [confirmandoAnular, setConfirmandoAnular] = useState<VentaAdmin | null>(null);
   const [anulando, setAnulando] = useState(false);
@@ -306,7 +353,23 @@ function VentasAdmin() {
     }
     setErrorLista(null);
     setVentas(data.ventas);
+    setCursor(data.siguienteCursor);
   }, []);
+
+  async function cargarMas() {
+    if (!cursor) return;
+    setCargandoMas(true);
+    const { data, error: errorRespuesta } = await api.ventas.listado.get({
+      query: { ...construirQuery(filtros), cursor },
+    });
+    setCargandoMas(false);
+    if (errorRespuesta || !data) {
+      setErrorLista(mensajeDeError(errorRespuesta));
+      return;
+    }
+    setVentas((previo) => [...previo, ...data.ventas]);
+    setCursor(data.siguienteCursor);
+  }
 
   const cargarTotales = useCallback(async () => {
     setCargandoTotales(true);
@@ -667,6 +730,13 @@ function VentasAdmin() {
           </TablaCuerpo>
         </Tabla>
       )}
+      {cursor && !cargandoLista ? (
+        <div className="flex justify-center">
+          <Boton variante="contorno" onClick={cargarMas} disabled={cargandoMas}>
+            {cargandoMas ? "Cargando..." : "Cargar más"}
+          </Boton>
+        </div>
+      ) : null}
 
       <Dialogo
         abierto={confirmandoAnular !== null}
