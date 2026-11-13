@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, CalendarDays, Clock3, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw, Briefcase } from "lucide-react";
+import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, CalendarDays, Clock3, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw, Briefcase, FileText, Percent } from "lucide-react";
 import type { Rol } from "@/lib/rol";
 
 export interface ItemNav {
@@ -42,6 +42,7 @@ const GRUPOS: GrupoNav[] = [
     items: [
       { etiqueta: "Calendario", href: "/panel/calendario", icono: CalendarDays, rolMinimo: "EMPLEADO" },
       { etiqueta: "Horas adicionales", href: "/panel/horas-adicionales", icono: Clock3, rolMinimo: "EMPLEADO" },
+      { etiqueta: "Reportes semanales", href: "/panel/reportes", icono: FileText, rolMinimo: "EMPLEADO" },
       { etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "EMPLEADO" },
       // rolMinimo en ADMIN a propósito: GET /cuentas/por-reiniciar exige
       // ADMIN (routes/cuentas.ts:342). Si ese endpoint se abre a EMPLEADO,
@@ -59,6 +60,9 @@ const GRUPOS: GrupoNav[] = [
       { etiqueta: "Paquetes", href: "/panel/catalogo/paquetes", icono: Package, rolMinimo: "ADMIN" },
       { etiqueta: "Precios", href: "/panel/precios", icono: CircleDollarSign, rolMinimo: "ADMIN" },
       { etiqueta: "Plantillas", href: "/panel/mensajes", icono: MessageSquareText, rolMinimo: "ADMIN" },
+      // F6.5: política de comisiones y su simulador. No calcula ni liquida
+      // nada todavía (eso es F6.6).
+      { etiqueta: "Comisiones", href: "/panel/comisiones", icono: Percent, rolMinimo: "ADMIN" },
     ],
   },
   {

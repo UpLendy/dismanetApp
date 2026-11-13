@@ -86,6 +86,8 @@ model Empresa {
   turnos                     Turno[]
   festivos                   Festivo[]
   horasAdicionales           HoraAdicional[]
+  reportesSemanales          ReporteSemanal[]
+  configuracionesComision    ConfiguracionComision[]
 
   @@unique([prefijoCodigo])
 }
@@ -128,15 +130,17 @@ model Usuario {
 
   empresasCreadas Empresa[] @relation("EmpresasCreadas")
 
-  ventasComoVendedor      Venta[]           @relation("VentaVendedor")
-  ventasAnuladas          Venta[]           @relation("VentaAnuladaPor")
-  movimientosSaldo        MovimientoSaldo[] @relation("MovimientoSaldoUsuario")
-  movimientosSaldoCreados MovimientoSaldo[] @relation("MovimientoSaldoCreadoPor")
-  garantiasCreadas        Garantia[]        @relation("GarantiaCreadaPor")
-  reiniciosCuenta         ReinicioCuenta[]  @relation("ReinicioCuentaUsuario")
-  turnos                  Turno[]
-  horasAdicionalesRegistradas HoraAdicional[] @relation("HoraAdicionalUsuario")
-  horasAdicionalesRevisadas   HoraAdicional[] @relation("HoraAdicionalRevisor")
+  ventasComoVendedor             Venta[]                 @relation("VentaVendedor")
+  ventasAnuladas                 Venta[]                 @relation("VentaAnuladaPor")
+  movimientosSaldo               MovimientoSaldo[]       @relation("MovimientoSaldoUsuario")
+  movimientosSaldoCreados        MovimientoSaldo[]       @relation("MovimientoSaldoCreadoPor")
+  garantiasCreadas               Garantia[]              @relation("GarantiaCreadaPor")
+  reiniciosCuenta                ReinicioCuenta[]        @relation("ReinicioCuentaUsuario")
+  turnos                         Turno[]
+  horasAdicionalesRegistradas    HoraAdicional[]         @relation("HoraAdicionalUsuario")
+  horasAdicionalesRevisadas      HoraAdicional[]         @relation("HoraAdicionalRevisor")
+  reportesSemanales              ReporteSemanal[]
+  configuracionesComisionCreadas ConfiguracionComision[]
 
   @@index([empresaId])
 }
@@ -767,4 +771,82 @@ model HoraAdicional {
   @@index([empresaId, usuarioId])
   @@index([empresaId, inicio])
   @@index([empresaId, estado])
+}
+
+/// Testimonio semanal de cada EMPLEADO+ (F6.4, punto 5 del cliente): tres
+/// campos de texto separados —pendientes, fallas, oportunidades— porque son
+/// las tres cosas que el cliente nombró, y por separado se comparan semana
+/// a semana. Cada quien escribe el suyo; ni un ADMIN escribe por otro (ver
+/// routes/reportes.ts) — un reporte es el testimonio de quien lo firma.
+///
+/// `cargoId` es una COPIA al momento de escribir, no una relación viva
+/// (mismo principio que Venta.nombreItem, R3 de CLAUDE.md): si a alguien le
+/// cambian el cargo después, su reporte ya escrito sigue diciendo el cargo
+/// que tenía entonces. Por eso no lleva `@relation` a Cargo.
+///
+/// `semanaInicio` es el lunes 00:00 Bogotá de la semana que reporta — sale
+/// de `inicioSemanaBogota` (lib/periodos.ts), nunca aritmética de semanas
+/// nueva. El `@@unique` garantiza un reporte por persona por semana: un
+/// segundo PUT de la misma persona y semana actualiza, no crea otro (no se
+/// usa `upsert` de Prisma porque la extensión multi-tenant lo bloquea —
+/// routes/reportes.ts busca y crea/actualiza a mano).
+model ReporteSemanal {
+  id            String   @id @default(cuid())
+  empresaId     String
+  usuarioId     String
+  cargoId       String?
+  semanaInicio  DateTime
+  pendientes    String
+  fallas        String
+  oportunidades String
+  createdAt     DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@unique([empresaId, usuarioId, semanaInicio])
+  @@index([empresaId, semanaInicio])
+  @@index([empresaId, cargoId, semanaInicio])
+}
+
+enum ModoComision {
+  PORCENTAJE_VENTA
+  FIJO_POR_PANTALLA
+}
+
+enum AmbitoUmbral {
+  TOTAL
+  POR_PLATAFORMA
+}
+
+enum PeriodoUmbral {
+  DIA
+  MES
+}
+
+/// Política de comisiones, F6.5. Registro POR VERSIÓN, no una fila que se
+/// edita: guardar una política nueva crea otra fila, nunca actualiza la
+/// anterior. La vigente es la de vigenteDesde más reciente que ya empezó.
+/// Esto paga gente: si el porcentaje cambia a mitad de mes y después se
+/// liquida, hay que poder saber qué regla regía cuando se vendió — una fila
+/// mutable borra esa respuesta para siempre. No existe comisión por
+/// porcentaje de utilidad (descartada por el cliente: R4 existe justamente
+/// para que un empleado no pueda despejar la utilidad desde su comisión).
+model ConfiguracionComision {
+  id             String        @id @default(cuid())
+  empresaId      String
+  modo           ModoComision
+  valor          Decimal       @db.Decimal(14, 2)
+  umbralCantidad Int
+  umbralAmbito   AmbitoUmbral
+  umbralPeriodo  PeriodoUmbral
+  vigenteDesde   DateTime
+  creadaPorId    String
+  createdAt      DateTime      @default(now())
+
+  empresa   Empresa @relation(fields: [empresaId], references: [id])
+  creadaPor Usuario @relation(fields: [creadaPorId], references: [id])
+
+  @@index([empresaId, vigenteDesde])
 }

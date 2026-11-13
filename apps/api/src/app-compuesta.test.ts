@@ -23,6 +23,8 @@ import { perfil } from "./routes/perfil.ts";
 import { turnos } from "./routes/turnos.ts";
 import { festivos } from "./routes/festivos.ts";
 import { horasAdicionales } from "./routes/horas-adicionales.ts";
+import { reportes } from "./routes/reportes.ts";
+import { comisiones } from "./routes/comisiones.ts";
 
 /** Forma de error del API: `{ error: { codigo, mensaje } }` (CLAUDE.md). */
 type RespuestaError = { error: { codigo: string; mensaje: string } };
@@ -55,7 +57,9 @@ const app = new Elysia()
   .use(perfil)
   .use(turnos)
   .use(festivos)
-  .use(horasAdicionales);
+  .use(horasAdicionales)
+  .use(reportes)
+  .use(comisiones);
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -156,6 +160,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   });
 
   afterAll(async () => {
+    await prismaRaw.configuracionComision.deleteMany({ where: { empresaId } });
     await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
     await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
@@ -193,6 +198,16 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     return app.handle(
       new Request(`http://local${ruta}`, {
         method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  async function put(ruta: string, body: unknown, cookie: string = cookieAdmin) {
+    return app.handle(
+      new Request(`http://local${ruta}`, {
+        method: "PUT",
         headers: { "content-type": "application/json", cookie },
         body: JSON.stringify(body),
       }),
@@ -757,5 +772,105 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect((await get("/horas-adicionales/resumen?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(
       403,
     );
+  });
+
+  // F6.4 — /reportes es un router nuevo, montado al final de la cadena:
+  // misma prueba de scope que los anteriores. EMPLEADO entra a /mio (lo
+  // suyo) pero no a la lista ni a /faltantes (ADMIN en adelante); VENDEDOR
+  // no entra a nada del router (mismo criterio que F6.3: no reporta).
+  // La semana usada es la actual real (Bogotá), porque PUT /mio solo acepta
+  // la semana actual o la anterior.
+  const semanaActualISO = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+
+  it("un ADMIN puede usar /reportes/mio, /reportes y /reportes/faltantes aunque el resto de la app compuesta también esté montado", async () => {
+    const guardado = await put(
+      "/reportes/mio",
+      { semana: semanaActualISO, pendientes: "Nada", fallas: "", oportunidades: "" },
+      cookieAdmin,
+    );
+    expect(guardado.status).toBe(200);
+    const { reporte } = (await guardado.json()) as { reporte: { id: string } };
+
+    expect((await get(`/reportes/mio?semana=${semanaActualISO}`)).status).toBe(200);
+    expect((await get(`/reportes?semana=${semanaActualISO}`)).status).toBe(200);
+    expect((await get(`/reportes/faltantes?semana=${semanaActualISO}`)).status).toBe(200);
+
+    await prismaRaw.reporteSemanal.delete({ where: { id: reporte.id } });
+  });
+
+  it("un EMPLEADO puede leer y escribir su propio /reportes/mio, pero recibe 403 en /reportes y /reportes/faltantes", async () => {
+    const guardado = await put(
+      "/reportes/mio",
+      { semana: semanaActualISO, pendientes: "", fallas: "Ninguna", oportunidades: "" },
+      cookieEmpleado,
+    );
+    expect(guardado.status).toBe(200);
+    const { reporte } = (await guardado.json()) as { reporte: { id: string } };
+
+    expect((await get(`/reportes/mio?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(200);
+    expect((await get(`/reportes?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(403);
+    expect((await get(`/reportes/faltantes?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(403);
+
+    await prismaRaw.reporteSemanal.delete({ where: { id: reporte.id } });
+  });
+
+  it("un VENDEDOR recibe 403 en todas las rutas de /reportes (F6.4: planta, no revendedores)", async () => {
+    expect((await get(`/reportes/mio?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+    expect(
+      (
+        await put(
+          "/reportes/mio",
+          { semana: semanaActualISO, pendientes: "x", fallas: "", oportunidades: "" },
+          cookieVendedor,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get(`/reportes?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+    expect((await get(`/reportes/faltantes?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+  });
+
+  // F6.5 — /comisiones es un router nuevo, montado al final de la cadena:
+  // misma prueba de scope que los anteriores. A diferencia de /reportes y
+  // /horas-adicionales, este router es ADMIN-only de punta a punta — no hay
+  // ninguna ruta abierta a EMPLEADO (es política + cifras financieras, R4).
+  it("un ADMIN puede usar las 4 rutas de /comisiones aunque el resto de la app compuesta también esté montado", async () => {
+    const guardado = await put(
+      "/comisiones/configuracion",
+      { modo: "FIJO_POR_PANTALLA", valor: "1000", umbralCantidad: 10, umbralAmbito: "TOTAL", umbralPeriodo: "DIA" },
+      cookieAdmin,
+    );
+    expect(guardado.status).toBe(201);
+
+    expect((await get("/comisiones/configuracion")).status).toBe(200);
+    expect((await get("/comisiones/configuracion/historial")).status).toBe(200);
+
+    const simulacion = await get(
+      "/comisiones/simulacion?desde=2026-01-01&hasta=2026-01-31&modo=FIJO_POR_PANTALLA&valor=1000&umbralCantidad=10&umbralAmbito=TOTAL&umbralPeriodo=DIA",
+    );
+    expect(simulacion.status).toBe(200);
+  });
+
+  it("un EMPLEADO y un VENDEDOR reciben 403 en todas las rutas de /comisiones (F6.5: solo ADMIN, política y cifras financieras)", async () => {
+    for (const cookie of [cookieEmpleado, cookieVendedor]) {
+      expect((await get("/comisiones/configuracion", cookie)).status).toBe(403);
+      expect((await get("/comisiones/configuracion/historial", cookie)).status).toBe(403);
+      expect(
+        (
+          await put(
+            "/comisiones/configuracion",
+            { modo: "FIJO_POR_PANTALLA", valor: "1000", umbralCantidad: 10, umbralAmbito: "TOTAL", umbralPeriodo: "DIA" },
+            cookie,
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await get(
+            "/comisiones/simulacion?desde=2026-01-01&hasta=2026-01-31&modo=FIJO_POR_PANTALLA&valor=1000&umbralCantidad=10&umbralAmbito=TOTAL&umbralPeriodo=DIA",
+            cookie,
+          )
+        ).status,
+      ).toBe(403);
+    }
   });
 });

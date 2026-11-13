@@ -10,6 +10,7 @@ import {
   OPERACIONES_BLOQUEADAS,
   PROPIEDADES_NO_OPERACION,
 } from "./prisma-empresa.ts";
+import { inicioSemanaBogota } from "./periodos.ts";
 
 // prismaRaw en este archivo: excepción explícita, igual que seed y login.
 // Verificar el aislamiento (R1) exige poder crear y leer filas de AMBAS
@@ -42,6 +43,8 @@ interface FixtureEmpresa {
   turnoId: string;
   festivoId: string;
   horaAdicionalId: string;
+  reporteSemanalId: string;
+  configuracionComisionId: string;
 }
 
 // Nombre de la propiedad del cliente de Prisma para un modelo del esquema:
@@ -273,6 +276,31 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  const reporteSemanal = await prismaRaw.reporteSemanal.create({
+    data: {
+      empresaId: empresa.id,
+      usuarioId: usuario.id,
+      cargoId: cargo.id,
+      semanaInicio: inicioSemanaBogota(new Date()),
+      pendientes: "Pendiente de prueba",
+      fallas: "",
+      oportunidades: "",
+    },
+  });
+
+  const configuracionComision = await prismaRaw.configuracionComision.create({
+    data: {
+      empresaId: empresa.id,
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 10,
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+      vigenteDesde: new Date(),
+      creadaPorId: usuario.id,
+    },
+  });
+
   return {
     empresaId: empresa.id,
     usuarioId: usuario.id,
@@ -298,6 +326,8 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     turnoId: turno.id,
     festivoId: festivo.id,
     horaAdicionalId: horaAdicional.id,
+    reporteSemanalId: reporteSemanal.id,
+    configuracionComisionId: configuracionComision.id,
   };
 }
 
@@ -328,6 +358,8 @@ async function borrarEmpresaCompleta(empresaId: string) {
   // Turno y HoraAdicional referencian Usuario (requerido, sin onDelete): antes del usuario.
   await prismaRaw.turno.deleteMany({ where: { empresaId } });
   await prismaRaw.horaAdicional.deleteMany({ where: { empresaId } });
+  await prismaRaw.reporteSemanal.deleteMany({ where: { empresaId } });
+  await prismaRaw.configuracionComision.deleteMany({ where: { empresaId } });
   await prismaRaw.usuario.deleteMany({ where: { empresaId } });
   await prismaRaw.festivo.deleteMany({ where: { empresaId } });
   await prismaRaw.empresa.delete({ where: { id: empresaId } });
@@ -347,8 +379,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 22 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(22);
+  it("cubre los 24 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(24);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -381,6 +413,12 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         // F6.3 — cubierto automáticamente por el escaneo del esquema (tiene
         // empresaId), sin cambiar prisma-empresa.ts.
         "HoraAdicional",
+        // F6.4 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "ReporteSemanal",
+        // F6.5 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "ConfiguracionComision",
       ].sort(),
     );
   });
