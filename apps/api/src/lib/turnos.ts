@@ -6,6 +6,8 @@
 // del modelo Turno en prisma/schema.prisma.
 // ---------------------------------------------------------------------------
 
+import { finDiaBogota, inicioDiaBogota } from "./periodos.ts";
+
 const DURACION_MAXIMA_MS = 24 * 60 * 60 * 1000;
 
 export type ValidacionTurno =
@@ -75,6 +77,19 @@ interface TurnoParaHoras {
 }
 
 /**
+ * Horas de [inicio, fin) que caen dentro de [desde, hasta), recortando los
+ * extremos que se salen del rango. Núcleo compartido por
+ * horasRecortadasPorUsuario (recorte a un rango de consulta) y
+ * repartirPorDiaBogota (F6.3, recorte a un día calendario) — no se
+ * reimplementa en el segundo, se llama a este.
+ */
+export function horasEnRango(inicio: Date, fin: Date, desde: Date, hasta: Date): number {
+  const inicioRecortado = inicio < desde ? desde : inicio;
+  const finRecortado = fin > hasta ? hasta : fin;
+  return Math.max(0, finRecortado.getTime() - inicioRecortado.getTime()) / (60 * 60 * 1000);
+}
+
+/**
  * Horas por usuario dentro de [desde, hasta), recortadas al rango: un turno
  * de 22:00 a 06:00 consultado por días separados aporta 2 horas a uno y 6 al
  * otro, nunca las 8 completas a uno solo. Recibe los turnos que YA se
@@ -88,10 +103,28 @@ export function horasRecortadasPorUsuario(
 ): Map<string, number> {
   const resultado = new Map<string, number>();
   for (const turno of turnos) {
-    const inicioRecortado = turno.inicio < desde ? desde : turno.inicio;
-    const finRecortado = turno.fin > hasta ? hasta : turno.fin;
-    const horas = Math.max(0, finRecortado.getTime() - inicioRecortado.getTime()) / (60 * 60 * 1000);
+    const horas = horasEnRango(turno.inicio, turno.fin, desde, hasta);
     resultado.set(turno.usuarioId, (resultado.get(turno.usuarioId) ?? 0) + horas);
+  }
+  return resultado;
+}
+
+/**
+ * Reparte [inicio, fin) entre los días calendario (Bogotá) que toca, cada
+ * uno con sus horas recortadas a ese día — un bloque de 20:00 sábado a
+ * 02:00 domingo entrega dos filas: 4 horas el sábado, 2 el domingo (F6.3,
+ * PROMPT-F6.3 parte 2). `fecha` de cada fila es inicioDiaBogota de ese día,
+ * el mismo instante que usa Festivo.fecha, para poder cruzar contra la
+ * tabla de festivos con una simple comparación de Date.getTime().
+ */
+export function repartirPorDiaBogota(inicio: Date, fin: Date): { fecha: Date; horas: number }[] {
+  const resultado: { fecha: Date; horas: number }[] = [];
+  let cursor = inicioDiaBogota(inicio);
+  while (cursor < fin) {
+    const finDelDia = finDiaBogota(cursor);
+    const horas = horasEnRango(inicio, fin, cursor, finDelDia);
+    if (horas > 0) resultado.push({ fecha: cursor, horas });
+    cursor = finDelDia;
   }
   return resultado;
 }

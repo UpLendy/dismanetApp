@@ -43,6 +43,12 @@ enum TipoMovimientoSaldo {
   AJUSTE
 }
 
+enum EstadoHoraAdicional {
+  PENDIENTE
+  APROBADA
+  RECHAZADA
+}
+
 // ---------------------------------------------------------------------------
 // Empresa y Usuario
 // ---------------------------------------------------------------------------
@@ -79,6 +85,7 @@ model Empresa {
   reiniciosCuenta            ReinicioCuenta[]
   turnos                     Turno[]
   festivos                   Festivo[]
+  horasAdicionales           HoraAdicional[]
 
   @@unique([prefijoCodigo])
 }
@@ -128,6 +135,8 @@ model Usuario {
   garantiasCreadas        Garantia[]        @relation("GarantiaCreadaPor")
   reiniciosCuenta         ReinicioCuenta[]  @relation("ReinicioCuentaUsuario")
   turnos                  Turno[]
+  horasAdicionalesRegistradas HoraAdicional[] @relation("HoraAdicionalUsuario")
+  horasAdicionalesRevisadas   HoraAdicional[] @relation("HoraAdicionalRevisor")
 
   @@index([empresaId])
 }
@@ -721,4 +730,41 @@ model Festivo {
 
   @@unique([empresaId, fecha])
   @@index([empresaId])
+}
+
+/// Registro de horas adicionales/festivas de planta (F6.3) — NO una nómina.
+/// No calcula recargo legal ni clasifica jornada nocturna (CLAUDE.md,
+/// PROMPT-F6.3): solo cuántas horas y si el día es festivo o domingo, eso
+/// lo decide quien liquida. `inicio`/`fin` son instantes absolutos, igual
+/// que Turno y por la misma razón: un bloque puede cruzar la medianoche de
+/// un día ordinario a uno festivo.
+///
+/// IMPORTANTE: estas horas NO entran en el denominador del pozo de
+/// comisiones. Ese reparto es por horas de Turno del calendario, como lo
+/// pidió el cliente — si HoraAdicional se sumara ahí, cualquiera podría
+/// agrandar su propia tajada registrándose horas a sí mismo. No las sumes
+/// al calcular comisiones.
+///
+/// Flujo de aprobación (PENDIENTE/APROBADA/RECHAZADA) agregado por
+/// decisión propia, no pedido por el cliente (ver PROMPT-F6.3 parte 0).
+/// Solo editable/borrable mientras esté PENDIENTE.
+model HoraAdicional {
+  id            String              @id @default(cuid())
+  empresaId     String
+  usuarioId     String
+  inicio        DateTime
+  fin           DateTime
+  motivo        String?
+  estado        EstadoHoraAdicional @default(PENDIENTE)
+  revisadaPorId String?
+  revisadaEn    DateTime?
+  createdAt     DateTime            @default(now())
+
+  empresa     Empresa  @relation(fields: [empresaId], references: [id])
+  usuario     Usuario  @relation("HoraAdicionalUsuario", fields: [usuarioId], references: [id])
+  revisadaPor Usuario? @relation("HoraAdicionalRevisor", fields: [revisadaPorId], references: [id])
+
+  @@index([empresaId, usuarioId])
+  @@index([empresaId, inicio])
+  @@index([empresaId, estado])
 }

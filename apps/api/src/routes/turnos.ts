@@ -69,14 +69,17 @@ function respuestaValidacion(validacion: { valido: false; codigo: string; mensaj
 }
 
 // Prefijo /turnos. ADMIN crea, edita y borra turnos de cualquiera; EMPLEADO
-// y VENDEDOR ven los suyos, en solo lectura (CLAUDE.md R5/F6.2). El bloqueo
-// de la fila de Usuario (bloqueo-usuario.ts) antes de comprobar
-// solapamiento y crear/editar es lo que impide que dos peticiones
-// simultáneas para el mismo usuario lean ambas "libre" y terminen con dos
-// turnos que se pisan — esas horas son el denominador del reparto de
-// comisiones.
+// ve los suyos, en solo lectura (CLAUDE.md R5/F6.2). El bloqueo de la fila
+// de Usuario (bloqueo-usuario.ts) antes de comprobar solapamiento y
+// crear/editar es lo que impide que dos peticiones simultáneas para el
+// mismo usuario lean ambas "libre" y terminen con dos turnos que se pisan —
+// esas horas son el denominador del reparto de comisiones.
+//
+// F6.3: el mínimo era Rol.VENDEDOR — error del documento de F6.2. Un
+// VENDEDOR es un revendedor externo con saldo prepago, no tiene turno
+// laboral; esto nunca debió quedar visible desde ahí.
 export const turnos = new Elysia({ prefix: "/turnos" })
-  .use(requiereRol(Rol.VENDEDOR))
+  .use(requiereRol(Rol.EMPLEADO))
   .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;

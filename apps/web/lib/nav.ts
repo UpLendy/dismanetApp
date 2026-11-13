@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, CalendarDays, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw, Briefcase } from "lucide-react";
+import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, CalendarDays, Clock3, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw, Briefcase } from "lucide-react";
 import type { Rol } from "@/lib/rol";
 
 export interface ItemNav {
@@ -21,8 +21,13 @@ const RANGO: Record<Rol, number> = { VENDEDOR: 0, EMPLEADO: 1, ADMIN: 2, SUPER_A
 // los demás grupos se filtran por completo, nunca se muestran deshabilitados.
 // Un EMPLEADO ve además "Cuentas" (solo el botón de crear dentro de esa
 // pantalla, ver cuentas/page.tsx), porque crear cuentas es parte de su
-// trabajo diario. F6.2: "Calendario" va en OPERACIÓN con rolMinimo VENDEDOR
-// a propósito — un VENDEDOR también ve ese grupo, pero solo ese ítem.
+// trabajo diario.
+// F6.3: "Calendario" tenía rolMinimo VENDEDOR desde F6.2 — error del
+// documento original. Un VENDEDOR es un revendedor externo con saldo
+// prepago, no tiene turno laboral; corregido a EMPLEADO junto con la guarda
+// del backend (routes/turnos.ts) y movido a /panel/calendario para que el
+// layout de (admin) bloquee a VENDEDOR en el servidor, no solo en el menú.
+// "Horas adicionales" nace ya en EMPLEADO (F6.3): mismo motivo.
 const GRUPOS: GrupoNav[] = [
   {
     titulo: null,
@@ -35,7 +40,8 @@ const GRUPOS: GrupoNav[] = [
   {
     titulo: "OPERACIÓN",
     items: [
-      { etiqueta: "Calendario", href: "/calendario", icono: CalendarDays, rolMinimo: "VENDEDOR" },
+      { etiqueta: "Calendario", href: "/panel/calendario", icono: CalendarDays, rolMinimo: "EMPLEADO" },
+      { etiqueta: "Horas adicionales", href: "/panel/horas-adicionales", icono: Clock3, rolMinimo: "EMPLEADO" },
       { etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "EMPLEADO" },
       // rolMinimo en ADMIN a propósito: GET /cuentas/por-reiniciar exige
       // ADMIN (routes/cuentas.ts:342). Si ese endpoint se abre a EMPLEADO,

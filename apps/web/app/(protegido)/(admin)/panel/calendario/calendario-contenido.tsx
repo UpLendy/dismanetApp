@@ -4,6 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { satisfaceRol, type Rol } from "@/lib/rol";
+import {
+  bogotaAInstanteUTC,
+  fechaBogotaDeInstante,
+  horaBogotaDeInstante,
+  hoyBogotaISO,
+  sumarDiasISO,
+} from "@/lib/bogota";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta } from "@/components/ui/tarjeta";
 import { Campo, EntradaCampo } from "@/components/ui/campo";
@@ -39,37 +46,6 @@ function mensajeDeError(errorRespuesta: unknown): string {
   return valor?.error?.mensaje ?? "No se pudo completar la operación.";
 }
 
-// Bogotá no tiene horario de verano: el desplazamiento es un número fijo,
-// igual que en apps/api/src/lib/periodos.ts. Aquí hace falta en sentido
-// inverso al de ese archivo porque este es el único formulario del
-// frontend que pide un instante absoluto (hora de inicio/fin de un turno)
-// en vez de solo una fecha de calendario.
-const DESPLAZAMIENTO_BOGOTA_MS = 5 * 60 * 60 * 1000;
-
-function hoyBogotaISO(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
-}
-
-function fechaBogotaDeInstante(iso: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date(iso));
-}
-
-function horaBogotaDeInstante(iso: string): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "America/Bogota",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(new Date(iso));
-}
-
-/** Suma días de calendario a una fecha "YYYY-MM-DD" — aritmética de fecha, no de zona horaria. */
-function sumarDiasISO(fechaISO: string, dias: number): string {
-  const [anio, mes, dia] = fechaISO.split("-").map(Number);
-  const utc = new Date(Date.UTC(anio, mes - 1, dia + dias));
-  return utc.toISOString().slice(0, 10);
-}
-
 function lunesDeSemanaISO(fechaISO: string): string {
   const [anio, mes, dia] = fechaISO.split("-").map(Number);
   const diaSemana = new Date(Date.UTC(anio, mes - 1, dia)).getUTCDay(); // 0=domingo
@@ -81,14 +57,6 @@ function formatearEncabezadoDia(fechaISO: string): string {
   const [anio, mes, dia] = fechaISO.split("-").map(Number);
   const fecha = new Date(Date.UTC(anio, mes - 1, dia));
   return fecha.toLocaleDateString("es-CO", { timeZone: "UTC", day: "numeric", month: "short" });
-}
-
-/** Hora de Bogotá (HH:mm) + fecha de calendario (Bogotá) -> instante UTC absoluto. */
-function bogotaAInstanteUTC(fechaISO: string, horaHHmm: string): string {
-  const [anio, mes, dia] = fechaISO.split("-").map(Number);
-  const [h, m] = horaHHmm.split(":").map(Number);
-  const ficticio = Date.UTC(anio, mes - 1, dia, h, m, 0, 0);
-  return new Date(ficticio + DESPLAZAMIENTO_BOGOTA_MS).toISOString();
 }
 
 interface FormularioTurno {

@@ -22,6 +22,7 @@ import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
 import { turnos } from "./routes/turnos.ts";
 import { festivos } from "./routes/festivos.ts";
+import { horasAdicionales } from "./routes/horas-adicionales.ts";
 
 /** Forma de error del API: `{ error: { codigo, mensaje } }` (CLAUDE.md). */
 type RespuestaError = { error: { codigo: string; mensaje: string } };
@@ -53,7 +54,8 @@ const app = new Elysia()
   .use(plantillas)
   .use(perfil)
   .use(turnos)
-  .use(festivos);
+  .use(festivos)
+  .use(horasAdicionales);
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -659,10 +661,11 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   });
 
   // F6.2 — /turnos y /festivos son routers nuevos, montados al final de la
-  // cadena: esta prueba confirma que su guarda base (VENDEDOR en adelante)
-  // llega hasta aquí sin que nada de lo montado antes la contamine, y que
-  // escala a ADMIN exactamente donde el router lo hace (misma mecánica que
-  // /cuentas y /disponibilidad arriba).
+  // cadena: esta prueba confirma que su guarda base llega hasta aquí sin
+  // que nada de lo montado antes la contamine, y que escala a ADMIN
+  // exactamente donde el router lo hace (misma mecánica que /cuentas y
+  // /disponibilidad arriba). /festivos sigue en VENDEDOR en adelante;
+  // /turnos subió a EMPLEADO en F6.3 (ver bloque de abajo).
   it("un ADMIN puede usar /turnos y /festivos aunque el resto de la app compuesta también esté montado", async () => {
     const respuestaTurnos = await get("/turnos?desde=2026-01-01&hasta=2026-01-07");
     expect(respuestaTurnos.status).toBe(200);
@@ -670,25 +673,89 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect(respuestaFestivos.status).toBe(200);
   });
 
-  it("un VENDEDOR y un EMPLEADO pueden listar /turnos y /festivos (forzados a sus propios turnos), pero reciben 403 en las rutas de administración de /turnos y /festivos", async () => {
-    for (const cookie of [cookieVendedor, cookieEmpleado]) {
-      const listadoTurnos = await get("/turnos?desde=2026-01-01&hasta=2026-01-07", cookie);
-      expect(listadoTurnos.status).toBe(200);
-      const listadoFestivos = await get("/festivos?anio=2026", cookie);
-      expect(listadoFestivos.status).toBe(200);
+  it("un EMPLEADO puede listar /turnos y /festivos (forzado a sus propios turnos), pero recibe 403 en las rutas de administración de ambos", async () => {
+    const listadoTurnos = await get("/turnos?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado);
+    expect(listadoTurnos.status).toBe(200);
+    const listadoFestivos = await get("/festivos?anio=2026", cookieEmpleado);
+    expect(listadoFestivos.status).toBe(200);
 
-      expect(
-        (
-          await post(
-            "/turnos",
-            { usuarioId: vendedorId, inicio: "2026-01-05T08:00:00.000Z", fin: "2026-01-05T12:00:00.000Z" },
-            cookie,
-          )
-        ).status,
-      ).toBe(403);
-      expect((await get("/turnos/horas?desde=2026-01-01&hasta=2026-01-07", cookie)).status).toBe(403);
-      expect((await post("/festivos/generar", { anio: 2026 }, cookie)).status).toBe(403);
-      expect((await post("/festivos", { fecha: "2026-01-02", nombre: "Festivo de prueba" }, cookie)).status).toBe(403);
-    }
+    expect(
+      (
+        await post(
+          "/turnos",
+          { usuarioId: vendedorId, inicio: "2026-01-05T08:00:00.000Z", fin: "2026-01-05T12:00:00.000Z" },
+          cookieEmpleado,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get("/turnos/horas?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado)).status).toBe(403);
+    expect((await post("/festivos/generar", { anio: 2026 }, cookieEmpleado)).status).toBe(403);
+    expect((await post("/festivos", { fecha: "2026-01-02", nombre: "Festivo de prueba" }, cookieEmpleado)).status).toBe(
+      403,
+    );
+  });
+
+  // F6.3, parte 0.2: un VENDEDOR es un revendedor externo con saldo
+  // prepago, no tiene turno laboral — corrige el error de F6.2 que dejaba
+  // /turnos visible desde VENDEDOR. /festivos no cambió: sigue siendo una
+  // tabla de referencia de lectura abierta a VENDEDOR en adelante.
+  it("un VENDEDOR recibe 403 en todas las rutas de /turnos (F6.3: planta, no revendedores), pero sigue pudiendo listar /festivos", async () => {
+    expect((await get("/turnos?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(403);
+    expect(
+      (
+        await post(
+          "/turnos",
+          { usuarioId: vendedorId, inicio: "2026-01-05T08:00:00.000Z", fin: "2026-01-05T12:00:00.000Z" },
+          cookieVendedor,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get("/turnos/horas?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(403);
+
+    const listadoFestivos = await get("/festivos?anio=2026", cookieVendedor);
+    expect(listadoFestivos.status).toBe(200);
+  });
+
+  // F6.3 — /horas-adicionales es un router nuevo, montado al final de la
+  // cadena: misma prueba de scope que /turnos y /festivos arriba. EMPLEADO
+  // entra a la base (lista/crea las suyas) pero no a aprobar/rechazar ni al
+  // resumen (ADMIN en adelante); VENDEDOR no entra a nada del router.
+  it("un ADMIN puede usar /horas-adicionales y su resumen aunque el resto de la app compuesta también esté montado", async () => {
+    const respuestaLista = await get("/horas-adicionales?desde=2026-01-01&hasta=2026-01-07");
+    expect(respuestaLista.status).toBe(200);
+    const respuestaResumen = await get("/horas-adicionales/resumen?desde=2026-01-01&hasta=2026-01-07");
+    expect(respuestaResumen.status).toBe(200);
+  });
+
+  it("un EMPLEADO puede listar y crear sus propias /horas-adicionales, pero recibe 403 en aprobar/rechazar y en el resumen", async () => {
+    const listado = await get("/horas-adicionales?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado);
+    expect(listado.status).toBe(200);
+
+    const creada = await post(
+      "/horas-adicionales",
+      { inicio: "2026-01-05T20:00:00.000Z", fin: "2026-01-05T22:00:00.000Z" },
+      cookieEmpleado,
+    );
+    expect(creada.status).toBe(201);
+    const { horaAdicional } = (await creada.json()) as { horaAdicional: { id: string } };
+
+    expect((await patch(`/horas-adicionales/${horaAdicional.id}/aprobar`, cookieEmpleado)).status).toBe(403);
+    expect((await patch(`/horas-adicionales/${horaAdicional.id}/rechazar`, cookieEmpleado)).status).toBe(403);
+    expect((await get("/horas-adicionales/resumen?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado)).status).toBe(
+      403,
+    );
+
+    await prismaRaw.horaAdicional.delete({ where: { id: horaAdicional.id } });
+  });
+
+  it("un VENDEDOR recibe 403 en todas las rutas de /horas-adicionales (F6.3: planta, no revendedores)", async () => {
+    expect((await get("/horas-adicionales?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(403);
+    expect(
+      (await post("/horas-adicionales", { inicio: "2026-01-05T20:00:00.000Z", fin: "2026-01-05T22:00:00.000Z" }, cookieVendedor))
+        .status,
+    ).toBe(403);
+    expect((await get("/horas-adicionales/resumen?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(
+      403,
+    );
   });
 });
