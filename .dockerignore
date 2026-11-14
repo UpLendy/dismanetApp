@@ -1,0 +1,12 @@
+# Usado por apps/api/Dockerfile y apps/web/Dockerfile (contexto = raíz del
+# monorepo en ambos). Sin esto, apps/web/.env.local
+# (NEXT_PUBLIC_API_URL="http://localhost:3001") se copia a la imagen y Next
+# lo inlinea en el build por encima de lo que se configure en Railway — el
+# frontend en producción quedaría apuntando a localhost en el navegador de
+# cada usuario. También evita subir apps/api/.env con credenciales locales.
+node_modules/
+.next/
+.env
+.env.*
+!.env.example
+.git/
