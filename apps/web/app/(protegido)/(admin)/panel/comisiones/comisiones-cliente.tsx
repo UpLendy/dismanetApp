@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { History, Percent, PiggyBank } from "lucide-react";
+import { History, Percent, PiggyBank, Users2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { hoyBogotaISO, sumarDiasISO, fechaBogotaDeInstante } from "@/lib/bogota";
 import { Boton } from "@/components/ui/boton";
@@ -45,6 +45,22 @@ interface Simulacion {
   porcentajeComisionado: number;
   pozoTotal: string;
   porPeriodo: FilaPeriodo[];
+}
+
+interface FilaResumenUsuario {
+  usuarioId: string;
+  nombre: string;
+  horas: number;
+  tajadaCerrada: string;
+  tajadaProvisional: string;
+}
+
+interface Resumen {
+  configurada: boolean;
+  pozoTotal: string;
+  pozoSinRepartir: string;
+  pantallasComisionadas: number;
+  porUsuario: FilaResumenUsuario[];
 }
 
 // Igual que en estadisticas-contenido.tsx/dashboard-cliente.tsx (CLAUDE.md:
@@ -150,6 +166,10 @@ export default function ComisionesCliente() {
   const [cargandoSimulacion, setCargandoSimulacion] = useState(false);
   const [errorSimulacion, setErrorSimulacion] = useState<string | null>(null);
 
+  const [resumen, setResumen] = useState<Resumen | null>(null);
+  const [cargandoResumen, setCargandoResumen] = useState(true);
+  const [errorResumen, setErrorResumen] = useState<string | null>(null);
+
   const [guardando, setGuardando] = useState(false);
   const [errorGuardado, setErrorGuardado] = useState<string | null>(null);
   const [guardadoOk, setGuardadoOk] = useState(false);
@@ -244,6 +264,30 @@ export default function ComisionesCliente() {
       clearTimeout(manija);
     };
   }, [parametros, desde, hasta]);
+
+  // Resumen por persona: a diferencia del simulador, siempre usa la política
+  // guardada (ConfiguracionComision vigente), no los controles del
+  // formulario — es el cálculo real (PROMPT-F6.6), no una simulación.
+  useEffect(() => {
+    if (!desde || !hasta) return;
+    let activo = true;
+    (async () => {
+      setCargandoResumen(true);
+      setErrorResumen(null);
+      const { data, error } = await api.comisiones.resumen.get({ query: { desde, hasta } });
+      if (!activo) return;
+      if (error || !data) {
+        setErrorResumen(mensajeDeError(error));
+        setResumen(null);
+      } else {
+        setResumen(data);
+      }
+      setCargandoResumen(false);
+    })();
+    return () => {
+      activo = false;
+    };
+  }, [desde, hasta]);
 
   async function guardar() {
     if (!valorEsValido(parametros)) return;
@@ -350,6 +394,64 @@ export default function ComisionesCliente() {
           ) : null}
         </Tarjeta>
       )}
+
+      <Tarjeta>
+        <TarjetaCabecera
+          titulo="Resumen del período"
+          accion={<Pastilla tono="secundario" icono={Users2}>{desde} – {hasta}</Pastilla>}
+        />
+        {errorResumen ? <Aviso variante="critico">{errorResumen}</Aviso> : null}
+
+        {cargandoResumen && !resumen ? (
+          <Esqueleto className="h-24 w-full" />
+        ) : !resumen?.configurada ? (
+          <p className="cuerpo text-ink-muted">Todavía no hay una política de comisiones guardada.</p>
+        ) : (
+          <>
+            <div className="rounded-control border border-borde bg-plano p-4">
+              <p className="cuerpo text-ink-muted">
+                Pozo total: <span className="font-semibold text-ink">{formatearPesos(resumen.pozoTotal)}</span>
+                {" · "}
+                {resumen.pantallasComisionadas} pantallas comisionadas
+              </p>
+            </div>
+
+            {resumen.pozoSinRepartir !== "0" ? (
+              <Aviso variante="aviso" className="mt-4">
+                {formatearPesos(resumen.pozoSinRepartir)} sin repartir: hubo pozo en algún día pero nadie estuvo de
+                turno. No se reparte entre quienes no estuvieron.
+              </Aviso>
+            ) : null}
+
+            {resumen.porUsuario.length === 0 ? (
+              <EstadoVacio icono={PiggyBank} titulo="Nadie de turno con comisión en el rango elegido" className="mt-4" />
+            ) : (
+              <div className="mt-4">
+                <Tabla>
+                  <TablaCabecera>
+                    <TablaFila>
+                      <TablaCeldaCabecera>Persona</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Horas</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Cerrado</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Hoy (provisional)</TablaCeldaCabecera>
+                    </TablaFila>
+                  </TablaCabecera>
+                  <TablaCuerpo>
+                    {resumen.porUsuario.map((fila) => (
+                      <TablaFila key={fila.usuarioId}>
+                        <TablaCelda>{fila.nombre}</TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{fila.horas.toFixed(1)}</TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{formatearPesos(fila.tajadaCerrada)}</TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{formatearPesos(fila.tajadaProvisional)}</TablaCelda>
+                      </TablaFila>
+                    ))}
+                  </TablaCuerpo>
+                </Tabla>
+              </div>
+            )}
+          </>
+        )}
+      </Tarjeta>
 
       <Tarjeta>
         <TarjetaCabecera titulo="Simulador" />

@@ -55,6 +55,7 @@ function comoFechaBogota(fecha: Date): string {
 
 describe("Reportes semanales por cargo (F6.4)", () => {
   let empresaAId: string;
+  let adminAId: string;
   let cookieAdminA: string;
   let cargoAId: string;
   let empleadoAId: string;
@@ -98,9 +99,10 @@ describe("Reportes semanales por cargo (F6.4)", () => {
 
     const adminAEmail = `admin-reportes-a-${randomUUID()}@test.local`;
     emailsUsuarios.push(adminAEmail);
-    await prismaRaw.usuario.create({
+    const adminA = await prismaRaw.usuario.create({
       data: { empresaId: empresaAId, email: adminAEmail, passwordHash: hash, nombre: "Admin A", rol: "ADMIN" },
     });
+    adminAId = adminA.id;
     cookieAdminA = await iniciarSesion(adminAEmail);
 
     const empleadoAEmail = `empleado-reportes-a-${randomUUID()}@test.local`;
@@ -355,8 +357,15 @@ describe("Reportes semanales por cargo (F6.4)", () => {
     // empleadoA y otroEmpleadoA ya reportaron esta semana en pruebas previas.
     expect(idsFaltantes).not.toContain(empleadoAId);
     expect(idsFaltantes).not.toContain(otroEmpleadoAId);
-    // vendedorA no reporta (no es EMPLEADO+), así que tampoco debe listarse.
+    // vendedorA no reporta (no es EMPLEADO), así que tampoco debe listarse.
     expect(idsFaltantes).not.toContain(vendedorAId);
+  });
+
+  it("F6.7 Parte 0: un ADMIN activo sin reporte no aparece en /reportes/faltantes (rol: EMPLEADO exacto, no 'not VENDEDOR')", async () => {
+    const faltantes = await peticionReportes("GET", `/reportes/faltantes?semana=${semanaActualQuery}`, cookieAdminA);
+    expect(faltantes.status).toBe(200);
+    const idsFaltantes = faltantes.cuerpo.faltantes.map((f: { id: string }) => f.id);
+    expect(idsFaltantes).not.toContain(adminAId);
   });
 
   it("R1: un reporte de la empresa A nunca aparece en el listado ni en los faltantes de la empresa B", async () => {

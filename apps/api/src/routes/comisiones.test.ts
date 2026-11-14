@@ -6,6 +6,7 @@ import argon2 from "argon2";
 // exactos, fuera de cualquier contexto de empresa autenticado — mismo
 // patrón que estadisticas-ventas.test.ts/reportes.test.ts.
 import { prismaRaw } from "../lib/prisma.ts";
+import { inicioDiaBogota } from "../lib/periodos.ts";
 import { auth } from "./auth.ts";
 import { comisiones } from "./comisiones.ts";
 
@@ -40,6 +41,11 @@ interface FixtureEmpresa {
   empresaId: string;
   cookieAdmin: string;
   cookieEmpleado: string;
+  empleadoId: string;
+  cookieEmpleado2: string;
+  empleado2Id: string;
+  cookieEmpleado3: string;
+  empleado3Id: string;
   cookieVendedor: string;
   vendedorId: string;
   plataformaNetflixId: string;
@@ -67,10 +73,22 @@ async function crearFixture(etiqueta: string): Promise<FixtureEmpresa> {
   const cookieAdmin = await iniciarSesion(adminEmail);
 
   const empleadoEmail = `empleado-comisiones-${randomUUID()}@test.local`;
-  await prismaRaw.usuario.create({
+  const empleado = await prismaRaw.usuario.create({
     data: { empresaId, email: empleadoEmail, passwordHash: hash, nombre: "Empleado", rol: "EMPLEADO" },
   });
   const cookieEmpleado = await iniciarSesion(empleadoEmail);
+
+  const empleado2Email = `empleado2-comisiones-${randomUUID()}@test.local`;
+  const empleado2 = await prismaRaw.usuario.create({
+    data: { empresaId, email: empleado2Email, passwordHash: hash, nombre: "Empleado 2", rol: "EMPLEADO" },
+  });
+  const cookieEmpleado2 = await iniciarSesion(empleado2Email);
+
+  const empleado3Email = `empleado3-comisiones-${randomUUID()}@test.local`;
+  const empleado3 = await prismaRaw.usuario.create({
+    data: { empresaId, email: empleado3Email, passwordHash: hash, nombre: "Empleado 3", rol: "EMPLEADO" },
+  });
+  const cookieEmpleado3 = await iniciarSesion(empleado3Email);
 
   const vendedorEmail = `vendedor-comisiones-${randomUUID()}@test.local`;
   const vendedor = await prismaRaw.usuario.create({
@@ -103,6 +121,11 @@ async function crearFixture(etiqueta: string): Promise<FixtureEmpresa> {
     empresaId,
     cookieAdmin,
     cookieEmpleado,
+    empleadoId: empleado.id,
+    cookieEmpleado2,
+    empleado2Id: empleado2.id,
+    cookieEmpleado3,
+    empleado3Id: empleado3.id,
     cookieVendedor,
     vendedorId: vendedor.id,
     plataformaNetflixId: netflix.id,
@@ -117,6 +140,8 @@ async function crearFixture(etiqueta: string): Promise<FixtureEmpresa> {
 
 async function borrarFixture(empresaId: string) {
   await prismaRaw.configuracionComision.deleteMany({ where: { empresaId } });
+  await prismaRaw.horaAdicional.deleteMany({ where: { empresaId } });
+  await prismaRaw.turno.deleteMany({ where: { empresaId } });
   await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
   await prismaRaw.venta.deleteMany({ where: { empresaId } });
   await prismaRaw.pantalla.deleteMany({ where: { empresaId } });
@@ -206,6 +231,69 @@ async function crearVariosDetalles(
 
 function urlSimulacion(parametros: Record<string, string>): string {
   return `/comisiones/simulacion?${new URLSearchParams(parametros).toString()}`;
+}
+
+async function crearTurno(empresaId: string, usuarioId: string, inicio: Date, fin: Date) {
+  return prismaRaw.turno.create({ data: { empresaId, usuarioId, inicio, fin } });
+}
+
+const MS_HORA = 60 * 60 * 1000;
+const MS_DIA = 24 * MS_HORA;
+const DESPLAZAMIENTO_BOGOTA_MS = 5 * MS_HORA;
+
+// Las pruebas de F6.6 dependen de "ahora" real (cerrado vs. provisional,
+// PROMPT-F6.6 Parte 4), a diferencia de las de F6.5 arriba que usan fechas
+// fijas en 2033 solo para aislar datos entre corridas. Por eso aquí los días
+// se calculan relativos al reloj real, no a una fecha fija.
+function inicioDiaBogotaHaceDias(diasAtras: number): Date {
+  return inicioDiaBogota(new Date(Date.now() - diasAtras * MS_DIA));
+}
+
+/** "YYYY-MM-DD" (calendario Bogotá) del día de hace `diasAtras` días. */
+function fechaISOBogota(diasAtras: number): string {
+  const ficticio = new Date(inicioDiaBogotaHaceDias(diasAtras).getTime() - DESPLAZAMIENTO_BOGOTA_MS);
+  const anio = ficticio.getUTCFullYear();
+  const mes = String(ficticio.getUTCMonth() + 1).padStart(2, "0");
+  const dia = String(ficticio.getUTCDate()).padStart(2, "0");
+  return `${anio}-${mes}-${dia}`;
+}
+
+/** Instante UTC real de las `hora` (0-24) de Bogotá del día de hace `diasAtras` días. */
+function horaBogota(diasAtras: number, hora: number): Date {
+  return new Date(inicioDiaBogotaHaceDias(diasAtras).getTime() + hora * MS_HORA);
+}
+
+async function crearPozoDia(f: FixtureEmpresa, diasAtras: number, cantidadPantallas: number, fechaVenta?: Date) {
+  const fecha = fechaVenta ?? horaBogota(diasAtras, 10); // 10:00 Bogotá, lejos de cualquier frontera.
+  const vencimiento = new Date(fecha.getTime() + 30 * MS_DIA);
+  const venta = await crearVenta(f.empresaId, {
+    vendedorId: f.vendedorId,
+    precioVenta: String(cantidadPantallas * 1000),
+    fechaVenta: fecha,
+    duracionId: f.duracionId,
+  });
+  await crearVariosDetalles(
+    f.empresaId,
+    f.duracionId,
+    venta.id,
+    f.plataformaNetflixId,
+    f.cuentaNetflixId,
+    f.pantallaNetflixId,
+    cantidadPantallas,
+    vencimiento,
+  );
+  return venta;
+}
+
+async function configurarFijoPorPantalla(f: FixtureEmpresa, valor = "1000") {
+  const respuesta = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+    modo: "FIJO_POR_PANTALLA",
+    valor,
+    umbralCantidad: 0,
+    umbralAmbito: "TOTAL",
+    umbralPeriodo: "DIA",
+  });
+  if (respuesta.status !== 201) throw new Error(`No se pudo configurar comisiones: ${JSON.stringify(respuesta.cuerpo)}`);
 }
 
 describe("Configuración de comisiones (F6.5)", () => {
@@ -751,5 +839,333 @@ describe("R1 — aislamiento entre empresas en /comisiones (F6.5)", () => {
     const simulacionB = await peticion("GET", urlSimulacion(parametros), fB.cookieAdmin);
     expect(simulacionB.cuerpo.pantallasVendidas).toBe(0);
     expect(simulacionB.cuerpo.pozoTotal).toBe("0");
+  });
+});
+
+describe("Cálculo de comisiones (F6.6)", () => {
+  let f: FixtureEmpresa;
+
+  beforeAll(async () => {
+    f = await crearFixture("CALC");
+    await configurarFijoPorPantalla(f);
+  });
+
+  afterAll(async () => {
+    await borrarFixture(f.empresaId);
+  });
+
+  it("la suma de las tajadas de un día es exactamente el pozo de ese día, con horas que no dividen exacto y montos que fuerzan a redondear", async () => {
+    const dia = 30;
+    await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 7));
+    await crearTurno(f.empresaId, f.empleado2Id, horaBogota(dia, 0), horaBogota(dia, 5));
+    await crearTurno(f.empresaId, f.empleado3Id, horaBogota(dia, 0), horaBogota(dia, 3));
+    await crearPozoDia(f, dia, 7); // pozo = 7000, horas 7+5+3=15 → fracciones.
+
+    const resumen = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    expect(resumen.status).toBe(200);
+    const porUsuario = resumen.cuerpo.porUsuario as { usuarioId: string; tajadaCerrada: string }[];
+    const tajadaPorId = new Map(porUsuario.map((u) => [u.usuarioId, u.tajadaCerrada]));
+
+    const suma = porUsuario.reduce((acumulado, u) => acumulado + Number(u.tajadaCerrada), 0);
+    expect(suma).toBe(7000); // la invariante: ni un peso de más ni de menos.
+
+    // 7000*7/15=3266.66, 7000*5/15=2333.33, 7000*3/15=1400.0 exacto; el
+    // residuo de 1 peso va a quien más horas tuvo (empleadoId, 7h).
+    expect(tajadaPorId.get(f.empleadoId)).toBe("3267");
+    expect(tajadaPorId.get(f.empleado2Id)).toBe("2333");
+    expect(tajadaPorId.get(f.empleado3Id)).toBe("1400");
+  });
+
+  it("proporcionalidad: 8 horas y 4 horas reparten 2/3 y 1/3 del pozo", async () => {
+    const dia = 31;
+    await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 8));
+    await crearTurno(f.empresaId, f.empleado2Id, horaBogota(dia, 8), horaBogota(dia, 12));
+    await crearPozoDia(f, dia, 9); // pozo = 9000.
+
+    const resumen = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    const porUsuario = resumen.cuerpo.porUsuario as { usuarioId: string; tajadaCerrada: string }[];
+    const tajadaPorId = new Map(porUsuario.map((u) => [u.usuarioId, u.tajadaCerrada]));
+
+    expect(tajadaPorId.get(f.empleadoId)).toBe("6000"); // 8h → 2/3 de 9000.
+    expect(tajadaPorId.get(f.empleado2Id)).toBe("3000"); // 4h → 1/3 de 9000.
+  });
+
+  it("alguien sin turno ese día no recibe nada, aunque ese día se haya vendido", async () => {
+    const dia = 32;
+    await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 8));
+    // empleado2Id no tiene turno este día — no debe aparecer con tajada.
+    await crearPozoDia(f, dia, 5); // pozo = 5000.
+
+    const resumen = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    const porUsuario = resumen.cuerpo.porUsuario as { usuarioId: string; tajadaCerrada: string }[];
+    expect(porUsuario.length).toBe(1);
+    expect(porUsuario[0].usuarioId).toBe(f.empleadoId);
+    expect(porUsuario[0].tajadaCerrada).toBe("5000");
+    expect(porUsuario.some((u) => u.usuarioId === f.empleado2Id)).toBe(false);
+  });
+
+  it("un turno nocturno reparte comisión en los dos días, en proporción a las horas de cada uno", async () => {
+    const diaInicio = 40; // 22:00 Bogotá de este día...
+    const diaFin = 39; //    ...hasta las 06:00 Bogotá del día siguiente.
+    await crearTurno(f.empresaId, f.empleadoId, horaBogota(diaInicio, 22), horaBogota(diaFin, 6));
+    // Segundo turno, solo en diaFin, para que ese reparto no sea 100% de una
+    // sola persona y la proporción quede realmente a prueba.
+    await crearTurno(f.empresaId, f.empleado2Id, horaBogota(diaFin, 6), horaBogota(diaFin, 8));
+
+    await crearPozoDia(f, diaInicio, 2); // pozo = 2000 ese día.
+    await crearPozoDia(f, diaFin, 3); // pozo = 3000 ese día.
+
+    const resumen = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(diaInicio)}&hasta=${fechaISOBogota(diaFin)}`,
+      f.cookieAdmin,
+    );
+    const porUsuario = resumen.cuerpo.porUsuario as { usuarioId: string; horas: number; tajadaCerrada: string }[];
+    const porId = new Map(porUsuario.map((u) => [u.usuarioId, u]));
+
+    // diaInicio: empleadoId solo con 2 horas → se lleva el pozo completo (2000).
+    // diaFin: empleadoId aporta 6 horas, empleado2Id aporta 2 horas, de un
+    // pozo de 3000 → 2250 y 750 (6/8 y 2/8).
+    expect(porId.get(f.empleadoId)?.horas).toBe(8); // 2 + 6
+    expect(porId.get(f.empleadoId)?.tajadaCerrada).toBe("4250"); // 2000 + 2250
+    expect(porId.get(f.empleado2Id)?.horas).toBe(2);
+    expect(porId.get(f.empleado2Id)?.tajadaCerrada).toBe("750");
+  });
+
+  it("un día con ventas y sin nadie de turno: todo el pozo va a pozoSinRepartir y nadie recibe", async () => {
+    const dia = 33;
+    await crearPozoDia(f, dia, 4); // pozo = 4000, nadie tiene turno ese día.
+
+    const resumen = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    expect(resumen.cuerpo.pozoSinRepartir).toBe("4000");
+    expect(resumen.cuerpo.porUsuario).toEqual([]);
+  });
+
+  it("un día cerrado no cambia cuando se registra una venta nueva hoy, con umbral mensual", async () => {
+    const dia = 20; // día ya cerrado, dentro del mismo mes de "hoy" en la mayoría de corridas.
+    await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 8));
+    await crearPozoDia(f, dia, 3); // pozo = 3000 ese día, umbral 0 → nada absorbido.
+
+    const antes = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    const tajadaAntes = (antes.cuerpo.porUsuario as { usuarioId: string; tajadaCerrada: string }[]).find(
+      (u) => u.usuarioId === f.empleadoId,
+    )?.tajadaCerrada;
+    expect(tajadaAntes).toBe("3000");
+
+    // Una venta nueva HOY, con el mismo umbral mensual (0, así que no absorbe
+    // nada, pero prueba que el día 3 no se recalcula por lo que pase hoy —
+    // las pantallas se ordenan cronológicamente, PROMPT-F6.6 Parte 4).
+    await crearPozoDia(f, 0, 2);
+
+    const despues = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    const tajadaDespues = (despues.cuerpo.porUsuario as { usuarioId: string; tajadaCerrada: string }[]).find(
+      (u) => u.usuarioId === f.empleadoId,
+    )?.tajadaCerrada;
+    expect(tajadaDespues).toBe(tajadaAntes);
+  });
+
+  it("las HoraAdicional no cambian ninguna tajada: el denominador es solo Turno", async () => {
+    const dia = 34;
+    await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 8));
+    await crearPozoDia(f, dia, 4); // pozo = 4000.
+
+    const antes = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    const tajadaAntes = (antes.cuerpo.porUsuario as { usuarioId: string; tajadaCerrada: string }[]).find(
+      (u) => u.usuarioId === f.empleadoId,
+    )?.tajadaCerrada;
+    expect(tajadaAntes).toBe("4000");
+
+    await prismaRaw.horaAdicional.create({
+      data: {
+        empresaId: f.empresaId,
+        usuarioId: f.empleadoId,
+        inicio: horaBogota(dia, 8),
+        fin: horaBogota(dia, 13),
+      },
+    });
+
+    const despues = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      f.cookieAdmin,
+    );
+    const tajadaDespues = (despues.cuerpo.porUsuario as { usuarioId: string; tajadaCerrada: string }[]).find(
+      (u) => u.usuarioId === f.empleadoId,
+    )?.tajadaCerrada;
+    expect(tajadaDespues).toBe(tajadaAntes);
+  });
+
+  it("un VENDEDOR recibe 403 en /mias; un EMPLEADO recibe 403 en /resumen", async () => {
+    expect(
+      (await peticion("GET", "/comisiones/mias?desde=2020-01-01&hasta=2020-01-01", f.cookieVendedor)).status,
+    ).toBe(403);
+    expect(
+      (await peticion("GET", "/comisiones/resumen?desde=2020-01-01&hasta=2020-01-01", f.cookieEmpleado)).status,
+    ).toBe(403);
+  });
+
+  it("GET /comisiones/mias con un usuarioId ajeno por query devuelve las propias, nunca las del otro", async () => {
+    const dia = 35;
+    // 9h y 3h (3/4 y 1/4 exactos en decimal) para no mezclar la prueba de
+    // "usuarioId se ignora" con la del redondeo, que ya tiene su propia
+    // prueba arriba.
+    await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 9));
+    await crearTurno(f.empresaId, f.empleado2Id, horaBogota(dia, 0), horaBogota(dia, 3));
+    await crearPozoDia(f, dia, 3); // pozo = 3000.
+
+    const propias = await peticion(
+      "GET",
+      `/comisiones/mias?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}&usuarioId=${f.empleado2Id}`,
+      f.cookieEmpleado,
+    );
+    expect(propias.status).toBe(200);
+    // empleadoId (9h) vs empleado2Id (3h) → 3/4 de 3000 = 2250, y la ruta
+    // debe devolver SIEMPRE la de quien autenticó (empleadoId), sin importar
+    // el usuarioId del query.
+    expect(propias.cuerpo.porDia[0].tajada).toBe("2250");
+  });
+});
+
+describe("Comisión provisional de hoy (F6.6)", () => {
+  let f: FixtureEmpresa;
+
+  beforeAll(async () => {
+    f = await crearFixture("CALCHOY");
+    await configurarFijoPorPantalla(f);
+  });
+
+  afterAll(async () => {
+    await borrarFixture(f.empresaId);
+  });
+
+  it("el provisional de hoy baja cuando entra otra persona a turno (y nunca cuenta como cerrado)", async () => {
+    const ahora = new Date();
+    await crearTurno(f.empresaId, f.empleadoId, inicioDiaBogota(ahora), ahora);
+    await crearPozoDia(f, 0, 6, ahora); // pozo = 6000 hoy.
+
+    const antes = await peticion(
+      "GET",
+      `/comisiones/mias?desde=${fechaISOBogota(0)}&hasta=${fechaISOBogota(0)}`,
+      f.cookieEmpleado,
+    );
+    expect(antes.status).toBe(200);
+    expect(antes.cuerpo.totalCerrado).toBe("0"); // hoy nunca es cerrado.
+    expect(antes.cuerpo.provisional).not.toBeNull();
+    const tajadaAntes = Number(antes.cuerpo.provisional.tajada);
+    expect(tajadaAntes).toBe(6000); // solo, se lleva todo el pozo.
+
+    // Entra otra persona a turno el mismo día: el denominador crece y la
+    // cifra de empleadoId tiene que BAJAR (PROMPT-F6.6, Parte 4).
+    await crearTurno(f.empresaId, f.empleado2Id, inicioDiaBogota(ahora), new Date());
+
+    const despues = await peticion(
+      "GET",
+      `/comisiones/mias?desde=${fechaISOBogota(0)}&hasta=${fechaISOBogota(0)}`,
+      f.cookieEmpleado,
+    );
+    expect(Number(despues.cuerpo.provisional.tajada)).toBeLessThan(tajadaAntes);
+  });
+});
+
+describe("Sin ConfiguracionComision guardada (F6.6)", () => {
+  let f: FixtureEmpresa;
+
+  beforeAll(async () => {
+    f = await crearFixture("SINCFG");
+  });
+
+  afterAll(async () => {
+    await borrarFixture(f.empresaId);
+  });
+
+  it("sin configuración guardada, /mias y /resumen responden un resultado vacío marcado, no un 500", async () => {
+    const mias = await peticion("GET", "/comisiones/mias?desde=2020-01-01&hasta=2020-01-01", f.cookieEmpleado);
+    expect(mias.status).toBe(200);
+    expect(mias.cuerpo.configurada).toBe(false);
+    expect(mias.cuerpo.totalCerrado).toBe("0");
+    expect(mias.cuerpo.provisional).toBeNull();
+    expect(mias.cuerpo.porDia).toEqual([]);
+
+    const resumen = await peticion("GET", "/comisiones/resumen?desde=2020-01-01&hasta=2020-01-01", f.cookieAdmin);
+    expect(resumen.status).toBe(200);
+    expect(resumen.cuerpo.configurada).toBe(false);
+    expect(resumen.cuerpo.pozoTotal).toBe("0");
+    expect(resumen.cuerpo.pozoSinRepartir).toBe("0");
+    expect(resumen.cuerpo.porUsuario).toEqual([]);
+  });
+});
+
+describe("R1 — aislamiento entre empresas en el cálculo de comisiones (F6.6)", () => {
+  let fA: FixtureEmpresa;
+  let fB: FixtureEmpresa;
+
+  beforeAll(async () => {
+    fA = await crearFixture("R1CALC-A");
+    fB = await crearFixture("R1CALC-B");
+    await configurarFijoPorPantalla(fA);
+    await configurarFijoPorPantalla(fB);
+  });
+
+  afterAll(async () => {
+    await borrarFixture(fA.empresaId);
+    await borrarFixture(fB.empresaId);
+  });
+
+  it("los turnos y las ventas de una empresa nunca entran al cálculo de otra", async () => {
+    const dia = 36;
+    await crearTurno(fA.empresaId, fA.empleadoId, horaBogota(dia, 0), horaBogota(dia, 8));
+    await crearPozoDia(fA, dia, 5); // pozo = 5000 en A; B no tiene turnos ni ventas ese día.
+
+    const resumenB = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      fB.cookieAdmin,
+    );
+    expect(resumenB.cuerpo.porUsuario).toEqual([]);
+    expect(resumenB.cuerpo.pozoTotal).toBe("0");
+    expect(resumenB.cuerpo.pozoSinRepartir).toBe("0");
+
+    const resumenA = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      fA.cookieAdmin,
+    );
+    expect(resumenA.cuerpo.porUsuario[0].tajadaCerrada).toBe("5000");
+
+    // Un EMPLEADO de B no ve nada de A aunque pida el mismo rango de fechas.
+    const miasB = await peticion(
+      "GET",
+      `/comisiones/mias?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+      fB.cookieEmpleado,
+    );
+    expect(miasB.cuerpo.porDia).toEqual([]);
   });
 });

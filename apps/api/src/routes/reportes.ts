@@ -207,9 +207,15 @@ export const reportes = new Elysia({ prefix: "/reportes" })
     },
   )
   // Alimenta el "reportes pendientes" del punto 6 del cliente: quién de los
-  // EMPLEADO+ activos todavía no entregó el de esta semana. Cargo aquí es el
+  // EMPLEADO activos todavía no entregó el de esta semana. Cargo aquí es el
   // actual (vive de la relación), porque la pregunta es sobre gente de HOY,
   // no sobre un reporte ya escrito.
+  //
+  // F6.7, Parte 0 (arreglo pendiente de F6.4): el filtro era
+  // `rol: { not: Rol.VENDEDOR }`, así que un ADMIN o SUPER_ADMIN activo sin
+  // reporte aparecía como "faltante". El dueño no se reclama un reporte a sí
+  // mismo, y un SUPER_ADMIN es personal de la plataforma, no de la empresa:
+  // el único rol que de verdad reporta semana a semana es EMPLEADO.
   .get(
     "/faltantes",
     async ({ query, contexto }) => {
@@ -217,7 +223,7 @@ export const reportes = new Elysia({ prefix: "/reportes" })
       const semanaInicio = semanaInicioDeQuery(query.semana);
 
       const empleados = await cliente.usuario.findMany({
-        where: { activo: true, rol: { not: Rol.VENDEDOR } },
+        where: { activo: true, rol: Rol.EMPLEADO },
         select: { id: true, nombre: true, cargo: { select: { id: true, nombre: true } } },
         orderBy: { nombre: "asc" },
       });

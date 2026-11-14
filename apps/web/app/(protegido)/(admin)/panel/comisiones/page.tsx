@@ -1,16 +1,20 @@
 import { redirect } from "next/navigation";
-import { inicioParaRol, obtenerSesion, satisfaceRol } from "@/lib/sesion";
+import { obtenerSesion, satisfaceRol } from "@/lib/sesion";
 import ComisionesCliente from "./comisiones-cliente";
+import { MisComisionesCliente } from "./mis-comisiones-cliente";
 
+/**
+ * El contenido se bifurca por rol (F6.6): un EMPLEADO ve su propia tajada
+ * calculada (sin pozo total ni precio de venta, R4); ADMIN+ ve la política,
+ * el simulador y el resumen por persona. El layout de (admin) ya bloquea a
+ * VENDEDOR en el servidor.
+ */
 export default async function PaginaComisiones() {
   const sesion = await obtenerSesion();
   if (!sesion) redirect("/login");
 
-  // El layout de (admin) deja pasar a EMPLEADO (para /panel/cuentas). La
-  // política de comisiones es información financiera (R4) y es exclusiva de
-  // ADMIN.
   if (!satisfaceRol(sesion.usuario.rol, "ADMIN")) {
-    redirect(inicioParaRol(sesion.usuario.rol));
+    return <MisComisionesCliente />;
   }
 
   return <ComisionesCliente />;

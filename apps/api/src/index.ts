@@ -21,6 +21,8 @@ import { festivos } from "./routes/festivos.ts";
 import { horasAdicionales } from "./routes/horas-adicionales.ts";
 import { reportes } from "./routes/reportes.ts";
 import { comisiones } from "./routes/comisiones.ts";
+import { instrucciones } from "./routes/instrucciones.ts";
+import { panelEmpleado } from "./routes/panel-empleado.ts";
 import { manejadorErrores } from "./plugins/errores.ts";
 import { validarOrigen } from "./plugins/origen.ts";
 
@@ -60,7 +62,9 @@ const app = new Elysia()
   .use(festivos)
   .use(horasAdicionales)
   .use(reportes)
-  .use(comisiones);
+  .use(comisiones)
+  .use(instrucciones)
+  .use(panelEmpleado);
 
 export type App = typeof app;
 

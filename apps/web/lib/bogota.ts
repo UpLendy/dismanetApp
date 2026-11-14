@@ -30,6 +30,14 @@ export function sumarDiasISO(fechaISO: string, dias: number): string {
   return utc.toISOString().slice(0, 10);
 }
 
+/** "DD mon" (Bogotá) de un instante ISO — para tablas de comisiones por día. */
+export function etiquetaDiaBogota(iso: string): string {
+  const fecha = fechaBogotaDeInstante(iso);
+  const [, mes, dia] = fecha.split("-").map(Number);
+  const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short" });
+  return `${dia} ${nombreMes}`;
+}
+
 /** Hora de Bogotá (HH:mm) + fecha de calendario (Bogotá) -> instante UTC absoluto. */
 export function bogotaAInstanteUTC(fechaISO: string, horaHHmm: string): string {
   const [anio, mes, dia] = fechaISO.split("-").map(Number);

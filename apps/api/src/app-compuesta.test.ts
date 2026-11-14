@@ -25,6 +25,8 @@ import { festivos } from "./routes/festivos.ts";
 import { horasAdicionales } from "./routes/horas-adicionales.ts";
 import { reportes } from "./routes/reportes.ts";
 import { comisiones } from "./routes/comisiones.ts";
+import { instrucciones } from "./routes/instrucciones.ts";
+import { panelEmpleado } from "./routes/panel-empleado.ts";
 
 /** Forma de error del API: `{ error: { codigo, mensaje } }` (CLAUDE.md). */
 type RespuestaError = { error: { codigo: string; mensaje: string } };
@@ -59,7 +61,9 @@ const app = new Elysia()
   .use(festivos)
   .use(horasAdicionales)
   .use(reportes)
-  .use(comisiones);
+  .use(comisiones)
+  .use(instrucciones)
+  .use(panelEmpleado);
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -212,6 +216,10 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
         body: JSON.stringify(body),
       }),
     );
+  }
+
+  async function del(ruta: string, cookie: string = cookieAdmin) {
+    return app.handle(new Request(`http://local${ruta}`, { method: "DELETE", headers: { cookie } }));
   }
 
   it("un ADMIN puede usar /usuarios, /plataformas, /duraciones, /tipos-cliente, /cargos y /paquetes aunque /empresas también esté montado", async () => {
@@ -830,10 +838,10 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   });
 
   // F6.5 — /comisiones es un router nuevo, montado al final de la cadena:
-  // misma prueba de scope que los anteriores. A diferencia de /reportes y
-  // /horas-adicionales, este router es ADMIN-only de punta a punta — no hay
-  // ninguna ruta abierta a EMPLEADO (es política + cifras financieras, R4).
-  it("un ADMIN puede usar las 4 rutas de /comisiones aunque el resto de la app compuesta también esté montado", async () => {
+  // misma prueba de scope que los anteriores. F6.6 le agregó /mias (EMPLEADO
+  // en adelante) y /resumen (ADMIN) — configuracion/historial/simulacion
+  // siguen ADMIN-only (política + cifras financieras, R4).
+  it("un ADMIN puede usar las rutas de /comisiones aunque el resto de la app compuesta también esté montado", async () => {
     const guardado = await put(
       "/comisiones/configuracion",
       { modo: "FIJO_POR_PANTALLA", valor: "1000", umbralCantidad: 10, umbralAmbito: "TOTAL", umbralPeriodo: "DIA" },
@@ -848,9 +856,19 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       "/comisiones/simulacion?desde=2026-01-01&hasta=2026-01-31&modo=FIJO_POR_PANTALLA&valor=1000&umbralCantidad=10&umbralAmbito=TOTAL&umbralPeriodo=DIA",
     );
     expect(simulacion.status).toBe(200);
+
+    expect((await get("/comisiones/mias?desde=2026-01-01&hasta=2026-01-31")).status).toBe(200);
+    expect((await get("/comisiones/resumen?desde=2026-01-01&hasta=2026-01-31")).status).toBe(200);
   });
 
-  it("un EMPLEADO y un VENDEDOR reciben 403 en todas las rutas de /comisiones (F6.5: solo ADMIN, política y cifras financieras)", async () => {
+  it("un EMPLEADO puede usar /comisiones/mias pero recibe 403 en el resto; un VENDEDOR recibe 403 en todas (F6.6)", async () => {
+    expect((await get("/comisiones/mias?desde=2026-01-01&hasta=2026-01-31", cookieEmpleado)).status).toBe(200);
+    expect((await get("/comisiones/resumen?desde=2026-01-01&hasta=2026-01-31", cookieEmpleado)).status).toBe(403);
+    expect((await get("/comisiones/configuracion", cookieEmpleado)).status).toBe(403);
+    expect((await get("/comisiones/configuracion/historial", cookieEmpleado)).status).toBe(403);
+
+    expect((await get("/comisiones/mias?desde=2026-01-01&hasta=2026-01-31", cookieVendedor)).status).toBe(403);
+
     for (const cookie of [cookieEmpleado, cookieVendedor]) {
       expect((await get("/comisiones/configuracion", cookie)).status).toBe(403);
       expect((await get("/comisiones/configuracion/historial", cookie)).status).toBe(403);
@@ -871,6 +889,108 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
           )
         ).status,
       ).toBe(403);
+      expect((await get("/comisiones/resumen?desde=2026-01-01&hasta=2026-01-31", cookie)).status).toBe(403);
     }
+  });
+
+  // F6.7 — /instrucciones es un router nuevo, montado al final de la
+  // cadena (después de /comisiones). Mezcla dos niveles de guarda en la
+  // misma instancia, igual que /reportes y /turnos: EMPLEADO en adelante
+  // para leer y marcar cumplida, ADMIN en adelante para administrar. Un
+  // VENDEDOR no entra a nada (mismo criterio que F6.3/F6.4: no recibe
+  // instrucciones de operación).
+  it("un ADMIN puede crear, publicar, listar, consultar cumplimiento y borrar en /instrucciones aunque el resto de la app compuesta también esté montado", async () => {
+    const creada = await post("/instrucciones", { titulo: "Instrucción de prueba", semana: semanaActualISO });
+    expect(creada.status).toBe(201);
+    const { instruccion } = (await creada.json()) as { instruccion: { id: string } };
+
+    expect((await patch(`/instrucciones/${instruccion.id}/publicar`)).status).toBe(200);
+    expect((await get(`/instrucciones?semana=${semanaActualISO}`)).status).toBe(200);
+    expect((await get(`/instrucciones/${instruccion.id}/cumplimiento`)).status).toBe(200);
+    // F6.8: sin videos, el propio progreso del ADMIN viene vacío.
+    expect((await get(`/instrucciones/${instruccion.id}/progreso`)).status).toBe(200);
+
+    // Publicada: no se borra (409) hasta despublicarla.
+    expect((await del(`/instrucciones/${instruccion.id}`)).status).toBe(409);
+    expect((await patch(`/instrucciones/${instruccion.id}/despublicar`)).status).toBe(200);
+    expect((await del(`/instrucciones/${instruccion.id}`)).status).toBe(200);
+  });
+
+  it("un EMPLEADO puede leer /instrucciones y marcar cumplida, pero recibe 403 en las rutas de administración", async () => {
+    const creada = await post("/instrucciones", { titulo: "Instrucción para empleados", semana: semanaActualISO });
+    const { instruccion } = (await creada.json()) as { instruccion: { id: string } };
+    await patch(`/instrucciones/${instruccion.id}/publicar`);
+
+    expect((await get(`/instrucciones?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(200);
+    expect((await post(`/instrucciones/${instruccion.id}/completar`, {}, cookieEmpleado)).status).toBe(200);
+
+    expect((await post("/instrucciones", { titulo: "x", semana: semanaActualISO }, cookieEmpleado)).status).toBe(403);
+    expect((await patch(`/instrucciones/${instruccion.id}/publicar`, cookieEmpleado)).status).toBe(403);
+    expect((await patch(`/instrucciones/${instruccion.id}/despublicar`, cookieEmpleado)).status).toBe(403);
+    expect((await del(`/instrucciones/${instruccion.id}`, cookieEmpleado)).status).toBe(403);
+    expect(
+      (
+        await post(
+          `/instrucciones/${instruccion.id}/archivos/url-subida`,
+          { nombre: "a.png", contentType: "image/png", bytes: 100 },
+          cookieEmpleado,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get(`/instrucciones/${instruccion.id}/cumplimiento`, cookieEmpleado)).status).toBe(403);
+
+    // F6.8: EMPLEADO atraviesa la guarda (llega a la lógica de negocio, que
+    // responde 404 porque "alguno" no es un archivo real) — distinto del
+    // 403 de VENDEDOR en el mismo caso, abajo.
+    expect(
+      (await post(`/instrucciones/${instruccion.id}/archivos/alguno/progreso`, { desde: 0, hasta: 1 }, cookieEmpleado)).status,
+    ).toBe(404);
+    expect((await get(`/instrucciones/${instruccion.id}/progreso`, cookieEmpleado)).status).toBe(200);
+
+    await patch(`/instrucciones/${instruccion.id}/despublicar`);
+    await del(`/instrucciones/${instruccion.id}`);
+  });
+
+  it("un VENDEDOR recibe 403 en todas las rutas de /instrucciones (F6.7: mismo criterio que F6.3/F6.4, no recibe instrucciones)", async () => {
+    const creada = await post("/instrucciones", { titulo: "Instrucción para vendedor", semana: semanaActualISO });
+    const { instruccion } = (await creada.json()) as { instruccion: { id: string } };
+    await patch(`/instrucciones/${instruccion.id}/publicar`);
+
+    expect((await get(`/instrucciones?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+    expect((await post(`/instrucciones/${instruccion.id}/completar`, {}, cookieVendedor)).status).toBe(403);
+    expect(
+      (await get(`/instrucciones/${instruccion.id}/archivos/alguno/url`, cookieVendedor)).status,
+    ).toBe(403);
+    expect((await post("/instrucciones", { titulo: "x", semana: semanaActualISO }, cookieVendedor)).status).toBe(403);
+    // F6.8: la guarda de rol bloquea antes de llegar a buscar el archivo.
+    expect(
+      (await post(`/instrucciones/${instruccion.id}/archivos/alguno/progreso`, { desde: 0, hasta: 1 }, cookieVendedor)).status,
+    ).toBe(403);
+    expect((await get(`/instrucciones/${instruccion.id}/progreso`, cookieVendedor)).status).toBe(403);
+
+    await patch(`/instrucciones/${instruccion.id}/despublicar`);
+    await del(`/instrucciones/${instruccion.id}`);
+  });
+
+  // F6.9 — /panel-empleado es un router nuevo, montado al final de la
+  // cadena (después de /instrucciones). Mezcla dos niveles de guarda en la
+  // misma instancia: EMPLEADO en adelante para el propio panel, ADMIN en
+  // adelante para el de cualquier empleado. Un VENDEDOR no entra a nada
+  // (R1/R4 y las 8 pruebas completas viven en panel-empleado.test.ts; aquí
+  // solo se verifica que la guarda de rol sobrevive montada junto al resto
+  // de la app).
+  it("un ADMIN puede ver su propio panel y el de cualquier empleado aunque el resto de la app compuesta también esté montado", async () => {
+    expect((await get("/panel-empleado")).status).toBe(200);
+    expect((await get(`/panel-empleado/${empleadoId}`)).status).toBe(200);
+  });
+
+  it("un EMPLEADO puede ver su propio panel, pero recibe 403 al pedir el de otro usuario", async () => {
+    expect((await get("/panel-empleado", cookieEmpleado)).status).toBe(200);
+    expect((await get(`/panel-empleado/${empleadoId}`, cookieEmpleado)).status).toBe(403);
+  });
+
+  it("un VENDEDOR recibe 403 en las dos rutas de /panel-empleado (F6.9: mismo criterio que F6.3/F6.4/F6.7)", async () => {
+    expect((await get("/panel-empleado", cookieVendedor)).status).toBe(403);
+    expect((await get(`/panel-empleado/${empleadoId}`, cookieVendedor)).status).toBe(403);
   });
 });

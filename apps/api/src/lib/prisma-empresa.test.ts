@@ -45,6 +45,10 @@ interface FixtureEmpresa {
   horaAdicionalId: string;
   reporteSemanalId: string;
   configuracionComisionId: string;
+  instruccionId: string;
+  instruccionArchivoId: string;
+  instruccionCumplimientoId: string;
+  instruccionVisualizacionId: string;
 }
 
 // Nombre de la propiedad del cliente de Prisma para un modelo del esquema:
@@ -301,6 +305,49 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  const instruccion = await prismaRaw.instruccion.create({
+    data: {
+      empresaId: empresa.id,
+      titulo: `Instrucción de prueba ${nombre}`,
+      semanaInicio: inicioSemanaBogota(new Date()),
+      cargoId: cargo.id,
+      creadaPorId: usuario.id,
+    },
+  });
+
+  const instruccionArchivo = await prismaRaw.instruccionArchivo.create({
+    data: {
+      empresaId: empresa.id,
+      instruccionId: instruccion.id,
+      tipo: "IMAGEN",
+      clave: `empresas/${empresa.id}/instrucciones/${instruccion.id}/fixture.png`,
+      nombre: "fixture.png",
+      contentType: "image/png",
+      bytes: 1024,
+      orden: 1,
+      subidoPorId: usuario.id,
+    },
+  });
+
+  const instruccionCumplimiento = await prismaRaw.instruccionCumplimiento.create({
+    data: {
+      empresaId: empresa.id,
+      instruccionId: instruccion.id,
+      usuarioId: usuario.id,
+    },
+  });
+
+  const instruccionVisualizacion = await prismaRaw.instruccionVisualizacion.create({
+    data: {
+      empresaId: empresa.id,
+      archivoId: instruccionArchivo.id,
+      usuarioId: usuario.id,
+      tramos: [[0, 1]],
+      primerReporte: new Date(),
+      ultimoReporte: new Date(),
+    },
+  });
+
   return {
     empresaId: empresa.id,
     usuarioId: usuario.id,
@@ -328,6 +375,10 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     horaAdicionalId: horaAdicional.id,
     reporteSemanalId: reporteSemanal.id,
     configuracionComisionId: configuracionComision.id,
+    instruccionId: instruccion.id,
+    instruccionArchivoId: instruccionArchivo.id,
+    instruccionCumplimientoId: instruccionCumplimiento.id,
+    instruccionVisualizacionId: instruccionVisualizacion.id,
   };
 }
 
@@ -351,6 +402,14 @@ async function borrarEmpresaCompleta(empresaId: string) {
   await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
   await prismaRaw.paquete.deleteMany({ where: { empresaId } });
   await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
+  // InstruccionCumplimiento, InstruccionVisualizacion e InstruccionArchivo
+  // referencian Instruccion y Usuario (InstruccionVisualizacion además
+  // referencia InstruccionArchivo: antes que ese); Instruccion referencia
+  // Cargo: las tres antes que Cargo y Usuario.
+  await prismaRaw.instruccionCumplimiento.deleteMany({ where: { empresaId } });
+  await prismaRaw.instruccionVisualizacion.deleteMany({ where: { empresaId } });
+  await prismaRaw.instruccionArchivo.deleteMany({ where: { empresaId } });
+  await prismaRaw.instruccion.deleteMany({ where: { empresaId } });
   await prismaRaw.cargo.deleteMany({ where: { empresaId } });
   await prismaRaw.duracion.deleteMany({ where: { empresaId } });
   await prismaRaw.plataformaPantalla.deleteMany({ where: { empresaId } });
@@ -379,8 +438,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 24 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(24);
+  it("cubre los 28 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(28);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -419,6 +478,12 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         // F6.5 — cubierto automáticamente por el escaneo del esquema (tiene
         // empresaId), sin cambiar prisma-empresa.ts.
         "ConfiguracionComision",
+        // F6.7 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "Instruccion",
+        "InstruccionArchivo",
+        "InstruccionCumplimiento",
+        "InstruccionVisualizacion",
       ].sort(),
     );
   });

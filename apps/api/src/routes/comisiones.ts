@@ -3,7 +3,14 @@ import { datosSinEmpresa, prismaParaEmpresa } from "../lib/prisma-empresa.ts";
 import { Prisma, Rol, ModoComision, AmbitoUmbral, PeriodoUmbral } from "../generated/prisma/client.ts";
 import { requiereRol } from "../plugins/guardas.ts";
 import { inicioDeFechaBogota, finDeFechaBogota } from "../lib/periodos.ts";
-import { simularComisiones, validarParametrosComision } from "../lib/comisiones.ts";
+import {
+  simularComisiones,
+  validarParametrosComision,
+  calcularComisiones,
+  configuracionVigente,
+  comisionPropia,
+  type ResultadoCalculoComisiones,
+} from "../lib/comisiones.ts";
 
 const esquemaError = t.Object({
   error: t.Object({ codigo: t.String(), mensaje: t.String() }),
@@ -78,20 +85,129 @@ const esquemaSimulacion = t.Object({
   porPeriodo: t.Array(esquemaFilaPeriodo),
 });
 
-// Política de comisiones (puntos 2-3 del cliente) y su simulador, F6.5.
-// Solo ADMIN: no calcula ni liquida nada todavía (eso es F6.6), pero ya
-// expone el % o monto fijo que se pagaría — información financiera, igual
-// que costo/utilidad (R4).
+const esquemaFilaDiaPropia = t.Object({
+  dia: t.String(),
+  cerrado: t.Boolean(),
+  horas: t.Number(),
+  tajada: t.String(),
+});
+
+const esquemaMias = t.Object({
+  configurada: t.Boolean(),
+  totalCerrado: t.String(),
+  provisional: t.Union([t.Object({ dia: t.String(), horas: t.Number(), tajada: t.String() }), t.Null()]),
+  porDia: t.Array(esquemaFilaDiaPropia),
+});
+
+// respuestaMias se extrajo a lib/comisiones.ts como comisionPropia (F6.9,
+// PROMPT Parte 0): GET /panel-empleado necesita exactamente la misma tajada.
+
+const esquemaFilaResumenUsuario = t.Object({
+  usuarioId: t.String(),
+  nombre: t.String(),
+  horas: t.Number(),
+  tajadaCerrada: t.String(),
+  tajadaProvisional: t.String(),
+});
+
+const esquemaResumen = t.Object({
+  configurada: t.Boolean(),
+  pozoTotal: t.String(),
+  pozoSinRepartir: t.String(),
+  pantallasComisionadas: t.Number(),
+  porUsuario: t.Array(esquemaFilaResumenUsuario),
+});
+
+/**
+ * Agrega el resultado de calcularComisiones por usuario, separando lo
+ * cerrado de lo provisional de hoy (Parte 4 y 6) — a diferencia de
+ * respuestaMias, aquí sí se expone el pozo total y pozoSinRepartir: esta
+ * ruta es solo ADMIN.
+ */
+function respuestaResumen(resultado: ResultadoCalculoComisiones, nombresPorUsuario: Map<string, string>) {
+  if (!resultado.configurada) {
+    return { configurada: false, pozoTotal: "0", pozoSinRepartir: "0", pantallasComisionadas: 0, porUsuario: [] };
+  }
+
+  const acumulado = new Map<
+    string,
+    { horas: number; tajadaCerrada: Prisma.Decimal; tajadaProvisional: Prisma.Decimal }
+  >();
+
+  for (const dia of resultado.porDia) {
+    for (const tajada of dia.tajadas) {
+      const actual =
+        acumulado.get(tajada.usuarioId) ??
+        { horas: 0, tajadaCerrada: new Prisma.Decimal(0), tajadaProvisional: new Prisma.Decimal(0) };
+      actual.horas += tajada.horas;
+      if (dia.cerrado) {
+        actual.tajadaCerrada = actual.tajadaCerrada.plus(tajada.tajada);
+      } else {
+        actual.tajadaProvisional = actual.tajadaProvisional.plus(tajada.tajada);
+      }
+      acumulado.set(tajada.usuarioId, actual);
+    }
+  }
+
+  const porUsuario = [...acumulado.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([usuarioId, datos]) => ({
+      usuarioId,
+      nombre: nombresPorUsuario.get(usuarioId) ?? "",
+      horas: datos.horas,
+      tajadaCerrada: datos.tajadaCerrada.toString(),
+      tajadaProvisional: datos.tajadaProvisional.toString(),
+    }));
+
+  return {
+    configurada: true,
+    pozoTotal: resultado.pozoTotal.toString(),
+    pozoSinRepartir: resultado.pozoSinRepartir.toString(),
+    pantallasComisionadas: resultado.pantallasComisionadas,
+    porUsuario,
+  };
+}
+
+const consultaRango = t.Object({ desde: t.String(), hasta: t.String() });
+
+// Política de comisiones (F6.5) y su cálculo real (F6.6). El guard mínimo es
+// EMPLEADO porque /mias es de cualquiera que pueda tener turno; las rutas de
+// configuración, simulación y resumen escalan a ADMIN más abajo. Ver
+// CLAUDE.md sobre `scoped`: el segundo .use(requiereRol(ADMIN)) vive dentro
+// de la instancia nombrada que retorna requiereRol, así que su `scoped`
+// llega hasta el final de ESTA cadena, no más allá — mismo patrón ya
+// validado en routes/instrucciones.ts.
 export const comisiones = new Elysia({ prefix: "/comisiones" })
-  .use(requiereRol(Rol.ADMIN))
+  .use(requiereRol(Rol.EMPLEADO))
   .onBeforeHandle(({ contexto, set }) => {
     if (!contexto.empresaId) {
       set.status = 400;
       return {
-        error: { codigo: "SIN_EMPRESA_ACTIVA", mensaje: "Selecciona una empresa antes de configurar comisiones." },
+        error: { codigo: "SIN_EMPRESA_ACTIVA", mensaje: "Selecciona una empresa antes de consultar comisiones." },
       };
     }
   })
+  .get(
+    "/mias",
+    async ({ contexto, query }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const configuracion = await configuracionVigente(cliente);
+      if (!configuracion) {
+        return { configurada: false, totalCerrado: "0", provisional: null, porDia: [] };
+      }
+
+      // Siempre contexto.usuarioId — nunca un usuarioId de query: esta ruta
+      // es "las mías", no "las de quien yo pida" (PROMPT-F6.6, Parte 6).
+      const resultado = await calcularComisiones(cliente, {
+        desde: inicioDeFechaBogota(query.desde),
+        hasta: finDeFechaBogota(query.hasta),
+        ...configuracion,
+      });
+      return comisionPropia(resultado, contexto.usuarioId!);
+    },
+    { query: consultaRango, response: { 200: esquemaMias } },
+  )
+  .use(requiereRol(Rol.ADMIN))
   .get(
     "/configuracion",
     async ({ contexto }) => {
@@ -127,7 +243,9 @@ export const comisiones = new Elysia({ prefix: "/comisiones" })
       // Registro por versión (CLAUDE.md): nunca UPDATE sobre la fila
       // anterior. La anterior queda intacta y consultable en /historial —
       // es lo que permite saber qué regla regía cuando se vendió, aunque el
-      // porcentaje haya cambiado antes de liquidar (eso es F6.6).
+      // porcentaje haya cambiado después (F6.6 calcula siempre con la
+      // vigente al momento de leer, no con la que regía al vender — ver el
+      // comentario de cabecera de lib/comisiones.ts).
       const creada = await cliente.configuracionComision.create({
         data: datosSinEmpresa<Prisma.ConfiguracionComisionUncheckedCreateInput>({
           modo: body.modo,
@@ -209,4 +327,36 @@ export const comisiones = new Elysia({ prefix: "/comisiones" })
       }),
       response: { 200: esquemaSimulacion, 400: esquemaError },
     },
+  )
+  .get(
+    "/resumen",
+    async ({ contexto, query }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const configuracion = await configuracionVigente(cliente);
+      if (!configuracion) {
+        return { configurada: false, pozoTotal: "0", pozoSinRepartir: "0", pantallasComisionadas: 0, porUsuario: [] };
+      }
+
+      const resultado = await calcularComisiones(cliente, {
+        desde: inicioDeFechaBogota(query.desde),
+        hasta: finDeFechaBogota(query.hasta),
+        ...configuracion,
+      });
+
+      const usuarioIds = new Set<string>();
+      for (const dia of resultado.porDia) {
+        for (const tajada of dia.tajadas) usuarioIds.add(tajada.usuarioId);
+      }
+      const usuarios =
+        usuarioIds.size > 0
+          ? await cliente.usuario.findMany({
+              where: { id: { in: [...usuarioIds] } },
+              select: { id: true, nombre: true },
+            })
+          : [];
+      const nombresPorUsuario = new Map(usuarios.map((usuario) => [usuario.id, usuario.nombre]));
+
+      return respuestaResumen(resultado, nombresPorUsuario);
+    },
+    { query: consultaRango, response: { 200: esquemaResumen } },
   );

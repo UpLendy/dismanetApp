@@ -4,7 +4,19 @@
 // "bien" y falla más tarde con un error confuso, en medio de una petición
 // real. Esta función se llama una sola vez al arrancar (src/index.ts), antes
 // de aceptar tráfico: si falta algo, el proceso no arranca.
-const VARIABLES_REQUERIDAS = ["DATABASE_URL", "JWT_SECRET", "CLAVE_CIFRADO"] as const;
+// F6.7 — S3_BUCKET/S3_REGION/S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY: los archivos
+// de instrucciones (imágenes y video) van del navegador a S3 con URLs
+// prefirmadas (ver lib/s3.ts); sin estas variables el servidor no puede
+// firmar nada, así que falla aquí, no en el primer POST /url-subida.
+const VARIABLES_REQUERIDAS = [
+  "DATABASE_URL",
+  "JWT_SECRET",
+  "CLAVE_CIFRADO",
+  "S3_BUCKET",
+  "S3_REGION",
+  "S3_ACCESS_KEY_ID",
+  "S3_SECRET_ACCESS_KEY",
+] as const;
 
 export function verificarEntorno(entorno: Record<string, string | undefined> = process.env): void {
   const faltantes = VARIABLES_REQUERIDAS.filter((nombre) => !entorno[nombre]);
