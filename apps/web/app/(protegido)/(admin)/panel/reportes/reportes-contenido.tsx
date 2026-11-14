@@ -49,7 +49,7 @@ function rangoSemanaLegible(lunesISO: string): string {
   const domingoISO = sumarDiasISO(lunesISO, 6);
   const formato = (iso: string) => {
     const [, mes, dia] = iso.split("-").map(Number);
-    const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short" });
+    const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short", timeZone: "UTC" });
     return `${dia} ${nombreMes}`;
   };
   return `${formato(lunesISO)} – ${formato(domingoISO)}`;

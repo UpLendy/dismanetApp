@@ -3,6 +3,7 @@
 // Usa el cliente de Prisma SIN EXTENDER (R1: prismaRaw solo se usa en el
 // seed y en el login, nunca en un handler de negocio).
 import argon2 from "argon2";
+import { CARGOS_POR_DEFECTO } from "../src/lib/cargos-default.js";
 import { cifrar } from "../src/lib/cifrado.js";
 import { credencialSeed } from "../src/lib/credenciales-seed.js";
 import { letraPerfil } from "@dismanet/shared";
@@ -203,6 +204,36 @@ async function main() {
     },
   });
   console.log(`✔ VENDEDOR: ${vendedor.email}`);
+
+  // Cargos (F6.1): toda empresa nueva los recibe al darse de alta (routes/
+  // empresas.ts). DISMANET se crea directo arriba, sin pasar por esa ruta, así
+  // que el seed necesita su propia copia del mismo catálogo (CARGOS_POR_DEFECTO)
+  // — el EMPLEADO de abajo necesita uno real para existir (cargoId, no el rol).
+  const cargoPorNombre = new Map<string, { id: string }>();
+  for (const nombre of CARGOS_POR_DEFECTO) {
+    const cargo = await obtenerOCrearPorNombre(
+      () => prisma.cargo.findFirst({ where: { empresaId: empresa.id, nombre } }),
+      () => prisma.cargo.create({ data: { empresaId: empresa.id, nombre } }),
+    );
+    cargoPorNombre.set(nombre, cargo);
+  }
+  console.log(`✔ Cargos: ${CARGOS_POR_DEFECTO.join(", ")}`);
+
+  const empleadoEmail = credencialSeed("SEED_EMPLEADO_EMAIL", "empleado@dismanet.local");
+  const empleadoPassword = credencialSeed("SEED_EMPLEADO_PASSWORD", "DismanetEmpleado#2026");
+  const empleado = await prisma.usuario.upsert({
+    where: { email: empleadoEmail },
+    update: {},
+    create: {
+      email: empleadoEmail,
+      passwordHash: await argon2.hash(empleadoPassword, { type: argon2.argon2id }),
+      nombre: "Empleado DISMANET",
+      rol: "EMPLEADO",
+      empresaId: empresa.id,
+      cargoId: cargoPorNombre.get("Soporte técnico")!.id,
+    },
+  });
+  console.log(`✔ EMPLEADO: ${empleado.email} (cargo: Soporte técnico)`);
 
   // -- Tipos de cliente --------------------------------------------------------
   const tipoClientePorNombre = new Map<string, { id: string }>();

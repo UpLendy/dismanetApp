@@ -130,12 +130,19 @@ export function aplicarProgreso(params: {
   const cobertura = duracionSegundos && duracionSegundos > 0 ? Math.min(1, segundosVistos / duracionSegundos) : 0;
   const tiempoRealAcumulado = (ahora.getTime() - primerReporte.getTime()) / 1000;
 
+  // Tolerancia de 1 segundo (F6.8, arreglo de redondeo): duracionSegundos y
+  // segundosVistos son ambos Int, truncados/redondeados al capturarlos, así
+  // que un video de 5,6s registra duración 6 con cobertura máxima real de 5
+  // — 83%, por debajo del 95% de forma permanente. segundosVistos >=
+  // duracionSegundos - 1 cubre ese margen de redondeo sin abrir una puerta
+  // trasera: sigue exigiéndose el control anti-trampa de tiempo real de
+  // abajo (0.9×duración), que no se toca.
   const yaCompletado = estadoPrevio?.completadoEn ?? null;
   const seCompletaAhora =
     !yaCompletado &&
     duracionSegundos !== null &&
     duracionSegundos > 0 &&
-    cobertura >= 0.95 &&
+    (cobertura >= 0.95 || segundosVistos >= duracionSegundos - 1) &&
     tiempoRealAcumulado >= 0.9 * duracionSegundos;
 
   return {

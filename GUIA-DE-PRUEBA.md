@@ -51,6 +51,7 @@ bun run dev:web                      # http://localhost:3000
 | SUPER_ADMIN | `admin@plataforma.local` | la de `SEED_SUPERADMIN_PASSWORD` en `apps/api/.env` |
 | ADMIN | `admin@dismanet.local` | `DismanetAdmin#2026` |
 | VENDEDOR | `vendedor@dismanet.local` | `DismanetVendedor#2026` |
+| EMPLEADO | `empleado@dismanet.local` | `DismanetEmpleado#2026` |
 
 ---
 

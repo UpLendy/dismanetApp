@@ -17,6 +17,7 @@ import {
 import { api } from "@/lib/api";
 import { satisfaceRol, type Rol } from "@/lib/rol";
 import { hoyBogotaISO, sumarDiasISO } from "@/lib/bogota";
+import { leerDuracionVideo } from "@/lib/duracion-video";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { Campo, AreaCampo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
@@ -104,7 +105,7 @@ function rangoSemanaLegible(lunesISO: string): string {
   const domingoISO = sumarDiasISO(lunesISO, 6);
   const formato = (iso: string) => {
     const [, mes, dia] = iso.split("-").map(Number);
-    const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short" });
+    const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short", timeZone: "UTC" });
     return `${dia} ${nombreMes}`;
   };
   return `${formato(lunesISO)} – ${formato(domingoISO)}`;
@@ -296,7 +297,12 @@ function VideoEmpleado({
 
   if (!url) return <Esqueleto className="h-40 w-full max-w-sm" />;
 
-  const cobertura = progreso?.cobertura ?? 0;
+  // completadoEn es pegajoso: una vez cumplido no se revoca. Pero si la
+  // duración cambia después (campo manual, resubida), la cobertura en vivo
+  // contra la duración actual puede quedar por debajo de 100% aunque el
+  // cumplimiento ya esté guardado. Es solo presentación: no se recalcula ni
+  // se inventa el dato, se fuerza la barra llena cuando ya está completado.
+  const cobertura = progreso?.completado ? 1 : progreso?.cobertura ?? 0;
   const porcentaje = Math.min(100, Math.round(cobertura * 100));
 
   return (
@@ -557,6 +563,8 @@ function SubidaArchivo({ instruccionId, onSubido }: { instruccionId: string; onS
     setProgreso(0);
     setError(null);
 
+    const duracionSegundos = archivo.type.startsWith("video/") ? await leerDuracionVideo(archivo) : null;
+
     const urlSubida = await api.instrucciones({ id: instruccionId }).archivos["url-subida"].post({
       nombre: archivo.name,
       contentType: archivo.type,
@@ -580,6 +588,7 @@ function SubidaArchivo({ instruccionId, onSubido }: { instruccionId: string; onS
       clave: urlSubida.data.clave,
       nombre: archivo.name,
       contentType: archivo.type,
+      duracionSegundos: duracionSegundos ?? undefined,
     });
     setSubiendo(false);
     // Mismo motivo que en FormularioInstruccion.guardar: "archivos" es a la
@@ -616,6 +625,66 @@ function SubidaArchivo({ instruccionId, onSubido }: { instruccionId: string; onS
         </div>
       ) : null}
       {error ? <Aviso variante="critico">{error}</Aviso> : null}
+    </div>
+  );
+}
+
+/**
+ * Corrección manual de duracionSegundos. Visible solo cuando la lectura
+ * automática del navegador falló o no pudo intentarse (archivo ya
+ * registrado sin duración) — sin esto, el ADMIN no tiene forma de arreglar
+ * un video ya subido salvo volviéndolo a subir.
+ */
+function DuracionManual({
+  instruccionId,
+  archivoId,
+  onCorregida,
+}: {
+  instruccionId: string;
+  archivoId: string;
+  onCorregida: (duracionSegundos: number, visualizacionesCompletadas: number) => void;
+}) {
+  const [valor, setValor] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function guardar() {
+    const duracionSegundos = Number(valor);
+    if (!Number.isInteger(duracionSegundos) || duracionSegundos <= 0) {
+      setError("Ingresa una duración en segundos, mayor que cero.");
+      return;
+    }
+    setGuardando(true);
+    setError(null);
+    const { data, error: errorRespuesta } = await api
+      .instrucciones({ id: instruccionId })
+      .archivos({ archivoId })
+      .patch({ duracionSegundos });
+    setGuardando(false);
+    if (errorRespuesta || !data) {
+      setError(mensajeDeError(errorRespuesta));
+      return;
+    }
+    onCorregida(duracionSegundos, data.visualizacionesCompletadas);
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="number"
+        min={1}
+        step={1}
+        value={valor}
+        onChange={(e) => setValor(e.target.value)}
+        placeholder="Segundos"
+        aria-label="Duración en segundos"
+        disabled={guardando}
+        className="w-20 rounded-control border border-borde bg-superficie px-2 py-1 text-xs text-ink"
+      />
+      <Boton variante="contorno" tamano="sm" onClick={guardar} disabled={guardando}>
+        {guardando ? "Guardando…" : "Fijar duración"}
+      </Boton>
+      {error ? <span className="text-xs text-critico">{error}</span> : null}
     </div>
   );
 }
@@ -698,6 +767,11 @@ function TarjetaInstruccionAdmin({
   const [mostrarCumplimiento, setMostrarCumplimiento] = useState(false);
   const [confirmandoBorrado, setConfirmandoBorrado] = useState(false);
   const [borrando, setBorrando] = useState(false);
+  // Cuántas visualizaciones ya completadas tenía cada video al corregirle la
+  // duración: si cambió la vara después de que alguien ya cumplió, el ADMIN
+  // debe enterarse (PROMPT-F6.8, Parte 2). Vive aquí, no en DuracionManual,
+  // porque ese campo desaparece apenas se corrige la duración.
+  const [avisoDuracion, setAvisoDuracion] = useState<Record<string, number>>({});
   const [errorBorrado, setErrorBorrado] = useState<string | null>(null);
 
   const cargo = cargos.find((c) => c.id === instruccion.cargoId);
@@ -750,6 +824,16 @@ function TarjetaInstruccionAdmin({
     const { error } = await api.instrucciones({ id: instruccion.id }).archivos({ archivoId }).delete();
     if (!error) {
       onCambiada({ ...instruccion, archivos: instruccion.archivos.filter((a) => a.id !== archivoId) });
+    }
+  }
+
+  function duracionCorregida(archivoId: string, duracionSegundos: number, visualizacionesCompletadas: number) {
+    onCambiada({
+      ...instruccion,
+      archivos: instruccion.archivos.map((a) => (a.id === archivoId ? { ...a, duracionSegundos } : a)),
+    });
+    if (visualizacionesCompletadas > 0) {
+      setAvisoDuracion((previo) => ({ ...previo, [archivoId]: visualizacionesCompletadas }));
     }
   }
 
@@ -819,6 +903,22 @@ function TarjetaInstruccionAdmin({
               {instruccion.archivos.map((archivo) => (
                 <div key={archivo.id} className="space-y-1">
                   <ArchivoVista instruccionId={instruccion.id} archivo={archivo} />
+                  {archivo.tipo === "VIDEO" && archivo.duracionSegundos == null ? (
+                    <DuracionManual
+                      instruccionId={instruccion.id}
+                      archivoId={archivo.id}
+                      onCorregida={(duracionSegundos, visualizacionesCompletadas) =>
+                        duracionCorregida(archivo.id, duracionSegundos, visualizacionesCompletadas)
+                      }
+                    />
+                  ) : null}
+                  {avisoDuracion[archivo.id] ? (
+                    <p className="max-w-[12rem] text-xs text-aviso">
+                      {avisoDuracion[archivo.id] === 1
+                        ? "1 empleado ya había cumplido este video con la duración anterior."
+                        : `${avisoDuracion[archivo.id]} empleados ya habían cumplido este video con la duración anterior.`}
+                    </p>
+                  ) : null}
                   <Boton variante="fantasma" tamano="sm" onClick={() => borrarArchivo(archivo.id)}>
                     <Trash2 className="text-primario-texto" /> Quitar
                   </Boton>

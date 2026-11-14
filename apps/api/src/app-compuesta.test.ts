@@ -913,6 +913,11 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     // Publicada: no se borra (409) hasta despublicarla.
     expect((await del(`/instrucciones/${instruccion.id}`)).status).toBe(409);
     expect((await patch(`/instrucciones/${instruccion.id}/despublicar`)).status).toBe(200);
+
+    // Corrección manual de duracionSegundos (hueco F6.7/F6.8): la guarda de
+    // ADMIN deja pasar aunque "alguno" no sea un archivo real.
+    expect((await patchBody(`/instrucciones/${instruccion.id}/archivos/alguno`, { duracionSegundos: 60 })).status).toBe(404);
+
     expect((await del(`/instrucciones/${instruccion.id}`)).status).toBe(200);
   });
 
@@ -938,6 +943,9 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       ).status,
     ).toBe(403);
     expect((await get(`/instrucciones/${instruccion.id}/cumplimiento`, cookieEmpleado)).status).toBe(403);
+    expect(
+      (await patchBody(`/instrucciones/${instruccion.id}/archivos/alguno`, { duracionSegundos: 60 }, cookieEmpleado)).status,
+    ).toBe(403);
 
     // F6.8: EMPLEADO atraviesa la guarda (llega a la lógica de negocio, que
     // responde 404 porque "alguno" no es un archivo real) — distinto del
@@ -962,6 +970,9 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       (await get(`/instrucciones/${instruccion.id}/archivos/alguno/url`, cookieVendedor)).status,
     ).toBe(403);
     expect((await post("/instrucciones", { titulo: "x", semana: semanaActualISO }, cookieVendedor)).status).toBe(403);
+    expect(
+      (await patchBody(`/instrucciones/${instruccion.id}/archivos/alguno`, { duracionSegundos: 60 }, cookieVendedor)).status,
+    ).toBe(403);
     // F6.8: la guarda de rol bloquea antes de llegar a buscar el archivo.
     expect(
       (await post(`/instrucciones/${instruccion.id}/archivos/alguno/progreso`, { desde: 0, hasta: 1 }, cookieVendedor)).status,

@@ -437,9 +437,14 @@ export const instrucciones = new Elysia({ prefix: "/instrucciones" })
         }
       }
 
+      // completadoEn es pegajoso (no se revoca), pero la cobertura se
+      // recalcula contra la duración actual: si cambia después (campo
+      // manual, resubida), el cumplimiento ya guardado no debe quedar
+      // acompañado de un porcentaje que lo contradiga. Es solo presentación.
+      const completado = resultado.estado.completadoEn != null;
       return {
-        cobertura: resultado.cobertura,
-        completado: resultado.estado.completadoEn != null,
+        cobertura: completado ? 1 : resultado.cobertura,
+        completado,
         segundosVistos: resultado.estado.segundosVistos,
       };
     },
@@ -489,14 +494,21 @@ export const instrucciones = new Elysia({ prefix: "/instrucciones" })
         progreso: videos.map((video) => {
           const visualizacion = porArchivo.get(video.id);
           const segundosVistos = visualizacion?.segundosVistos ?? 0;
-          const cobertura =
-            video.duracionSegundos && video.duracionSegundos > 0 ? Math.min(1, segundosVistos / video.duracionSegundos) : 0;
+          const completado = visualizacion?.completadoEn != null;
+          // completadoEn es pegajoso; la cobertura en vivo contra la
+          // duración actual puede quedar por debajo de 100% si la duración
+          // cambió después (campo manual, resubida). Presentación, no dato.
+          const cobertura = completado
+            ? 1
+            : video.duracionSegundos && video.duracionSegundos > 0
+              ? Math.min(1, segundosVistos / video.duracionSegundos)
+              : 0;
           return {
             archivoId: video.id,
             duracionSegundos: video.duracionSegundos,
             segundosVistos,
             cobertura,
-            completado: visualizacion?.completadoEn != null,
+            completado,
           };
         }),
       };
@@ -788,6 +800,50 @@ export const instrucciones = new Elysia({ prefix: "/instrucciones" })
       response: { 201: t.Object({ archivo: esquemaArchivo }), 400: esquemaError, 404: esquemaError },
     },
   )
+  // Corrección manual de duracionSegundos (hueco F6.7/F6.8: el navegador no
+  // siempre puede leerla sola — algunos webm reportan Infinity/NaN hasta que
+  // se busca dentro del archivo — y hasta esta ruta, un video sin duración
+  // quedaba así para siempre salvo volver a subirlo).
+  .patch(
+    "/:id/archivos/:archivoId",
+    async ({ params, body, contexto, set }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+      const archivo = await cliente.instruccionArchivo.findFirst({
+        where: { id: params.archivoId, instruccionId: params.id },
+      });
+      if (!archivo) {
+        set.status = 404;
+        return { error: { codigo: "ARCHIVO_NO_ENCONTRADO", mensaje: "El archivo no existe." } };
+      }
+      if (archivo.tipo !== "VIDEO") {
+        set.status = 400;
+        return { error: { codigo: "ARCHIVO_NO_ES_VIDEO", mensaje: "Solo los videos tienen duración." } };
+      }
+
+      const actualizado = await cliente.instruccionArchivo.update({
+        where: { id: archivo.id },
+        data: { duracionSegundos: body.duracionSegundos },
+      });
+
+      // Si ya hay visualizaciones completadas con la duración anterior, el
+      // ADMIN acaba de mover la vara después de que alguien ya cumplió:
+      // avisarlo en vez de dejarlo descubrirlo por su cuenta.
+      const visualizacionesCompletadas = await cliente.instruccionVisualizacion.count({
+        where: { archivoId: archivo.id, completadoEn: { not: null } },
+      });
+
+      return { archivo: respuestaArchivo(actualizado), visualizacionesCompletadas };
+    },
+    {
+      params: t.Object({ id: t.String(), archivoId: t.String() }),
+      body: t.Object({ duracionSegundos: t.Integer({ minimum: 1 }) }),
+      response: {
+        200: t.Object({ archivo: esquemaArchivo, visualizacionesCompletadas: t.Number() }),
+        400: esquemaError,
+        404: esquemaError,
+      },
+    },
+  )
   // Borra primero la fila, después el objeto en S3 — mismo orden que DELETE
   // /:id, por la misma razón: nunca deja una fila apuntando a nada.
   .delete(
@@ -862,9 +918,15 @@ export const instrucciones = new Elysia({ prefix: "/instrucciones" })
           videos: videos.map((video) => {
             const visualizacion = visualizacionPorClave.get(`${video.id}:${e.id}`);
             const segundosVistos = visualizacion?.segundosVistos ?? 0;
-            const cobertura =
-              video.duracionSegundos && video.duracionSegundos > 0 ? Math.min(1, segundosVistos / video.duracionSegundos) : 0;
-            return { archivoId: video.id, cobertura, completado: visualizacion?.completadoEn != null };
+            const completado = visualizacion?.completadoEn != null;
+            // Mismo criterio que arriba: completadoEn pegajoso manda sobre
+            // la cobertura recalculada, que es solo presentación.
+            const cobertura = completado
+              ? 1
+              : video.duracionSegundos && video.duracionSegundos > 0
+                ? Math.min(1, segundosVistos / video.duracionSegundos)
+                : 0;
+            return { archivoId: video.id, cobertura, completado };
           }),
         })),
         videos: videos.map((v) => ({ id: v.id, nombre: v.nombre, duracionSegundos: v.duracionSegundos })),

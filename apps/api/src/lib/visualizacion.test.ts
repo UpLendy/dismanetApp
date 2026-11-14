@@ -127,6 +127,66 @@ describe("aplicarProgreso", () => {
     expect(resultado.ok).toBe(false);
   });
 
+  test("tolerancia de 1 segundo: video de 5s con 4 de 5 vistos (80%) completa gracias al margen de redondeo", () => {
+    const inicio = new Date("2026-01-01T00:00:00Z");
+    let resultado = aplicarProgreso({ estadoPrevio: null, desde: 0, hasta: 2, ahora: inicio, duracionSegundos: 5 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+
+    const luego = new Date(inicio.getTime() + 5_000);
+    resultado = aplicarProgreso({ estadoPrevio: resultado.estado, desde: 2, hasta: 4, ahora: luego, duracionSegundos: 5 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+    expect(resultado.estado.segundosVistos).toBe(4);
+    expect(resultado.cobertura).toBeLessThan(0.95);
+    expect(resultado.estado.completadoEn).not.toBeNull();
+  });
+
+  test("tolerancia de 1 segundo: video de 6s con 5 de 6 vistos (83%, caso real de un video de 5,6s redondeado) completa", () => {
+    const inicio = new Date("2026-01-01T00:00:00Z");
+    let resultado = aplicarProgreso({ estadoPrevio: null, desde: 0, hasta: 2, ahora: inicio, duracionSegundos: 6 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+
+    const luego = new Date(inicio.getTime() + 6_000);
+    resultado = aplicarProgreso({ estadoPrevio: resultado.estado, desde: 2, hasta: 5, ahora: luego, duracionSegundos: 6 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+    expect(resultado.estado.segundosVistos).toBe(5);
+    expect(resultado.cobertura).toBeCloseTo(5 / 6, 5);
+    expect(resultado.estado.completadoEn).not.toBeNull();
+  });
+
+  test("tolerancia de 1 segundo: video de 10s con 9 de 10 vistos (90%) completa", () => {
+    const inicio = new Date("2026-01-01T00:00:00Z");
+    let resultado = aplicarProgreso({ estadoPrevio: null, desde: 0, hasta: 4, ahora: inicio, duracionSegundos: 10 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+
+    const luego = new Date(inicio.getTime() + 10_000);
+    resultado = aplicarProgreso({ estadoPrevio: resultado.estado, desde: 4, hasta: 9, ahora: luego, duracionSegundos: 10 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+    expect(resultado.estado.segundosVistos).toBe(9);
+    expect(resultado.cobertura).toBeLessThan(0.95);
+    expect(resultado.estado.completadoEn).not.toBeNull();
+  });
+
+  test("la tolerancia no es una puerta trasera: video de 60s con solo 50 vistos (10s de margen, no 1s) NO completa", () => {
+    const inicio = new Date("2026-01-01T00:00:00Z");
+    let resultado = aplicarProgreso({ estadoPrevio: null, desde: 0, hasta: 20, ahora: inicio, duracionSegundos: 60 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+
+    const luego = new Date(inicio.getTime() + 60_000);
+    resultado = aplicarProgreso({ estadoPrevio: resultado.estado, desde: 20, hasta: 50, ahora: luego, duracionSegundos: 60 });
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) throw new Error("unreachable");
+    expect(resultado.estado.segundosVistos).toBe(50);
+    expect(resultado.cobertura).toBeLessThan(0.95);
+    expect(resultado.estado.completadoEn).toBeNull();
+  });
+
   test("sin duracionSegundos, nunca completa aunque la cobertura reportada sea total", () => {
     const resultado = aplicarProgreso({
       estadoPrevio: null,

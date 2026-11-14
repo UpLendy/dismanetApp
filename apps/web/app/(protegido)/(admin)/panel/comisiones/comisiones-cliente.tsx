@@ -95,11 +95,11 @@ function etiquetaPeriodo(iso: string, periodo: Periodo): string {
   const fecha = fechaBogotaDeInstante(iso);
   if (periodo === "DIA") {
     const [, mes, dia] = fecha.split("-").map(Number);
-    const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short" });
+    const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short", timeZone: "UTC" });
     return `${dia} ${nombreMes}`;
   }
   const [anio, mes] = fecha.split("-").map(Number);
-  const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "long" });
+  const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "long", timeZone: "UTC" });
   return `${nombreMes} ${anio}`;
 }
 

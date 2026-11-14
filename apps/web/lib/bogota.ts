@@ -34,7 +34,7 @@ export function sumarDiasISO(fechaISO: string, dias: number): string {
 export function etiquetaDiaBogota(iso: string): string {
   const fecha = fechaBogotaDeInstante(iso);
   const [, mes, dia] = fecha.split("-").map(Number);
-  const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short" });
+  const nombreMes = new Date(Date.UTC(2000, mes - 1, 1)).toLocaleDateString("es-CO", { month: "short", timeZone: "UTC" });
   return `${dia} ${nombreMes}`;
 }
 

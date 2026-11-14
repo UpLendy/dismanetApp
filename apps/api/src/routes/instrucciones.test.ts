@@ -310,6 +310,113 @@ describe("Instrucciones semanales con imágenes y video (F6.7)", () => {
     });
   });
 
+  describe("Corrección manual de duracionSegundos (hueco F6.7/F6.8: la lectura automática del navegador puede no darse)", () => {
+    it("un ADMIN puede fijar la duración de un video que quedó registrado sin ella", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, {
+        titulo: "Instrucción con video sin duración",
+        semana: semanaActualISO,
+      });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, null);
+
+      const corregido = await peticion("PATCH", `/instrucciones/${instruccionId}/archivos/${videoId}`, fx.cookieAdmin, {
+        duracionSegundos: 185,
+      });
+      expect(corregido.status).toBe(200);
+      expect(corregido.cuerpo.archivo.duracionSegundos).toBe(185);
+      expect(corregido.cuerpo.visualizacionesCompletadas).toBe(0);
+
+      const fila = await prismaRaw.instruccionArchivo.findFirst({ where: { id: videoId } });
+      expect(fila?.duracionSegundos).toBe(185);
+
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("si el video ya tiene visualizaciones completadas, el PATCH de duración devuelve cuántas son", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, {
+        titulo: "Instrucción con video ya cumplido",
+        semana: semanaActualISO,
+      });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, 5);
+      await peticion("PATCH", `/instrucciones/${instruccionId}/publicar`, fx.cookieAdmin);
+
+      await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, { desde: 0, hasta: 2 });
+      await retrocederReloj(videoId, fx.empleadoId, 5);
+      const reporte = await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, {
+        desde: 2,
+        hasta: 5,
+      });
+      expect(reporte.cuerpo.completado).toBe(true);
+
+      // El ADMIN mueve la vara después de que el empleado ya cumplió: la
+      // respuesta debe decírselo, no dejar que se entere por accidente.
+      const corregido = await peticion("PATCH", `/instrucciones/${instruccionId}/archivos/${videoId}`, fx.cookieAdmin, {
+        duracionSegundos: 30,
+      });
+      expect(corregido.status).toBe(200);
+      expect(corregido.cuerpo.visualizacionesCompletadas).toBe(1);
+
+      await peticion("PATCH", `/instrucciones/${instruccionId}/despublicar`, fx.cookieAdmin);
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("rechaza corregir la duración de una imagen y de un archivo que no existe", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, {
+        titulo: "Instrucción con imagen",
+        semana: semanaActualISO,
+      });
+      const instruccionId = creada.cuerpo.instruccion.id;
+
+      const urlSubida = await peticion("POST", `/instrucciones/${instruccionId}/archivos/url-subida`, fx.cookieAdmin, {
+        nombre: "foto.png",
+        contentType: "image/png",
+        bytes: 1024,
+      });
+      objetosS3.set(urlSubida.cuerpo.clave, 1024);
+      const archivo = await peticion("POST", `/instrucciones/${instruccionId}/archivos`, fx.cookieAdmin, {
+        clave: urlSubida.cuerpo.clave,
+        nombre: "foto.png",
+        contentType: "image/png",
+      });
+      const imagenId = archivo.cuerpo.archivo.id;
+
+      const sobreImagen = await peticion("PATCH", `/instrucciones/${instruccionId}/archivos/${imagenId}`, fx.cookieAdmin, {
+        duracionSegundos: 60,
+      });
+      expect(sobreImagen.status).toBe(400);
+      expect(sobreImagen.cuerpo.error.codigo).toBe("ARCHIVO_NO_ES_VIDEO");
+
+      const inexistente = await peticion("PATCH", `/instrucciones/${instruccionId}/archivos/alguno`, fx.cookieAdmin, {
+        duracionSegundos: 60,
+      });
+      expect(inexistente.status).toBe(404);
+
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("un EMPLEADO y un VENDEDOR reciben 403 al intentar corregir la duración", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, {
+        titulo: "Instrucción con video (permisos)",
+        semana: semanaActualISO,
+      });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, null);
+
+      const comoEmpleado = await peticion("PATCH", `/instrucciones/${instruccionId}/archivos/${videoId}`, fx.cookieEmpleado, {
+        duracionSegundos: 90,
+      });
+      expect(comoEmpleado.status).toBe(403);
+
+      const comoVendedor = await peticion("PATCH", `/instrucciones/${instruccionId}/archivos/${videoId}`, fx.cookieVendedor, {
+        duracionSegundos: 90,
+      });
+      expect(comoVendedor.status).toBe(403);
+
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+  });
+
   describe("Visibilidad para el empleado: publicación y cargo", () => {
     it("una instrucción no publicada no sale en la consulta del empleado, ni pidiendo su id directo, y tampoco entrega URL de lectura", async () => {
       const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, {
@@ -714,6 +821,107 @@ describe("Instrucciones semanales con imágenes y video (F6.7)", () => {
       const cumplimiento = await peticion("GET", `/instrucciones/${instruccionId}/cumplimiento`, fx.cookieAdmin);
       const filaEmpleado = cumplimiento.cuerpo.cumplimiento.find((f: { id: string }) => f.id === fx.empleadoId);
       expect(filaEmpleado.videos[0].completado).toBe(false);
+
+      await peticion("PATCH", `/instrucciones/${instruccionId}/despublicar`, fx.cookieAdmin);
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("un video de 5 segundos visto por completo completa", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, { titulo: "Corto 5s", semana: semanaActualISO });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, 5);
+      await peticion("PATCH", `/instrucciones/${instruccionId}/publicar`, fx.cookieAdmin);
+
+      await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, { desde: 0, hasta: 2 });
+      await retrocederReloj(videoId, fx.empleadoId, 5);
+      const reporte = await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, {
+        desde: 2,
+        hasta: 5,
+      });
+      expect(reporte.cuerpo.completado).toBe(true);
+
+      await peticion("PATCH", `/instrucciones/${instruccionId}/despublicar`, fx.cookieAdmin);
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("un video de 6 segundos visto por completo completa", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, { titulo: "Corto 6s", semana: semanaActualISO });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, 6);
+      await peticion("PATCH", `/instrucciones/${instruccionId}/publicar`, fx.cookieAdmin);
+
+      await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, { desde: 0, hasta: 2 });
+      await retrocederReloj(videoId, fx.empleadoId, 6);
+      const reporte = await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, {
+        desde: 2,
+        hasta: 6,
+      });
+      expect(reporte.cuerpo.completado).toBe(true);
+
+      await peticion("PATCH", `/instrucciones/${instruccionId}/despublicar`, fx.cookieAdmin);
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("un video de 10 segundos visto por completo completa", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, { titulo: "Corto 10s", semana: semanaActualISO });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, 10);
+      await peticion("PATCH", `/instrucciones/${instruccionId}/publicar`, fx.cookieAdmin);
+
+      await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, { desde: 0, hasta: 4 });
+      await retrocederReloj(videoId, fx.empleadoId, 10);
+      const reporte = await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, {
+        desde: 4,
+        hasta: 10,
+      });
+      expect(reporte.cuerpo.completado).toBe(true);
+
+      await peticion("PATCH", `/instrucciones/${instruccionId}/despublicar`, fx.cookieAdmin);
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("la tolerancia de 1 segundo cubre el margen de redondeo: un video de 6 segundos con 5 vistos completa aunque la cobertura sea 83%", async () => {
+      // Caso real que motivó el arreglo: un video de 5,6s que capturó su
+      // duración con Math.round quedó registrado como 6 segundos, pero nadie
+      // puede ver más de 5 segundos completos de un video de 5,6s. Sin la
+      // tolerancia, esa cobertura (83%) nunca alcanza el 95% exigido.
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, { titulo: "Margen de redondeo", semana: semanaActualISO });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, 6);
+      await peticion("PATCH", `/instrucciones/${instruccionId}/publicar`, fx.cookieAdmin);
+
+      await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, { desde: 0, hasta: 2 });
+      await retrocederReloj(videoId, fx.empleadoId, 6);
+      const reporte = await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, {
+        desde: 2,
+        hasta: 5,
+      });
+      expect(reporte.cuerpo.segundosVistos).toBe(5);
+      // La cobertura cruda sería 5/6 ≈ 83%, pero la respuesta la fuerza a
+      // 100% en cuanto completado es true (PROMPT-F6.8, Parte 2):
+      // presentación, no dato — el valor crudo se prueba directo en
+      // lib/visualizacion.test.ts.
+      expect(reporte.cuerpo.cobertura).toBe(1);
+      expect(reporte.cuerpo.completado).toBe(true);
+
+      await peticion("PATCH", `/instrucciones/${instruccionId}/despublicar`, fx.cookieAdmin);
+      await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
+    });
+
+    it("un video de 60 segundos con solo 50 vistos no completa: la tolerancia es de un segundo, no una puerta trasera", async () => {
+      const creada = await peticion("POST", "/instrucciones", fx.cookieAdmin, { titulo: "60 con 50", semana: semanaActualISO });
+      const instruccionId = creada.cuerpo.instruccion.id;
+      const videoId = await crearVideo(fx.cookieAdmin, instruccionId, 60);
+      await peticion("PATCH", `/instrucciones/${instruccionId}/publicar`, fx.cookieAdmin);
+
+      await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, { desde: 0, hasta: 20 });
+      await retrocederReloj(videoId, fx.empleadoId, 60);
+      const reporte = await peticion("POST", `/instrucciones/${instruccionId}/archivos/${videoId}/progreso`, fx.cookieEmpleado, {
+        desde: 20,
+        hasta: 50,
+      });
+      expect(reporte.cuerpo.segundosVistos).toBe(50);
+      expect(reporte.cuerpo.completado).toBe(false);
 
       await peticion("PATCH", `/instrucciones/${instruccionId}/despublicar`, fx.cookieAdmin);
       await peticion("DELETE", `/instrucciones/${instruccionId}`, fx.cookieAdmin);
