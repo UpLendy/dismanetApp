@@ -153,6 +153,8 @@ Cualquier cambio a esta fórmula se aplica a los tres sitios de la lista en la m
 
 - **Enteros de la misma magnitud comparados contra un umbral: el redondeo decide si la comparación es alcanzable.** Cuando dos enteros salen de la misma cantidad real y se comparan entre sí, redondear cada uno por su lado puede volver la comparación imposible de satisfacer. `duracionSegundos` redondeado hacia arriba y `segundosVistos` truncado hacia abajo hacían que un video de 5,6 s registrara duración 6 con cobertura máxima 5 — 83%, por debajo del 95% exigido, para siempre. Redondear hacia el lado que mantiene la comparación satisfacible, y probar el caso corto (donde el margen de redondeo pesa), no solo el típico.
 
+- **No ejecutar `docker build` en la máquina del desarrollador.** Las imágenes las construyen los servicios remotos (Railway para `apps/api`, Netlify para `apps/web`) y un build local no verifica nada que su log no diga igual. Acá llenó el disco de la máquina dos veces, dejándola sin espacio para que el terminal creara archivos temporales. `docker compose up -d` para el Postgres de desarrollo sí está bien.
+
 ---
 
 ## Trampa conocida: Prisma CLI bajo Bun

@@ -4,9 +4,14 @@
 # lo inlinea en el build por encima de lo que se configure en Railway — el
 # frontend en producción quedaría apuntando a localhost en el navegador de
 # cada usuario. También evita subir apps/api/.env con credenciales locales.
-node_modules/
-.next/
-.env
-.env.*
-!.env.example
-.git/
+#
+# A diferencia de .gitignore, un patrón sin `/` en .dockerignore NO coincide
+# en cualquier profundidad — solo en la raíz del contexto. En un monorepo los
+# archivos reales están anidados (apps/web/.env.local, apps/api/node_modules),
+# así que cada patrón necesita el prefijo `**/` para alcanzarlos.
+**/node_modules/
+**/.next/
+**/.env
+**/.env.*
+!**/.env.example
+**/.git/

@@ -1,0 +1,22 @@
+# Netlify — despliegue de apps/web (Next.js) desde el monorepo.
+#
+# En el panel de Netlify:
+#   Package directory: apps/web   (aquí vive este archivo)
+#   Base directory:    vacío      (el install corre en la raíz, donde están
+#                                  bun.lock y los workspaces de Bun)
+#
+# Las rutas de este archivo son relativas al BASE —la raíz del repo—, no a
+# apps/web: por eso publish lleva el prefijo apps/web/.
+#
+# API_INTERNAL_URL se lee dentro de rewrites() en next.config.ts, que Next
+# resuelve EN TIEMPO DE BUILD y congela en .next/routes-manifest.json. Si no
+# está durante el build, el proxy /api/* queda apuntando a localhost:3001
+# para siempre, aunque se defina después. Decláralo en Site configuration →
+# Environment variables ANTES del primer despliegue.
+
+[build]
+  command = "bun run --cwd apps/web build"
+  publish = "apps/web/.next"
+
+[build.environment]
+  NODE_VERSION = "22"
