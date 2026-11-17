@@ -51,6 +51,19 @@ interface FilaPlataformaSimulacionCuerpo {
   pozo: string;
 }
 
+// Forma de cada fila de `plataformas` en GET /comisiones/configuracion
+// (F6.10) — comisiona/modo/valor/umbralCantidad vienen en null cuando no
+// hay ConfiguracionComision vigente, nunca una fila faltante.
+interface PlataformaResueltaCuerpo {
+  plataformaId: string;
+  nombre: string;
+  propia: boolean;
+  comisiona: boolean | null;
+  modo: string | null;
+  valor: string | null;
+  umbralCantidad: number | null;
+}
+
 interface FixtureEmpresa {
   empresaId: string;
   cookieAdmin: string;
@@ -336,10 +349,22 @@ describe("Configuración de comisiones (F6.5)", () => {
     await borrarFixture(f.empresaId);
   });
 
-  it("GET /comisiones/configuracion devuelve null antes de guardar nada", async () => {
+  it("GET /comisiones/configuracion devuelve null antes de guardar nada, con UNA FILA POR CADA PLATAFORMA ACTIVA y la regla sin resolver (bug de staging: antes devolvía plataformas: [])", async () => {
     const respuesta = await peticion("GET", "/comisiones/configuracion", f.cookieAdmin);
     expect(respuesta.status).toBe(200);
     expect(respuesta.cuerpo.configuracion).toBeNull();
+
+    const plataformas = respuesta.cuerpo.plataformas as PlataformaResueltaCuerpo[];
+    expect(plataformas.length).toBe(2);
+    const porId = new Map(plataformas.map((p) => [p.plataformaId, p]));
+    for (const id of [f.plataformaNetflixId, f.plataformaDisneyId]) {
+      const fila = porId.get(id)!;
+      expect(fila.propia).toBe(false);
+      expect(fila.comisiona).toBeNull();
+      expect(fila.modo).toBeNull();
+      expect(fila.valor).toBeNull();
+      expect(fila.umbralCantidad).toBeNull();
+    }
   });
 
   it("PUT valida el valor y el umbral antes de guardar: porcentaje fuera de (0,100], monto fijo no positivo, umbral negativo", async () => {

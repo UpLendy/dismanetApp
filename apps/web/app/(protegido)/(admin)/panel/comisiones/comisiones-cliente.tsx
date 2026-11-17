@@ -40,14 +40,18 @@ interface Configuracion {
   excepciones: Excepcion[];
 }
 
+// comisiona/modo/valor/umbralCantidad vienen en null cuando todavía no hay
+// ConfiguracionComision guardada — no hay valor por defecto contra el cual
+// resolver nada. Es el estado con el que SIEMPRE se abre esta pantalla la
+// primera vez, nunca un array vacío de plataformas.
 interface PlataformaResuelta {
   plataformaId: string;
   nombre: string;
   propia: boolean;
-  comisiona: boolean;
-  modo: Modo;
-  valor: string;
-  umbralCantidad: number;
+  comisiona: boolean | null;
+  modo: Modo | null;
+  valor: string | null;
+  umbralCantidad: number | null;
 }
 
 interface PlataformaHeredando {
@@ -205,6 +209,19 @@ function valorEsValido(parametros: ParametrosForma): boolean {
   if (!valorModoEsValido(parametros.modo, parametros.valor)) return false;
   const umbral = Number(parametros.umbralCantidad);
   return Number.isInteger(umbral) && umbral >= 0;
+}
+
+// El gris de una fila que hereda tiene que reflejar lo que el admin tiene
+// AHORA en "Valor por defecto" — si lo cambia de 1000 a 2000 antes de
+// guardar, el gris cambia al instante. Nunca el valor resuelto que vino del
+// servidor (eso es lo guardado, no lo que está en pantalla).
+function valorPorDefectoEnVivo(parametros: ParametrosForma): string {
+  return valorModoEsValido(parametros.modo, parametros.valor) ? etiquetaValor(parametros.modo, parametros.valor) : "—";
+}
+
+function umbralPorDefectoEnVivo(parametros: ParametrosForma): string {
+  const umbral = Number(parametros.umbralCantidad);
+  return Number.isInteger(umbral) && umbral >= 0 ? String(umbral) : "—";
 }
 
 /** Normaliza un nombre para agrupar plataformas con nombre parecido (F6.10, Parte 5) — no es limpieza de catálogo, solo hacerlo visible. */
@@ -806,7 +823,7 @@ export default function ComisionesCliente() {
                           min={0}
                           step="0.01"
                           disabled={!e.comisiona}
-                          placeholder={etiquetaValor(p.modo, p.valor)}
+                          placeholder={valorPorDefectoEnVivo(parametros)}
                           value={e.valor}
                           aria-invalid={Boolean(error)}
                           onChange={(ev) => actualizarEdicion(p.plataformaId, { valor: ev.target.value })}
@@ -818,7 +835,7 @@ export default function ComisionesCliente() {
                           min={0}
                           step="1"
                           disabled={!e.comisiona}
-                          placeholder={String(p.umbralCantidad)}
+                          placeholder={umbralPorDefectoEnVivo(parametros)}
                           value={e.umbralCantidad}
                           aria-invalid={Boolean(error)}
                           onChange={(ev) => actualizarEdicion(p.plataformaId, { umbralCantidad: ev.target.value })}

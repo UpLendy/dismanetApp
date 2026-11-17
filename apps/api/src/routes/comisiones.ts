@@ -66,14 +66,19 @@ const esquemaConfiguracion = t.Object({
 // La regla YA RESUELTA de una plataforma activa (F6.10, Parte 3): lo que
 // GET /configuracion muestra en la fila de cada servicio, con los campos
 // heredados ya rellenados — la pantalla nunca debe rellenarlos ella misma.
+// Cuando no hay ConfiguracionComision vigente no hay valor por defecto
+// contra el cual resolver nada, así que los campos resueltos vienen en
+// null — nunca una fila vacía ni un array vacío (bug de staging, F6.10):
+// el estado "recién abierta, sin guardar nada" es el único garantizado al
+// abrir esta pantalla por primera vez.
 const esquemaPlataformaResuelta = t.Object({
   plataformaId: t.String(),
   nombre: t.String(),
   propia: t.Boolean(),
-  comisiona: t.Boolean(),
-  modo: modoComision,
-  valor: t.String(),
-  umbralCantidad: t.Number(),
+  comisiona: t.Union([t.Boolean(), t.Null()]),
+  modo: t.Union([modoComision, t.Null()]),
+  valor: t.Union([t.String(), t.Null()]),
+  umbralCantidad: t.Union([t.Number(), t.Null()]),
 });
 
 const esquemaPlataformaHeredando = t.Object({ plataformaId: t.String(), nombre: t.String() });
@@ -359,21 +364,22 @@ export const comisiones = new Elysia({ prefix: "/comisiones" })
         select: { id: true, nombre: true },
       });
       const excepcionesPorPlataforma = new Map((vigente?.excepciones ?? []).map((e) => [e.plataformaId, e]));
-      const plataformas = vigente
-        ? activas.map((plataforma) => {
-            const excepcion = excepcionesPorPlataforma.get(plataforma.id);
-            const regla = resolverReglaPlataforma(vigente, excepcion);
-            return {
-              plataformaId: plataforma.id,
-              nombre: plataforma.nombre,
-              propia: excepcion !== undefined,
-              comisiona: regla.comisiona,
-              modo: regla.modo,
-              valor: regla.valor.toString(),
-              umbralCantidad: regla.umbralCantidad,
-            };
-          })
-        : [];
+      // SIEMPRE una fila por plataforma activa, con o sin configuración
+      // vigente — "sin configuración guardada" es el estado garantizado con
+      // el que se abre esta pantalla la primera vez, no un caso aparte.
+      const plataformas = activas.map((plataforma) => {
+        const excepcion = excepcionesPorPlataforma.get(plataforma.id);
+        const regla = vigente ? resolverReglaPlataforma(vigente, excepcion) : null;
+        return {
+          plataformaId: plataforma.id,
+          nombre: plataforma.nombre,
+          propia: excepcion !== undefined,
+          comisiona: regla?.comisiona ?? null,
+          modo: regla?.modo ?? null,
+          valor: regla?.valor.toString() ?? null,
+          umbralCantidad: regla?.umbralCantidad ?? null,
+        };
+      });
 
       return { configuracion: vigente ? respuestaConfiguracion(vigente) : null, plataformas };
     },
