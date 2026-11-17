@@ -30,6 +30,10 @@ const esquemaError = t.Object({
 // R4: ni costo, ni utilidad, ni margen, ni el pozo total del día, ni la
 // tajada de otro usuario viajan aquí jamás (ver comisionPropia, que es
 // exactamente la misma función que usa /comisiones/mias).
+//
+// totalVendido sigue el mismo criterio (decisión del cliente): el propio
+// empleado ve sus comisiones, no cuánto vendió en plata. Viaja solo en
+// GET /panel-empleado/:usuarioId, que es exclusiva de ADMIN.
 // ---------------------------------------------------------------------------
 
 const esquemaFilaDiaPropia = t.Object({
@@ -49,7 +53,7 @@ const esquemaComision = t.Object({
 const esquemaVentas = t.Object({
   numeroVentas: t.Number(),
   pantallasVendidas: t.Number(),
-  totalVendido: t.String(),
+  totalVendido: t.Optional(t.String()),
 });
 
 const esquemaMetas = t.Object({
@@ -111,7 +115,14 @@ const RESULTADO_SIN_CONFIGURAR: ResultadoCalculoComisiones = {
  * haya — nada de un query por día ni por instrucción (PROMPT-F6.9, Parte 3:
  * "que no se vuelva un N+1").
  */
-async function construirPanel(cliente: ClienteEmpresa, usuario: UsuarioObjetivo, desde: Date, hasta: Date, ahora: Date) {
+async function construirPanel(
+  cliente: ClienteEmpresa,
+  usuario: UsuarioObjetivo,
+  desde: Date,
+  hasta: Date,
+  ahora: Date,
+  esAdmin: boolean,
+) {
   // 1) Comisiones — misma función que /comisiones/mias (F6.6), mismo
   // recorte por usuario (comisionPropia): nunca el pozo total ni la tajada
   // de otro.
@@ -205,7 +216,7 @@ async function construirPanel(cliente: ClienteEmpresa, usuario: UsuarioObjetivo,
     ventas: {
       numeroVentas: ventasPropias.length,
       pantallasVendidas,
-      totalVendido: totalVendido.toString(),
+      ...(esAdmin ? { totalVendido: totalVendido.toString() } : {}),
     },
     comision,
     metas: { cumplidas, incumplidas, dias: diasMeta },
@@ -270,7 +281,9 @@ export const panelEmpleado = new Elysia({ prefix: "/panel-empleado" })
         select: { id: true, nombre: true, cargoId: true },
       });
 
-      return construirPanel(cliente, usuarioActual!, desde, hasta, ahora);
+      // El propio nunca ve totalVendido, sin importar su rol (decisión del
+      // cliente): esta es "la vista del empleado", no una vista por rol.
+      return construirPanel(cliente, usuarioActual!, desde, hasta, ahora, false);
     },
     { query: consultaRango, response: { 200: esquemaPanel } },
   )
@@ -295,7 +308,11 @@ export const panelEmpleado = new Elysia({ prefix: "/panel-empleado" })
         return { error: { codigo: "EMPLEADO_NO_ENCONTRADO", mensaje: "El empleado no existe en esta empresa." } };
       }
 
-      return construirPanel(cliente, objetivo, desde, hasta, ahora);
+      // Ruta exclusiva de ADMIN (guarda de arriba): esAdmin siempre true,
+      // pero se calcula de todas formas, mismo patrón que costo/utilidad en
+      // el resto del sistema.
+      const esAdmin = contexto.rol === Rol.ADMIN || contexto.rol === Rol.SUPER_ADMIN;
+      return construirPanel(cliente, objetivo, desde, hasta, ahora, esAdmin);
     },
     {
       params: t.Object({ usuarioId: t.String() }),

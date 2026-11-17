@@ -244,7 +244,9 @@ describe("Panel individual del empleado (F6.9)", () => {
       expect(respuesta.cuerpo.usuario.id).toBe(f.empleadoId);
       expect(respuesta.cuerpo.ventas.numeroVentas).toBe(1);
       expect(respuesta.cuerpo.ventas.pantallasVendidas).toBe(2);
-      expect(respuesta.cuerpo.ventas.totalVendido).toBe("2000");
+      // GET /panel-empleado es la vista propia: totalVendido no viaja aquí
+      // (decisión del cliente, ver describe de R4 más abajo).
+      expect(respuesta.cuerpo.ventas.totalVendido).toBeUndefined();
     });
   });
 
@@ -285,7 +287,7 @@ describe("Panel individual del empleado (F6.9)", () => {
     });
   });
 
-  describe("R4: el JSON crudo del empleado no filtra costo, utilidad, margen ni el pozo total", () => {
+  describe("R4: el JSON crudo del empleado no filtra costo, utilidad, margen, pozo total ni totalVendido", () => {
     let f: FixtureEmpresa;
 
     beforeAll(async () => {
@@ -297,7 +299,7 @@ describe("Panel individual del empleado (F6.9)", () => {
       await borrarFixture(f.empresaId);
     });
 
-    it("el texto crudo de la respuesta no contiene costo/utilidad/margen/pozoTotal", async () => {
+    it("el texto crudo de la respuesta no contiene costo/utilidad/margen/pozoTotal/totalVendido", async () => {
       const dia = 30;
       await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 8));
       await crearVentaConPantallas(f, f.empleadoId, 3, horaBogota(dia, 10));
@@ -312,6 +314,24 @@ describe("Panel individual del empleado (F6.9)", () => {
       expect(respuesta.texto).not.toContain("margen");
       expect(respuesta.texto).not.toContain("pozoTotal");
       expect(respuesta.texto).not.toContain("pozoSinRepartir");
+      // Decisión del cliente: el propio empleado ve sus comisiones, no cuánto
+      // vendió en plata. totalVendido solo viaja cuando un ADMIN consulta
+      // /panel-empleado/:usuarioId (ver prueba más abajo).
+      expect(respuesta.texto).not.toContain("totalVendido");
+    });
+
+    it("un ADMIN consultando /panel-empleado/:usuarioId sí recibe totalVendido", async () => {
+      const dia = 31;
+      await crearTurno(f.empresaId, f.empleadoId, horaBogota(dia, 0), horaBogota(dia, 8));
+      await crearVentaConPantallas(f, f.empleadoId, 4, horaBogota(dia, 10));
+
+      const respuesta = await peticion(
+        `/panel-empleado/${f.empleadoId}?desde=${fechaISOBogota(dia)}&hasta=${fechaISOBogota(dia)}`,
+        f.cookieAdmin,
+      );
+      expect(respuesta.status).toBe(200);
+      expect(respuesta.texto).toContain("totalVendido");
+      expect(respuesta.cuerpo.ventas.totalVendido).toBe("4000");
     });
   });
 
@@ -350,7 +370,7 @@ describe("Panel individual del empleado (F6.9)", () => {
       expect(respuesta.status).toBe(200);
       expect(respuesta.cuerpo.ventas.numeroVentas).toBe(0);
       expect(respuesta.cuerpo.ventas.pantallasVendidas).toBe(0);
-      expect(respuesta.cuerpo.ventas.totalVendido).toBe("0");
+      expect(respuesta.cuerpo.ventas.totalVendido).toBeUndefined();
       expect(respuesta.cuerpo.comision.configurada).toBe(false);
       expect(respuesta.cuerpo.comision.totalCerrado).toBe("0");
       expect(respuesta.cuerpo.comision.provisional).toBeNull();

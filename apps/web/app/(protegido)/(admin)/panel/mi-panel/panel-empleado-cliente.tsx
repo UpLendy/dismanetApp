@@ -30,7 +30,11 @@ interface Comision {
 interface Ventas {
   numeroVentas: number;
   pantallasVendidas: number;
-  totalVendido: string;
+  // Decisión del cliente: el propio empleado no ve cuánto vendió en plata,
+  // solo su comisión. El API omite el campo por completo en GET
+  // /panel-empleado (ver panel-empleado.ts); solo viaja cuando esAdmin
+  // consulta /panel-empleado/:usuarioId.
+  totalVendido?: string;
 }
 
 interface Metas {
@@ -285,7 +289,7 @@ export function PanelEmpleadoCliente({ esAdmin }: { esAdmin: boolean }) {
               {datos.ventas.numeroVentas === 0 ? (
                 <EstadoVacio icono={ShoppingCart} titulo="Sin ventas en el rango elegido" />
               ) : (
-                <div className="grid grid-cols-3 gap-3 text-center">
+                <div className={`grid gap-3 text-center ${esAdmin ? "grid-cols-3" : "grid-cols-2"}`}>
                   <div>
                     <p className="text-2xl font-semibold text-ink">{datos.ventas.numeroVentas}</p>
                     <p className="text-xs text-ink-muted">Ventas</p>
@@ -294,10 +298,12 @@ export function PanelEmpleadoCliente({ esAdmin }: { esAdmin: boolean }) {
                     <p className="text-2xl font-semibold text-ink">{datos.ventas.pantallasVendidas}</p>
                     <p className="text-xs text-ink-muted">Pantallas</p>
                   </div>
-                  <div>
-                    <p className="text-2xl font-semibold text-ink">{formatearPesos(datos.ventas.totalVendido)}</p>
-                    <p className="text-xs text-ink-muted">Vendido</p>
-                  </div>
+                  {esAdmin && datos.ventas.totalVendido !== undefined ? (
+                    <div>
+                      <p className="text-2xl font-semibold text-ink">{formatearPesos(datos.ventas.totalVendido)}</p>
+                      <p className="text-xs text-ink-muted">Vendido</p>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </Tarjeta>
