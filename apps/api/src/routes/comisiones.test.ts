@@ -9,6 +9,7 @@ import { prismaRaw } from "../lib/prisma.ts";
 import { inicioDiaBogota } from "../lib/periodos.ts";
 import { auth } from "./auth.ts";
 import { comisiones } from "./comisiones.ts";
+import { Prisma } from "../generated/prisma/client.ts";
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -35,6 +36,19 @@ async function peticion(metodo: string, ruta: string, cookie: string, cuerpo?: u
   );
   const texto = await respuesta.text();
   return { status: respuesta.status, cuerpo: texto ? JSON.parse(texto) : null };
+}
+
+// Forma de cada fila de porPlataforma en la respuesta de POST
+// /comisiones/simulacion (F6.10) — usada para castear respuesta.cuerpo
+// (JSON.parse) antes de mapear, igual que el resto del archivo castea
+// resumen.cuerpo.porUsuario.
+interface FilaPlataformaSimulacionCuerpo {
+  plataformaId: string;
+  pantallasVendidas: number;
+  pantallasAbsorbidas: number;
+  pantallasExcluidas: number;
+  pantallasComisionadas: number;
+  pozo: string;
 }
 
 interface FixtureEmpresa {
@@ -139,6 +153,7 @@ async function crearFixture(etiqueta: string): Promise<FixtureEmpresa> {
 }
 
 async function borrarFixture(empresaId: string) {
+  await prismaRaw.configuracionComisionPlataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.configuracionComision.deleteMany({ where: { empresaId } });
   await prismaRaw.horaAdicional.deleteMany({ where: { empresaId } });
   await prismaRaw.turno.deleteMany({ where: { empresaId } });
@@ -229,8 +244,22 @@ async function crearVariosDetalles(
   }
 }
 
-function urlSimulacion(parametros: Record<string, string>): string {
-  return `/comisiones/simulacion?${new URLSearchParams(parametros).toString()}`;
+// F6.10, Parte 3: /comisiones/simulacion es POST con body, no GET con query
+// — la tabla de excepciones no entra en un query string. `parametros` sigue
+// llegando como strings (igual que antes, cuando venían de un query real)
+// para no tener que tocar cada caso existente; aquí se convierte lo que
+// necesita ser número.
+async function simular(cookie: string, parametros: Record<string, string>, excepciones?: unknown[]) {
+  return peticion("POST", "/comisiones/simulacion", cookie, {
+    desde: parametros.desde,
+    hasta: parametros.hasta,
+    modo: parametros.modo,
+    valor: parametros.valor,
+    umbralCantidad: Number(parametros.umbralCantidad),
+    umbralAmbito: parametros.umbralAmbito,
+    umbralPeriodo: parametros.umbralPeriodo,
+    ...(excepciones !== undefined ? { excepciones } : {}),
+  });
 }
 
 async function crearTurno(empresaId: string, usuarioId: string, inicio: Date, fin: Date) {
@@ -412,22 +441,576 @@ describe("Configuración de comisiones (F6.5)", () => {
       ).toBe(403);
       expect(
         (
-          await peticion(
-            "GET",
-            urlSimulacion({
-              desde: "2033-01-01",
-              hasta: "2033-01-01",
-              modo: "FIJO_POR_PANTALLA",
-              valor: "1000",
-              umbralCantidad: "10",
-              umbralAmbito: "TOTAL",
-              umbralPeriodo: "DIA",
-            }),
-            cookie,
-          )
+          await simular(cookie, {
+            desde: "2033-01-01",
+            hasta: "2033-01-01",
+            modo: "FIJO_POR_PANTALLA",
+            valor: "1000",
+            umbralCantidad: "10",
+            umbralAmbito: "TOTAL",
+            umbralPeriodo: "DIA",
+          })
         ).status,
       ).toBe(403);
     }
+  });
+});
+
+describe("Excepciones por plataforma (F6.10)", () => {
+  let f: FixtureEmpresa;
+
+  beforeAll(async () => {
+    f = await crearFixture("EXC");
+  });
+
+  afterAll(async () => {
+    await borrarFixture(f.empresaId);
+  });
+
+  it("PUT valida cada excepción antes de guardar nada: modo sin valor, valor fuera de rango, umbral negativo, umbral propio con ámbito TOTAL, plataforma repetida y plataforma inexistente", async () => {
+    const base = { modo: "FIJO_POR_PANTALLA", valor: "1000", umbralCantidad: 0, umbralAmbito: "TOTAL", umbralPeriodo: "DIA" };
+
+    const modoSinValor = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      ...base,
+      excepciones: [{ plataformaId: f.plataformaNetflixId, comisiona: true, modo: "PORCENTAJE_VENTA" }],
+    });
+    expect(modoSinValor.status).toBe(400);
+    expect(modoSinValor.cuerpo.error.codigo).toBe("MODO_SIN_VALOR");
+
+    const valorFueraDeRango = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      ...base,
+      excepciones: [{ plataformaId: f.plataformaNetflixId, comisiona: true, modo: "PORCENTAJE_VENTA", valor: "150" }],
+    });
+    expect(valorFueraDeRango.status).toBe(400);
+    expect(valorFueraDeRango.cuerpo.error.codigo).toBe("VALOR_INVALIDO");
+
+    // TypeBox ya rechaza un entero negativo en el body (422) antes de que
+    // corra validarExcepcionComision — igual que el umbralCantidad del
+    // valor por defecto, más arriba en este archivo.
+    const umbralNegativo = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      ...base,
+      excepciones: [{ plataformaId: f.plataformaNetflixId, comisiona: true, umbralCantidad: -1 }],
+    });
+    expect(umbralNegativo.status).not.toBe(201);
+
+    // Ámbito TOTAL: un solo contador compartido, ninguna plataforma puede traer el suyo.
+    const umbralConAmbitoTotal = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      ...base,
+      umbralAmbito: "TOTAL",
+      excepciones: [{ plataformaId: f.plataformaNetflixId, comisiona: true, umbralCantidad: 3 }],
+    });
+    expect(umbralConAmbitoTotal.status).toBe(400);
+    expect(umbralConAmbitoTotal.cuerpo.error.codigo).toBe("UMBRAL_INCOMPATIBLE_CON_AMBITO_TOTAL");
+
+    const plataformaRepetida = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      ...base,
+      excepciones: [
+        { plataformaId: f.plataformaNetflixId, comisiona: true },
+        { plataformaId: f.plataformaNetflixId, comisiona: false },
+      ],
+    });
+    expect(plataformaRepetida.status).toBe(400);
+    expect(plataformaRepetida.cuerpo.error.codigo).toBe("PLATAFORMA_DUPLICADA");
+
+    const plataformaInexistente = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      ...base,
+      excepciones: [{ plataformaId: "plataforma-que-no-existe", comisiona: true }],
+    });
+    expect(plataformaInexistente.status).toBe(400);
+    expect(plataformaInexistente.cuerpo.error.codigo).toBe("PLATAFORMA_INVALIDA");
+
+    const plataformaInactiva = await prismaRaw.plataforma.create({
+      data: { empresaId: f.empresaId, nombre: "Inactiva (EXC)", capacidadPantallas: 10, activa: false },
+    });
+    const conPlataformaInactiva = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      ...base,
+      excepciones: [{ plataformaId: plataformaInactiva.id, comisiona: true }],
+    });
+    expect(conPlataformaInactiva.status).toBe(400);
+    expect(conPlataformaInactiva.cuerpo.error.codigo).toBe("PLATAFORMA_INVALIDA");
+
+    // Nada de lo anterior debió quedar guardado.
+    const vigente = await peticion("GET", "/comisiones/configuracion", f.cookieAdmin);
+    expect(vigente.cuerpo.configuracion).toBeNull();
+  });
+
+  it("comisiona:false anula modo, valor y umbralCantidad al guardar, sin importar qué venga en el body", async () => {
+    const guardado = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 0,
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+      excepciones: [
+        { plataformaId: f.plataformaNetflixId, comisiona: false, modo: "PORCENTAJE_VENTA", valor: "99", umbralCantidad: 7 },
+      ],
+    });
+    expect(guardado.status).toBe(201);
+
+    const fila = await prismaRaw.configuracionComisionPlataforma.findFirst({
+      where: { configuracionId: guardado.cuerpo.configuracion.id, plataformaId: f.plataformaNetflixId },
+    });
+    expect(fila?.comisiona).toBe(false);
+    expect(fila?.modo).toBeNull();
+    expect(fila?.valor).toBeNull();
+    expect(fila?.umbralCantidad).toBeNull();
+  });
+
+  it("GET /comisiones/configuracion resuelve cada plataforma activa: excepción parcial hereda lo que no overridea, sin excepción hereda todo, y una plataforma creada después también hereda", async () => {
+    const guardado = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 0,
+      umbralAmbito: "POR_PLATAFORMA",
+      umbralPeriodo: "DIA",
+      // Solo umbralCantidad propio: modo y valor deben resolver al valor por defecto.
+      excepciones: [{ plataformaId: f.plataformaNetflixId, comisiona: true, umbralCantidad: 3 }],
+    });
+    expect(guardado.status).toBe(201);
+    // Una sola plataforma activa quedó sin regla propia: Disney.
+    expect(guardado.cuerpo.plataformasHeredando.map((p: any) => p.plataformaId)).toEqual([
+      f.plataformaDisneyId,
+    ]);
+
+    const nueva = await prismaRaw.plataforma.create({
+      data: { empresaId: f.empresaId, nombre: "Nueva después de guardar (EXC)", capacidadPantallas: 10 },
+    });
+
+    const vigente = await peticion("GET", "/comisiones/configuracion", f.cookieAdmin);
+    const plataformasResueltas = vigente.cuerpo.plataformas as {
+      plataformaId: string;
+      propia: boolean;
+      comisiona: boolean;
+      modo: string;
+      valor: string;
+      umbralCantidad: number;
+    }[];
+    const porId = new Map(plataformasResueltas.map((p) => [p.plataformaId, p]));
+
+    const netflix = porId.get(f.plataformaNetflixId)!;
+    expect(netflix.propia).toBe(true);
+    expect(netflix.comisiona).toBe(true);
+    expect(netflix.modo).toBe("FIJO_POR_PANTALLA"); // heredado
+    expect(netflix.valor).toBe("1000"); // heredado
+    expect(netflix.umbralCantidad).toBe(3); // propio
+
+    const disney = porId.get(f.plataformaDisneyId)!;
+    expect(disney.propia).toBe(false);
+    expect(disney.comisiona).toBe(true);
+    expect(disney.modo).toBe("FIJO_POR_PANTALLA");
+    expect(disney.valor).toBe("1000");
+    expect(disney.umbralCantidad).toBe(0);
+
+    // Una plataforma creada DESPUÉS de guardar también hereda — null significa
+    // "hereda", incluidas las que todavía no existían al guardar la versión.
+    const nuevaResuelta = porId.get(nueva.id)!;
+    expect(nuevaResuelta.propia).toBe(false);
+    expect(nuevaResuelta.comisiona).toBe(true);
+    expect(nuevaResuelta.modo).toBe("FIJO_POR_PANTALLA");
+    expect(nuevaResuelta.valor).toBe("1000");
+    expect(nuevaResuelta.umbralCantidad).toBe(0);
+  });
+
+  it("el historial conserva las excepciones de cada versión; guardar una versión nueva no reescribe las de la anterior", async () => {
+    const version1 = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 0,
+      umbralAmbito: "POR_PLATAFORMA",
+      umbralPeriodo: "DIA",
+      excepciones: [{ plataformaId: f.plataformaNetflixId, comisiona: true, umbralCantidad: 9 }],
+    });
+    expect(version1.status).toBe(201);
+
+    const version2 = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      modo: "FIJO_POR_PANTALLA",
+      valor: "2000",
+      umbralCantidad: 0,
+      umbralAmbito: "POR_PLATAFORMA",
+      umbralPeriodo: "DIA",
+      excepciones: [{ plataformaId: f.plataformaDisneyId, comisiona: false }],
+    });
+    expect(version2.status).toBe(201);
+
+    const historial = await peticion("GET", "/comisiones/configuracion/historial", f.cookieAdmin);
+    const filaVersion1 = historial.cuerpo.versiones.find((v: { id: string }) => v.id === version1.cuerpo.configuracion.id);
+    const filaVersion2 = historial.cuerpo.versiones.find((v: { id: string }) => v.id === version2.cuerpo.configuracion.id);
+
+    expect(filaVersion1.excepciones).toEqual([
+      { plataformaId: f.plataformaNetflixId, comisiona: true, modo: null, valor: null, umbralCantidad: 9 },
+    ]);
+    expect(filaVersion2.excepciones).toEqual([
+      { plataformaId: f.plataformaDisneyId, comisiona: false, modo: null, valor: null, umbralCantidad: null },
+    ]);
+  });
+
+  it("una plataforma con comisiona:false no aporta al pozo y no consume el contador de umbral compartido (ámbito TOTAL)", async () => {
+    const fechaNetflix = new Date("2033-10-01T10:00:00.000Z");
+    const fechaDisney = new Date("2033-10-01T11:00:00.000Z"); // después, para que el orden determinista procese Netflix primero.
+    const vencimiento = new Date(fechaNetflix.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const ventaNetflix = await crearVenta(f.empresaId, {
+      vendedorId: f.vendedorId,
+      precioVenta: "1000",
+      fechaVenta: fechaNetflix,
+      duracionId: f.duracionId,
+    });
+    await crearDetalle(f.empresaId, f.duracionId, {
+      ventaId: ventaNetflix.id,
+      plataformaId: f.plataformaNetflixId,
+      cuentaId: f.cuentaNetflixId,
+      pantallaId: f.pantallaNetflixId,
+      fechaVencimiento: vencimiento,
+    });
+
+    const ventaDisney = await crearVenta(f.empresaId, {
+      vendedorId: f.vendedorId,
+      precioVenta: "3000",
+      fechaVenta: fechaDisney,
+      duracionId: f.duracionId,
+    });
+    await crearVariosDetalles(
+      f.empresaId,
+      f.duracionId,
+      ventaDisney.id,
+      f.plataformaDisneyId,
+      f.cuentaDisneyId,
+      f.pantallaDisneyId,
+      3,
+      vencimiento,
+    );
+
+    const parametros = {
+      desde: "2033-10-01",
+      hasta: "2033-10-01",
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: "2",
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    };
+
+    // Si la pantalla de Netflix (excluida) consumiera el contador, a Disney
+    // solo le quedaría 1 cupo de umbral y su tercera pantalla comisionaría
+    // de más. El resultado correcto es que Netflix no toca el contador: las
+    // primeras 2 de Disney se absorben y solo la tercera comisiona.
+    const resultado = await simular(f.cookieAdmin, parametros, [
+      { plataformaId: f.plataformaNetflixId, comisiona: false },
+    ]);
+    expect(resultado.cuerpo.pantallasVendidas).toBe(4);
+    expect(resultado.cuerpo.pantallasAbsorbidas).toBe(2);
+    expect(resultado.cuerpo.pantallasComisionadas).toBe(1);
+    expect(resultado.cuerpo.pozoTotal).toBe("1000");
+
+    const filasPorPlataforma = resultado.cuerpo.porPlataforma as FilaPlataformaSimulacionCuerpo[];
+    const porPlataforma = new Map(filasPorPlataforma.map((fila) => [fila.plataformaId, fila]));
+    expect(porPlataforma.get(f.plataformaNetflixId)).toEqual({
+      plataformaId: f.plataformaNetflixId,
+      pantallasVendidas: 1,
+      pantallasAbsorbidas: 0,
+      pantallasExcluidas: 1,
+      pantallasComisionadas: 0,
+      pozo: "0",
+    });
+    expect(porPlataforma.get(f.plataformaDisneyId)).toEqual({
+      plataformaId: f.plataformaDisneyId,
+      pantallasVendidas: 3,
+      pantallasAbsorbidas: 2,
+      pantallasExcluidas: 0,
+      pantallasComisionadas: 1,
+      pozo: "1000",
+    });
+  });
+
+  it("una plataforma con modo y valor propios se calcula con su propia regla aunque el resto use el valor por defecto", async () => {
+    const fecha = new Date("2033-10-02T10:00:00.000Z");
+    const vencimiento = new Date(fecha.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const ventaNetflix = await crearVenta(f.empresaId, {
+      vendedorId: f.vendedorId,
+      precioVenta: "5000",
+      fechaVenta: fecha,
+      duracionId: f.duracionId,
+    });
+    await crearDetalle(f.empresaId, f.duracionId, {
+      ventaId: ventaNetflix.id,
+      plataformaId: f.plataformaNetflixId,
+      cuentaId: f.cuentaNetflixId,
+      pantallaId: f.pantallaNetflixId,
+      fechaVencimiento: vencimiento,
+    });
+
+    const ventaDisney = await crearVenta(f.empresaId, {
+      vendedorId: f.vendedorId,
+      precioVenta: "9999",
+      fechaVenta: fecha,
+      duracionId: f.duracionId,
+    });
+    await crearDetalle(f.empresaId, f.duracionId, {
+      ventaId: ventaDisney.id,
+      plataformaId: f.plataformaDisneyId,
+      cuentaId: f.cuentaDisneyId,
+      pantallaId: f.pantallaDisneyId,
+      fechaVencimiento: vencimiento,
+    });
+
+    const parametros = {
+      desde: "2033-10-02",
+      hasta: "2033-10-02",
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: "0",
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    };
+
+    const resultado = await simular(f.cookieAdmin, parametros, [
+      { plataformaId: f.plataformaNetflixId, comisiona: true, modo: "PORCENTAJE_VENTA", valor: "10" },
+    ]);
+    expect(resultado.cuerpo.pozoTotal).toBe("1500"); // 5000 * 10% + 1000 (Disney, FIJO por defecto)
+
+    const filasPorPlataforma = resultado.cuerpo.porPlataforma as FilaPlataformaSimulacionCuerpo[];
+    const porPlataforma = new Map(filasPorPlataforma.map((fila) => [fila.plataformaId, fila.pozo]));
+    expect(porPlataforma.get(f.plataformaNetflixId)).toBe("500");
+    expect(porPlataforma.get(f.plataformaDisneyId)).toBe("1000");
+  });
+
+  it("una plataforma con umbralCantidad propio usa su propio contador (ámbito POR_PLATAFORMA) sin heredar modo ni valor", async () => {
+    const fecha = new Date("2033-10-03T10:00:00.000Z");
+    const vencimiento = new Date(fecha.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const ventaNetflix = await crearVenta(f.empresaId, {
+      vendedorId: f.vendedorId,
+      precioVenta: "4000",
+      fechaVenta: fecha,
+      duracionId: f.duracionId,
+    });
+    await crearVariosDetalles(
+      f.empresaId,
+      f.duracionId,
+      ventaNetflix.id,
+      f.plataformaNetflixId,
+      f.cuentaNetflixId,
+      f.pantallaNetflixId,
+      2,
+      vencimiento,
+    );
+
+    const ventaDisney = await crearVenta(f.empresaId, {
+      vendedorId: f.vendedorId,
+      precioVenta: "4000",
+      fechaVenta: fecha,
+      duracionId: f.duracionId,
+    });
+    await crearVariosDetalles(
+      f.empresaId,
+      f.duracionId,
+      ventaDisney.id,
+      f.plataformaDisneyId,
+      f.cuentaDisneyId,
+      f.pantallaDisneyId,
+      2,
+      vencimiento,
+    );
+
+    const parametros = {
+      desde: "2033-10-03",
+      hasta: "2033-10-03",
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: "1", // por defecto: la primera de cada plataforma se absorbe.
+      umbralAmbito: "POR_PLATAFORMA",
+      umbralPeriodo: "DIA",
+    };
+
+    // Netflix trae su propio umbralCantidad (0: nada se absorbe); su modo y
+    // valor siguen siendo los del valor por defecto.
+    const resultado = await simular(f.cookieAdmin, parametros, [
+      { plataformaId: f.plataformaNetflixId, comisiona: true, umbralCantidad: 0 },
+    ]);
+    expect(resultado.cuerpo.pozoTotal).toBe("3000"); // Netflix: 2×1000 sin absorción. Disney: 1 absorbida, 1×1000.
+
+    const filasPorPlataforma = resultado.cuerpo.porPlataforma as FilaPlataformaSimulacionCuerpo[];
+    const porPlataforma = new Map(filasPorPlataforma.map((fila) => [fila.plataformaId, fila]));
+    expect(porPlataforma.get(f.plataformaNetflixId)).toEqual({
+      plataformaId: f.plataformaNetflixId,
+      pantallasVendidas: 2,
+      pantallasAbsorbidas: 0,
+      pantallasExcluidas: 0,
+      pantallasComisionadas: 2,
+      pozo: "2000",
+    });
+    expect(porPlataforma.get(f.plataformaDisneyId)).toEqual({
+      plataformaId: f.plataformaDisneyId,
+      pantallasVendidas: 2,
+      pantallasAbsorbidas: 1,
+      pantallasExcluidas: 0,
+      pantallasComisionadas: 1,
+      pozo: "1000",
+    });
+  });
+
+  it("el cálculo real (GET /resumen) también excluye las pantallas de una plataforma que no comisiona, igual que el simulador", async () => {
+    const guardado = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 0,
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+      excepciones: [{ plataformaId: f.plataformaNetflixId, comisiona: false }],
+    });
+    expect(guardado.status).toBe(201);
+
+    const fecha = new Date("2033-10-04T10:00:00.000Z");
+    const vencimiento = new Date(fecha.getTime() + 30 * 24 * 60 * 60 * 1000);
+    await crearTurno(f.empresaId, f.empleadoId, fecha, new Date(fecha.getTime() + 60 * 60 * 1000));
+    const venta = await crearVenta(f.empresaId, {
+      vendedorId: f.vendedorId,
+      precioVenta: "1000",
+      fechaVenta: fecha,
+      duracionId: f.duracionId,
+    });
+    await crearDetalle(f.empresaId, f.duracionId, {
+      ventaId: venta.id,
+      plataformaId: f.plataformaNetflixId,
+      cuentaId: f.cuentaNetflixId,
+      pantallaId: f.pantallaNetflixId,
+      fechaVencimiento: vencimiento,
+    });
+
+    const resumen = await peticion("GET", "/comisiones/resumen?desde=2033-10-04&hasta=2033-10-04", f.cookieAdmin);
+    expect(resumen.cuerpo.pantallasComisionadas).toBe(0);
+    expect(resumen.cuerpo.pozoTotal).toBe("0");
+    expect(resumen.cuerpo.porUsuario).toEqual([]);
+  });
+
+  // PROMPT-F6.10, Parte 6: fixture con las 4 combinaciones de excepción a la
+  // vez (valor propio, umbral propio, excluida y heredando) y plata real de
+  // por medio — la prueba de la línea 852 (arriba) compara cero contra cero,
+  // que pasaría igual si simulación y cálculo real se desincronizaran por
+  // completo. `fechaISO` deja crear un escenario fresco por prueba, sin que
+  // una comparta estado con la otra.
+  async function crearEscenarioVariasPlataformas(fechaISO: string) {
+    const plataformaC = await prismaRaw.plataforma.create({
+      data: { empresaId: f.empresaId, nombre: `Excluida (${fechaISO})`, capacidadPantallas: 10 },
+    });
+    const cuentaC = await prismaRaw.cuenta.create({
+      data: { empresaId: f.empresaId, plataformaId: plataformaC.id, correo: `c-${randomUUID()}@test.local`, password: "cifrado", capacidadPantallas: 10 },
+    });
+    const pantallaC = await prismaRaw.pantalla.create({ data: { empresaId: f.empresaId, cuentaId: cuentaC.id, numero: 1 } });
+
+    const plataformaD = await prismaRaw.plataforma.create({
+      data: { empresaId: f.empresaId, nombre: `Heredando (${fechaISO})`, capacidadPantallas: 10 },
+    });
+    const cuentaD = await prismaRaw.cuenta.create({
+      data: { empresaId: f.empresaId, plataformaId: plataformaD.id, correo: `d-${randomUUID()}@test.local`, password: "cifrado", capacidadPantallas: 10 },
+    });
+    const pantallaD = await prismaRaw.pantalla.create({ data: { empresaId: f.empresaId, cuentaId: cuentaD.id, numero: 1 } });
+
+    const fecha = new Date(`${fechaISO}T10:00:00.000Z`);
+    const vencimiento = new Date(fecha.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    // Netflix: valor propio (PORCENTAJE_VENTA 20% sobre una venta de 5000) → 1000.
+    const ventaNetflix = await crearVenta(f.empresaId, { vendedorId: f.vendedorId, precioVenta: "5000", fechaVenta: fecha, duracionId: f.duracionId });
+    await crearDetalle(f.empresaId, f.duracionId, {
+      ventaId: ventaNetflix.id,
+      plataformaId: f.plataformaNetflixId,
+      cuentaId: f.cuentaNetflixId,
+      pantallaId: f.pantallaNetflixId,
+      fechaVencimiento: vencimiento,
+    });
+
+    // Disney: umbral propio (1) sobre 2 pantallas con el modo/valor por
+    // defecto (FIJO_POR_PANTALLA 1000) → absorbe la primera, comisiona la
+    // segunda: 1000.
+    const ventaDisney = await crearVenta(f.empresaId, { vendedorId: f.vendedorId, precioVenta: "8000", fechaVenta: fecha, duracionId: f.duracionId });
+    await crearVariosDetalles(f.empresaId, f.duracionId, ventaDisney.id, f.plataformaDisneyId, f.cuentaDisneyId, f.pantallaDisneyId, 2, vencimiento);
+
+    // Plataforma C: comisiona:false → no aporta nada y no consume contador.
+    const ventaC = await crearVenta(f.empresaId, { vendedorId: f.vendedorId, precioVenta: "9999", fechaVenta: fecha, duracionId: f.duracionId });
+    await crearDetalle(f.empresaId, f.duracionId, {
+      ventaId: ventaC.id,
+      plataformaId: plataformaC.id,
+      cuentaId: cuentaC.id,
+      pantallaId: pantallaC.id,
+      fechaVencimiento: vencimiento,
+    });
+
+    // Plataforma D: sin excepción → hereda FIJO_POR_PANTALLA 1000 y umbral 0: comisiona completo.
+    const ventaD = await crearVenta(f.empresaId, { vendedorId: f.vendedorId, precioVenta: "4321", fechaVenta: fecha, duracionId: f.duracionId });
+    await crearDetalle(f.empresaId, f.duracionId, {
+      ventaId: ventaD.id,
+      plataformaId: plataformaD.id,
+      cuentaId: cuentaD.id,
+      pantallaId: pantallaD.id,
+      fechaVencimiento: vencimiento,
+    });
+
+    const parametros = {
+      desde: fechaISO,
+      hasta: fechaISO,
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: "0",
+      umbralAmbito: "POR_PLATAFORMA",
+      umbralPeriodo: "DIA",
+    };
+    const excepciones = [
+      { plataformaId: f.plataformaNetflixId, comisiona: true, modo: "PORCENTAJE_VENTA", valor: "20" },
+      { plataformaId: f.plataformaDisneyId, comisiona: true, umbralCantidad: 1 },
+      { plataformaId: plataformaC.id, comisiona: false },
+      // Plataforma D: sin fila de excepción — hereda.
+    ];
+
+    return { parametros, excepciones };
+  }
+
+  it("invariante: simular y guardar la MISMA tabla (valor propio, umbral propio, excluida y heredando) da el mismo pozoTotal que el cálculo real, con plata de por medio", async () => {
+    const { parametros, excepciones } = await crearEscenarioVariasPlataformas("2033-10-05");
+
+    const simulado = await simular(f.cookieAdmin, parametros, excepciones);
+    expect(simulado.status).toBe(200);
+    // No es cero: Netflix (1000) + Disney (1000, la 2da pantalla) + C (0,
+    // excluida) + D (1000, heredando) = 3000. Si cambiara cualquiera de los
+    // dos caminos sin tocar el otro, este número dejaría de coincidir.
+    expect(simulado.cuerpo.pozoTotal).toBe("3000");
+
+    const guardado = await peticion("PUT", "/comisiones/configuracion", f.cookieAdmin, {
+      modo: parametros.modo,
+      valor: parametros.valor,
+      umbralCantidad: Number(parametros.umbralCantidad),
+      umbralAmbito: parametros.umbralAmbito,
+      umbralPeriodo: parametros.umbralPeriodo,
+      excepciones,
+    });
+    expect(guardado.status).toBe(201);
+
+    const resumen = await peticion(
+      "GET",
+      `/comisiones/resumen?desde=${parametros.desde}&hasta=${parametros.hasta}`,
+      f.cookieAdmin,
+    );
+    expect(resumen.status).toBe(200);
+    expect(resumen.cuerpo.pozoTotal).toBe(simulado.cuerpo.pozoTotal);
+    expect(resumen.cuerpo.pozoTotal).toBe("3000");
+  });
+
+  it("la suma de los pozo de cada fila de porPlataforma es exactamente pozoTotal, al peso (sumando con Prisma.Decimal)", async () => {
+    const { parametros, excepciones } = await crearEscenarioVariasPlataformas("2033-10-06");
+
+    const simulado = await simular(f.cookieAdmin, parametros, excepciones);
+    expect(simulado.status).toBe(200);
+    expect(simulado.cuerpo.pozoTotal).toBe("3000");
+
+    const filasPorPlataforma = simulado.cuerpo.porPlataforma as FilaPlataformaSimulacionCuerpo[];
+    // 4 plataformas con renglones en el rango: Netflix, Disney, C y D.
+    expect(filasPorPlataforma.length).toBe(4);
+
+    const sumaDesglose = filasPorPlataforma.reduce(
+      (acumulado, fila) => acumulado.plus(new Prisma.Decimal(fila.pozo)),
+      new Prisma.Decimal(0),
+    );
+    expect(sumaDesglose.toString()).toBe(simulado.cuerpo.pozoTotal);
   });
 });
 
@@ -466,7 +1049,7 @@ describe("Simulador de comisiones (F6.5)", () => {
       umbralPeriodo: "DIA",
     };
 
-    const conDiez = await peticion("GET", urlSimulacion(parametros), f.cookieAdmin);
+    const conDiez = await simular(f.cookieAdmin, parametros);
     expect(conDiez.status).toBe(200);
     expect(conDiez.cuerpo.pantallasVendidas).toBe(10);
     expect(conDiez.cuerpo.pantallasAbsorbidas).toBe(10);
@@ -481,7 +1064,7 @@ describe("Simulador de comisiones (F6.5)", () => {
       fechaVencimiento: new Date(fechaVenta.getTime() + 30 * 24 * 60 * 60 * 1000),
     });
 
-    const conOnce = await peticion("GET", urlSimulacion(parametros), f.cookieAdmin);
+    const conOnce = await simular(f.cookieAdmin, parametros);
     expect(conOnce.cuerpo.pantallasVendidas).toBe(11);
     expect(conOnce.cuerpo.pantallasAbsorbidas).toBe(10);
     expect(conOnce.cuerpo.pantallasComisionadas).toBe(1);
@@ -504,12 +1087,12 @@ describe("Simulador de comisiones (F6.5)", () => {
       umbralPeriodo: "DIA",
     };
 
-    const total = await peticion("GET", urlSimulacion({ ...base, umbralAmbito: "TOTAL" }), f.cookieAdmin);
+    const total = await simular(f.cookieAdmin, { ...base, umbralAmbito: "TOTAL" });
     expect(total.cuerpo.pantallasVendidas).toBe(12);
     expect(total.cuerpo.pantallasComisionadas).toBe(7); // 12 - 5 absorbidas por un solo contador total.
     expect(total.cuerpo.pozoTotal).toBe("7000");
 
-    const porPlataforma = await peticion("GET", urlSimulacion({ ...base, umbralAmbito: "POR_PLATAFORMA" }), f.cookieAdmin);
+    const porPlataforma = await simular(f.cookieAdmin, { ...base, umbralAmbito: "POR_PLATAFORMA" });
     expect(porPlataforma.cuerpo.pantallasVendidas).toBe(12);
     expect(porPlataforma.cuerpo.pantallasComisionadas).toBe(2); // (6-5) + (6-5): un contador por plataforma.
     expect(porPlataforma.cuerpo.pozoTotal).toBe("2000");
@@ -542,12 +1125,12 @@ describe("Simulador de comisiones (F6.5)", () => {
       umbralAmbito: "TOTAL",
     };
 
-    const porDia = await peticion("GET", urlSimulacion({ ...base, umbralPeriodo: "DIA" }), f.cookieAdmin);
+    const porDia = await simular(f.cookieAdmin, { ...base, umbralPeriodo: "DIA" });
     expect(porDia.cuerpo.pantallasComisionadas).toBe(2); // (6-5) por cada uno de los 2 días.
     expect(porDia.cuerpo.pozoTotal).toBe("2000");
     expect(porDia.cuerpo.porPeriodo.length).toBe(2);
 
-    const porMes = await peticion("GET", urlSimulacion({ ...base, umbralPeriodo: "MES" }), f.cookieAdmin);
+    const porMes = await simular(f.cookieAdmin, { ...base, umbralPeriodo: "MES" });
     expect(porMes.cuerpo.pantallasComisionadas).toBe(7); // 12 - 5 absorbidas por un solo contador mensual.
     expect(porMes.cuerpo.pozoTotal).toBe("7000");
     expect(porMes.cuerpo.porPeriodo.length).toBe(1);
@@ -574,14 +1157,10 @@ describe("Simulador de comisiones (F6.5)", () => {
       umbralAmbito: "TOTAL",
       umbralPeriodo: "MES",
     };
-    const marzo = await peticion("GET", urlSimulacion(parametrosMarzo), f.cookieAdmin);
+    const marzo = await simular(f.cookieAdmin, parametrosMarzo);
     expect(marzo.cuerpo.pantallasVendidas).toBe(1);
 
-    const abril = await peticion(
-      "GET",
-      urlSimulacion({ ...parametrosMarzo, desde: "2033-04-01", hasta: "2033-04-30" }),
-      f.cookieAdmin,
-    );
+    const abril = await simular(f.cookieAdmin, { ...parametrosMarzo, desde: "2033-04-01", hasta: "2033-04-30" });
     expect(abril.cuerpo.pantallasVendidas).toBe(0);
   });
 
@@ -628,19 +1207,15 @@ describe("Simulador de comisiones (F6.5)", () => {
       fechaVencimiento: vencimiento,
     });
 
-    const resultado = await peticion(
-      "GET",
-      urlSimulacion({
-        desde: "2033-05-01",
-        hasta: "2033-05-01",
-        modo: "FIJO_POR_PANTALLA",
-        valor: "1000",
-        umbralCantidad: "0",
-        umbralAmbito: "TOTAL",
-        umbralPeriodo: "DIA",
-      }),
-      f.cookieAdmin,
-    );
+    const resultado = await simular(f.cookieAdmin, {
+      desde: "2033-05-01",
+      hasta: "2033-05-01",
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: "0",
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    });
     expect(resultado.cuerpo.pantallasVendidas).toBe(1);
     expect(resultado.cuerpo.pantallasComisionadas).toBe(1);
     expect(resultado.cuerpo.pozoTotal).toBe("1000");
@@ -671,8 +1246,8 @@ describe("Simulador de comisiones (F6.5)", () => {
       umbralPeriodo: "DIA",
     };
 
-    const primera = await peticion("GET", urlSimulacion(parametros), f.cookieAdmin);
-    const segunda = await peticion("GET", urlSimulacion(parametros), f.cookieAdmin);
+    const primera = await simular(f.cookieAdmin, parametros);
+    const segunda = await simular(f.cookieAdmin, parametros);
 
     expect(primera.cuerpo.pantallasAbsorbidas).toBe(1);
     expect(primera.cuerpo.pantallasComisionadas).toBe(2);
@@ -696,19 +1271,15 @@ describe("Simulador de comisiones (F6.5)", () => {
     });
     await crearVariosDetalles(f.empresaId, f.duracionId, ventaPaquete.id, f.plataformaNetflixId, f.cuentaNetflixId, f.pantallaNetflixId, 3, vencimiento);
 
-    const paquete = await peticion(
-      "GET",
-      urlSimulacion({
-        desde: "2033-07-01",
-        hasta: "2033-07-01",
-        modo: "PORCENTAJE_VENTA",
-        valor: "50",
-        umbralCantidad: "0",
-        umbralAmbito: "TOTAL",
-        umbralPeriodo: "DIA",
-      }),
-      f.cookieAdmin,
-    );
+    const paquete = await simular(f.cookieAdmin, {
+      desde: "2033-07-01",
+      hasta: "2033-07-01",
+      modo: "PORCENTAJE_VENTA",
+      valor: "50",
+      umbralCantidad: "0",
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    });
     expect(paquete.cuerpo.pantallasComisionadas).toBe(3);
     expect(paquete.cuerpo.pozoTotal).toBe("15000");
 
@@ -732,19 +1303,15 @@ describe("Simulador de comisiones (F6.5)", () => {
       vencimiento,
     );
 
-    const conDescuento = await peticion(
-      "GET",
-      urlSimulacion({
-        desde: "2033-07-02",
-        hasta: "2033-07-02",
-        modo: "PORCENTAJE_VENTA",
-        valor: "100",
-        umbralCantidad: "0",
-        umbralAmbito: "TOTAL",
-        umbralPeriodo: "DIA",
-      }),
-      f.cookieAdmin,
-    );
+    const conDescuento = await simular(f.cookieAdmin, {
+      desde: "2033-07-02",
+      hasta: "2033-07-02",
+      modo: "PORCENTAJE_VENTA",
+      valor: "100",
+      umbralCantidad: "0",
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    });
     expect(conDescuento.cuerpo.pozoTotal).toBe("9000");
   });
 
@@ -762,19 +1329,15 @@ describe("Simulador de comisiones (F6.5)", () => {
       new Date(fechaVenta.getTime() + 30 * 24 * 60 * 60 * 1000),
     );
 
-    const resultado = await peticion(
-      "GET",
-      urlSimulacion({
-        desde: "2033-08-01",
-        hasta: "2033-08-01",
-        modo: "FIJO_POR_PANTALLA",
-        valor: "1500",
-        umbralCantidad: "2",
-        umbralAmbito: "TOTAL",
-        umbralPeriodo: "DIA",
-      }),
-      f.cookieAdmin,
-    );
+    const resultado = await simular(f.cookieAdmin, {
+      desde: "2033-08-01",
+      hasta: "2033-08-01",
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1500",
+      umbralCantidad: "2",
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    });
     expect(resultado.cuerpo.pantallasVendidas).toBe(5);
     expect(resultado.cuerpo.pantallasAbsorbidas).toBe(2);
     expect(resultado.cuerpo.pantallasComisionadas).toBe(3);
@@ -833,12 +1396,26 @@ describe("R1 — aislamiento entre empresas en /comisiones (F6.5)", () => {
       umbralPeriodo: "DIA",
     };
 
-    const simulacionA = await peticion("GET", urlSimulacion(parametros), fA.cookieAdmin);
+    const simulacionA = await simular(fA.cookieAdmin, parametros);
     expect(simulacionA.cuerpo.pantallasVendidas).toBe(1);
 
-    const simulacionB = await peticion("GET", urlSimulacion(parametros), fB.cookieAdmin);
+    const simulacionB = await simular(fB.cookieAdmin, parametros);
     expect(simulacionB.cuerpo.pantallasVendidas).toBe(0);
     expect(simulacionB.cuerpo.pozoTotal).toBe("0");
+  });
+
+  it("F6.10: una empresa no puede guardar una excepción sobre la plataforma de otra empresa", async () => {
+    const intento = await peticion("PUT", "/comisiones/configuracion", fB.cookieAdmin, {
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 0,
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+      // plataformaNetflixId es de la empresa A, no de B.
+      excepciones: [{ plataformaId: fA.plataformaNetflixId, comisiona: true }],
+    });
+    expect(intento.status).toBe(400);
+    expect(intento.cuerpo.error.codigo).toBe("PLATAFORMA_INVALIDA");
   });
 });
 

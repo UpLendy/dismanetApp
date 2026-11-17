@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { History, Percent, PiggyBank, Users2 } from "lucide-react";
+import { AlertTriangle, History, Percent, PiggyBank, Tv, Users2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { hoyBogotaISO, sumarDiasISO, fechaBogotaDeInstante } from "@/lib/bogota";
+import { cn } from "@/lib/utils";
 import { Boton } from "@/components/ui/boton";
 import { Tarjeta, TarjetaCabecera } from "@/components/ui/tarjeta";
 import { Campo, EntradaCampo, SelectCampo } from "@/components/ui/campo";
+import { Interruptor } from "@/components/ui/interruptor";
 import { Aviso } from "@/components/ui/aviso";
 import { Esqueleto } from "@/components/ui/cargando";
 import { EstadoVacio } from "@/components/ui/estado-vacio";
@@ -16,6 +18,14 @@ import { Tabla, TablaCabecera, TablaCuerpo, TablaFila, TablaCeldaCabecera, Tabla
 type Modo = "PORCENTAJE_VENTA" | "FIJO_POR_PANTALLA";
 type Ambito = "TOTAL" | "POR_PLATAFORMA";
 type Periodo = "DIA" | "MES";
+
+interface Excepcion {
+  plataformaId: string;
+  comisiona: boolean;
+  modo: Modo | null;
+  valor: string | null;
+  umbralCantidad: number | null;
+}
 
 interface Configuracion {
   id: string;
@@ -27,6 +37,22 @@ interface Configuracion {
   vigenteDesde: string;
   creadaPor: { id: string; nombre: string };
   createdAt: string;
+  excepciones: Excepcion[];
+}
+
+interface PlataformaResuelta {
+  plataformaId: string;
+  nombre: string;
+  propia: boolean;
+  comisiona: boolean;
+  modo: Modo;
+  valor: string;
+  umbralCantidad: number;
+}
+
+interface PlataformaHeredando {
+  plataformaId: string;
+  nombre: string;
 }
 
 interface FilaPeriodo {
@@ -38,6 +64,15 @@ interface FilaPeriodo {
   pozoTotal: string;
 }
 
+interface FilaPlataformaSimulacion {
+  plataformaId: string;
+  pantallasVendidas: number;
+  pantallasAbsorbidas: number;
+  pantallasExcluidas: number;
+  pantallasComisionadas: number;
+  pozo: string;
+}
+
 interface Simulacion {
   pantallasVendidas: number;
   pantallasAbsorbidas: number;
@@ -45,6 +80,7 @@ interface Simulacion {
   porcentajeComisionado: number;
   pozoTotal: string;
   porPeriodo: FilaPeriodo[];
+  porPlataforma: FilaPlataformaSimulacion[];
 }
 
 interface FilaResumenUsuario {
@@ -61,6 +97,23 @@ interface Resumen {
   pozoSinRepartir: string;
   pantallasComisionadas: number;
   porUsuario: FilaResumenUsuario[];
+}
+
+// Edición en curso de la excepción de UNA plataforma. "" en modo/valor/
+// umbralCantidad significa "hereda" — nunca se manda como 0 (CLAUDE.md:
+// null ≠ 0). Separado de `Excepcion` porque los campos del formulario son
+// texto, no los tipos ya normalizados que espera el body.
+interface EdicionFila {
+  comisiona: boolean;
+  modo: Modo | "";
+  valor: string;
+  umbralCantidad: string;
+}
+
+type Ediciones = Record<string, EdicionFila>;
+
+function filaHereda(): EdicionFila {
+  return { comisiona: true, modo: "", valor: "", umbralCantidad: "" };
 }
 
 // Igual que en estadisticas-contenido.tsx/dashboard-cliente.tsx (CLAUDE.md:
@@ -141,12 +194,92 @@ const PARAMETROS_POR_DEFECTO: ParametrosForma = {
   umbralPeriodo: "DIA",
 };
 
-function valorEsValido(parametros: ParametrosForma): boolean {
-  const valor = Number(parametros.valor);
+function valorModoEsValido(modo: Modo, valorTexto: string): boolean {
+  const valor = Number(valorTexto);
   if (!Number.isFinite(valor) || valor <= 0) return false;
-  if (parametros.modo === "PORCENTAJE_VENTA" && valor > 100) return false;
+  if (modo === "PORCENTAJE_VENTA" && valor > 100) return false;
+  return true;
+}
+
+function valorEsValido(parametros: ParametrosForma): boolean {
+  if (!valorModoEsValido(parametros.modo, parametros.valor)) return false;
   const umbral = Number(parametros.umbralCantidad);
   return Number.isInteger(umbral) && umbral >= 0;
+}
+
+/** Normaliza un nombre para agrupar plataformas con nombre parecido (F6.10, Parte 5) — no es limpieza de catálogo, solo hacerlo visible. */
+function normalizarNombre(nombre: string): string {
+  return nombre.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function nombresRepetidos(plataformas: PlataformaResuelta[]): Set<string> {
+  const conteo = new Map<string, number>();
+  for (const p of plataformas) {
+    const clave = normalizarNombre(p.nombre);
+    conteo.set(clave, (conteo.get(clave) ?? 0) + 1);
+  }
+  return new Set([...conteo.entries()].filter(([, n]) => n > 1).map(([clave]) => clave));
+}
+
+/** Arma la edición inicial de cada plataforma activa a partir de su excepción propia (si existe) — nunca rellena un valor heredado, eso queda en "" (PROMPT-F6.10, Parte 4). */
+function construirEdiciones(plataformas: PlataformaResuelta[], excepciones: Excepcion[]): Ediciones {
+  const porId = new Map(excepciones.map((e) => [e.plataformaId, e]));
+  const resultado: Ediciones = {};
+  for (const p of plataformas) {
+    const propia = porId.get(p.plataformaId);
+    resultado[p.plataformaId] = propia
+      ? {
+          comisiona: propia.comisiona,
+          modo: propia.modo ?? "",
+          valor: propia.valor ?? "",
+          umbralCantidad: propia.umbralCantidad != null ? String(propia.umbralCantidad) : "",
+        }
+      : filaHereda();
+  }
+  return resultado;
+}
+
+interface ExcepcionEntrada {
+  plataformaId: string;
+  comisiona: boolean;
+  modo: Modo | null;
+  valor: string | null;
+  umbralCantidad: number | null;
+}
+
+/** Solo manda al body las plataformas que de verdad se salen de "heredar todo" — una fila en blanco no debería crear una excepción vacía. */
+function excepcionesParaEnviar(plataformas: PlataformaResuelta[], ediciones: Ediciones): ExcepcionEntrada[] {
+  const resultado: ExcepcionEntrada[] = [];
+  for (const p of plataformas) {
+    const e = ediciones[p.plataformaId];
+    if (!e) continue;
+    const esPuraHerencia = e.comisiona && e.modo === "" && e.valor === "" && e.umbralCantidad === "";
+    if (esPuraHerencia) continue;
+    resultado.push({
+      plataformaId: p.plataformaId,
+      comisiona: e.comisiona,
+      modo: e.comisiona && e.modo !== "" ? e.modo : null,
+      valor: e.comisiona && e.valor !== "" ? e.valor : null,
+      umbralCantidad: e.comisiona && e.umbralCantidad !== "" ? Number(e.umbralCantidad) : null,
+    });
+  }
+  return resultado;
+}
+
+/** Mismas reglas que validarExcepcionComision en el servidor (lib/comisiones.ts), para avisar ANTES del 400 en vez de después — ver Parte 4 del PROMPT-F6.10. */
+function errorDeFila(e: EdicionFila, modoDefecto: Modo, ambitoDefecto: Ambito): string | null {
+  if (!e.comisiona) return null;
+  if (e.umbralCantidad !== "") {
+    if (ambitoDefecto === "TOTAL") return "Un umbral propio no es compatible con ámbito \"Total de la empresa\".";
+    const umbral = Number(e.umbralCantidad);
+    if (!Number.isInteger(umbral) || umbral < 0) return "Umbral inválido.";
+  }
+  if (e.modo !== "" && e.valor === "") return "Falta el valor para el modo elegido.";
+  if (e.valor !== "") {
+    const modoEfectivo = e.modo !== "" ? e.modo : modoDefecto;
+    if (!valorModoEsValido(modoEfectivo, e.valor)) return "Valor inválido.";
+  }
+  return null;
 }
 
 export default function ComisionesCliente() {
@@ -155,6 +288,8 @@ export default function ComisionesCliente() {
   const [hasta, setHasta] = useState(hoy);
 
   const [parametros, setParametros] = useState<ParametrosForma>(PARAMETROS_POR_DEFECTO);
+  const [plataformas, setPlataformas] = useState<PlataformaResuelta[]>([]);
+  const [ediciones, setEdiciones] = useState<Ediciones>({});
 
   const [vigente, setVigente] = useState<Configuracion | null>(null);
   const [historial, setHistorial] = useState<Configuracion[]>([]);
@@ -172,7 +307,7 @@ export default function ComisionesCliente() {
 
   const [guardando, setGuardando] = useState(false);
   const [errorGuardado, setErrorGuardado] = useState<string | null>(null);
-  const [guardadoOk, setGuardadoOk] = useState(false);
+  const [plataformasHeredando, setPlataformasHeredando] = useState<PlataformaHeredando[] | null>(null);
 
   const cargarConfiguracion = useCallback(async () => {
     setCargandoConfiguracion(true);
@@ -189,16 +324,18 @@ export default function ComisionesCliente() {
       return;
     }
 
-    setVigente(resVigente.data.configuracion);
+    const { configuracion, plataformas: plataformasResueltas } = resVigente.data;
+    setVigente(configuracion);
     setHistorial(resHistorial.data?.versiones ?? []);
-    if (resVigente.data.configuracion) {
-      const c = resVigente.data.configuracion;
+    setPlataformas(plataformasResueltas);
+    setEdiciones(construirEdiciones(plataformasResueltas, configuracion?.excepciones ?? []));
+    if (configuracion) {
       setParametros({
-        modo: c.modo,
-        valor: c.valor,
-        umbralCantidad: String(c.umbralCantidad),
-        umbralAmbito: c.umbralAmbito,
-        umbralPeriodo: c.umbralPeriodo,
+        modo: configuracion.modo,
+        valor: configuracion.valor,
+        umbralCantidad: String(configuracion.umbralCantidad),
+        umbralAmbito: configuracion.umbralAmbito,
+        umbralPeriodo: configuracion.umbralPeriodo,
       });
     }
     setCargandoConfiguracion(false);
@@ -222,11 +359,46 @@ export default function ComisionesCliente() {
 
   const mesesIncompletos = parametros.umbralPeriodo === "MES" && Boolean(desde) && Boolean(hasta) && rangoConMesesIncompletos(desde, hasta);
 
-  // Simulador: recalcula en vivo con lo que haya en los controles, nunca con
-  // la configuración guardada (PROMPT-F6.5, Parte 3) — así se puede mover el
-  // número y ver el efecto antes de decidir si se guarda.
+  const nombresDuplicados = useMemo(() => nombresRepetidos(plataformas), [plataformas]);
+
+  const excepcionesActuales = useMemo(
+    () => excepcionesParaEnviar(plataformas, ediciones),
+    [plataformas, ediciones],
+  );
+
+  const erroresPorPlataforma = useMemo(() => {
+    const errores: Record<string, string> = {};
+    for (const p of plataformas) {
+      const e = ediciones[p.plataformaId];
+      if (!e) continue;
+      const error = errorDeFila(e, parametros.modo, parametros.umbralAmbito);
+      if (error) errores[p.plataformaId] = error;
+    }
+    return errores;
+  }, [plataformas, ediciones, parametros.modo, parametros.umbralAmbito]);
+
+  const hayConflictoUmbralTotal = useMemo(
+    () =>
+      parametros.umbralAmbito === "TOTAL" &&
+      Object.values(ediciones).some((e) => e.comisiona && e.umbralCantidad !== ""),
+    [parametros.umbralAmbito, ediciones],
+  );
+
+  const hayErroresExcepciones = Object.keys(erroresPorPlataforma).length > 0;
+
+  function actualizarEdicion(plataformaId: string, cambios: Partial<EdicionFila>) {
+    setEdiciones((actual) => ({
+      ...actual,
+      [plataformaId]: { ...(actual[plataformaId] ?? filaHereda()), ...cambios },
+    }));
+  }
+
+  // Simulador: recalcula en vivo con lo que haya en los controles (default Y
+  // tabla por plataforma), nunca con la configuración guardada (PROMPT-F6.5
+  // Parte 3; PROMPT-F6.10 Parte 4) — así se puede mover el número y ver el
+  // efecto antes de decidir si se guarda.
   useEffect(() => {
-    if (!valorEsValido(parametros) || !desde || !hasta) {
+    if (!valorEsValido(parametros) || !desde || !hasta || hayErroresExcepciones) {
       setSimulacion(null);
       setErrorSimulacion(null);
       return;
@@ -237,16 +409,15 @@ export default function ComisionesCliente() {
       setCargandoSimulacion(true);
       setErrorSimulacion(null);
 
-      const { data, error } = await api.comisiones.simulacion.get({
-        query: {
-          desde,
-          hasta,
-          modo: parametros.modo,
-          valor: parametros.valor,
-          umbralCantidad: Number(parametros.umbralCantidad),
-          umbralAmbito: parametros.umbralAmbito,
-          umbralPeriodo: parametros.umbralPeriodo,
-        },
+      const { data, error } = await api.comisiones.simulacion.post({
+        desde,
+        hasta,
+        modo: parametros.modo,
+        valor: parametros.valor,
+        umbralCantidad: Number(parametros.umbralCantidad),
+        umbralAmbito: parametros.umbralAmbito,
+        umbralPeriodo: parametros.umbralPeriodo,
+        excepciones: excepcionesActuales,
       });
       if (!activo) return;
 
@@ -263,7 +434,7 @@ export default function ComisionesCliente() {
       activo = false;
       clearTimeout(manija);
     };
-  }, [parametros, desde, hasta]);
+  }, [parametros, desde, hasta, excepcionesActuales, hayErroresExcepciones]);
 
   // Resumen por persona: a diferencia del simulador, siempre usa la política
   // guardada (ConfiguracionComision vigente), no los controles del
@@ -290,26 +461,30 @@ export default function ComisionesCliente() {
   }, [desde, hasta]);
 
   async function guardar() {
-    if (!valorEsValido(parametros)) return;
+    if (!valorEsValido(parametros) || hayErroresExcepciones) return;
     setGuardando(true);
     setErrorGuardado(null);
-    setGuardadoOk(false);
+    setPlataformasHeredando(null);
 
-    const { error } = await api.comisiones.configuracion.put({
+    const { data, error } = await api.comisiones.configuracion.put({
       modo: parametros.modo,
       valor: parametros.valor,
       umbralCantidad: Number(parametros.umbralCantidad),
       umbralAmbito: parametros.umbralAmbito,
       umbralPeriodo: parametros.umbralPeriodo,
+      excepciones: excepcionesActuales,
     });
 
     setGuardando(false);
-    if (error) {
+    // "/comisiones" también cuelga "/configuracion" como ruta literal, así
+    // que Eden Treaty amplía el tipo de `data` con la forma de error
+    // (mismo motivo que en instrucciones-contenido.tsx:597).
+    if (error || !data || !("plataformasHeredando" in data)) {
       setErrorGuardado(mensajeDeError(error));
       return;
     }
     await cargarConfiguracion();
-    setGuardadoOk(true);
+    setPlataformasHeredando(data.plataformasHeredando ?? []);
   }
 
   return (
@@ -358,6 +533,11 @@ export default function ComisionesCliente() {
               <span className="cuerpo text-ink-muted">
                 {etiquetaUmbral(vigente.umbralCantidad, vigente.umbralAmbito, vigente.umbralPeriodo)}
               </span>
+              {vigente.excepciones.length > 0 ? (
+                <Pastilla tono="neutral" icono={Tv}>
+                  {vigente.excepciones.length} plataforma(s) con regla propia
+                </Pastilla>
+              ) : null}
               <span className="text-xs text-ink-muted">
                 Vigente desde {fechaBogotaDeInstante(vigente.vigenteDesde)} · guardada por {vigente.creadaPor.nombre}
               </span>
@@ -374,6 +554,7 @@ export default function ComisionesCliente() {
                     <TablaCeldaCabecera>Modo</TablaCeldaCabecera>
                     <TablaCeldaCabecera>Valor</TablaCeldaCabecera>
                     <TablaCeldaCabecera>Umbral</TablaCeldaCabecera>
+                    <TablaCeldaCabecera>Excepciones</TablaCeldaCabecera>
                     <TablaCeldaCabecera>Vigente desde</TablaCeldaCabecera>
                     <TablaCeldaCabecera>Guardada por</TablaCeldaCabecera>
                   </TablaFila>
@@ -384,6 +565,7 @@ export default function ComisionesCliente() {
                       <TablaCelda>{etiquetaModo(version.modo)}</TablaCelda>
                       <TablaCelda>{etiquetaValor(version.modo, version.valor)}</TablaCelda>
                       <TablaCelda>{etiquetaUmbral(version.umbralCantidad, version.umbralAmbito, version.umbralPeriodo)}</TablaCelda>
+                      <TablaCelda>{version.excepciones.length}</TablaCelda>
                       <TablaCelda>{fechaBogotaDeInstante(version.vigenteDesde)}</TablaCelda>
                       <TablaCelda>{version.creadaPor.nombre}</TablaCelda>
                     </TablaFila>
@@ -454,104 +636,211 @@ export default function ComisionesCliente() {
       </Tarjeta>
 
       <Tarjeta>
-        <TarjetaCabecera titulo="Simulador" />
+        <TarjetaCabecera titulo="Política de comisiones" />
         <Aviso variante="info" className="mb-4">
           Esto es una simulación: no se guarda nada hasta que presiones "Guardar política" abajo, y guardar
           tampoco liquida comisiones a nadie — eso se hace en otra pantalla.
         </Aviso>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Campo etiqueta="Modo">
-            {(p) => (
-              <SelectCampo
-                {...p}
-                value={parametros.modo}
-                onChange={(e) => setParametros((f) => ({ ...f, modo: e.target.value as Modo }))}
-              >
-                <option value="FIJO_POR_PANTALLA">Monto fijo por pantalla</option>
-                <option value="PORCENTAJE_VENTA">Porcentaje de la venta</option>
-              </SelectCampo>
-            )}
-          </Campo>
-
-          <Campo
-            etiqueta={parametros.modo === "PORCENTAJE_VENTA" ? "Porcentaje (%)" : "Monto fijo ($)"}
-            ayuda={parametros.modo === "PORCENTAJE_VENTA" ? "Entre 0 y 100." : "Por cada pantalla comisionada."}
-          >
-            {(p) => (
-              <EntradaCampo
-                {...p}
-                type="number"
-                min={0}
-                max={parametros.modo === "PORCENTAJE_VENTA" ? 100 : undefined}
-                step="0.01"
-                value={parametros.valor}
-                onChange={(e) => setParametros((f) => ({ ...f, valor: e.target.value }))}
-              />
-            )}
-          </Campo>
-
-          <Campo etiqueta="Umbral (cantidad)" ayuda="0 = todo comisiona.">
-            {(p) => (
-              <EntradaCampo
-                {...p}
-                type="number"
-                min={0}
-                step="1"
-                value={parametros.umbralCantidad}
-                onChange={(e) => setParametros((f) => ({ ...f, umbralCantidad: e.target.value }))}
-              />
-            )}
-          </Campo>
-
-          <Campo etiqueta="Ámbito del umbral">
-            {(p) => (
-              <SelectCampo
-                {...p}
-                value={parametros.umbralAmbito}
-                onChange={(e) => setParametros((f) => ({ ...f, umbralAmbito: e.target.value as Ambito }))}
-              >
-                <option value="TOTAL">Total de la empresa</option>
-                <option value="POR_PLATAFORMA">Por plataforma</option>
-              </SelectCampo>
-            )}
-          </Campo>
-
-          <Campo etiqueta="Período del umbral">
-            {(p) => (
-              <SelectCampo
-                {...p}
-                value={parametros.umbralPeriodo}
-                onChange={(e) => setParametros((f) => ({ ...f, umbralPeriodo: e.target.value as Periodo }))}
-              >
-                <option value="DIA">Por día</option>
-                <option value="MES">Por mes</option>
-              </SelectCampo>
-            )}
-          </Campo>
-
-          <div className="grid grid-cols-2 gap-2">
-            <Campo etiqueta="Desde">
-              {(p) => <EntradaCampo {...p} type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />}
+        <div>
+          <h4 className="cuerpo font-semibold text-ink">Valor por defecto</h4>
+          <p className="mb-3 text-xs text-ink-muted">
+            Se aplica a cualquier plataforma que no tenga su propia regla en la tabla de abajo — incluidas las que
+            se creen más adelante.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Campo etiqueta="Modo">
+              {(p) => (
+                <SelectCampo
+                  {...p}
+                  value={parametros.modo}
+                  onChange={(e) => setParametros((f) => ({ ...f, modo: e.target.value as Modo }))}
+                >
+                  <option value="FIJO_POR_PANTALLA">Monto fijo por pantalla</option>
+                  <option value="PORCENTAJE_VENTA">Porcentaje de la venta</option>
+                </SelectCampo>
+              )}
             </Campo>
-            <Campo etiqueta="Hasta">
-              {(p) => <EntradaCampo {...p} type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />}
+
+            <Campo
+              etiqueta={parametros.modo === "PORCENTAJE_VENTA" ? "Porcentaje (%)" : "Monto fijo ($)"}
+              ayuda={parametros.modo === "PORCENTAJE_VENTA" ? "Entre 0 y 100." : "Por cada pantalla comisionada."}
+            >
+              {(p) => (
+                <EntradaCampo
+                  {...p}
+                  type="number"
+                  min={0}
+                  max={parametros.modo === "PORCENTAJE_VENTA" ? 100 : undefined}
+                  step="0.01"
+                  value={parametros.valor}
+                  onChange={(e) => setParametros((f) => ({ ...f, valor: e.target.value }))}
+                />
+              )}
             </Campo>
+
+            <Campo etiqueta="Umbral (cantidad)" ayuda="0 = todo comisiona.">
+              {(p) => (
+                <EntradaCampo
+                  {...p}
+                  type="number"
+                  min={0}
+                  step="1"
+                  value={parametros.umbralCantidad}
+                  onChange={(e) => setParametros((f) => ({ ...f, umbralCantidad: e.target.value }))}
+                />
+              )}
+            </Campo>
+
+            <Campo etiqueta="Ámbito del umbral">
+              {(p) => (
+                <SelectCampo
+                  {...p}
+                  value={parametros.umbralAmbito}
+                  onChange={(e) => setParametros((f) => ({ ...f, umbralAmbito: e.target.value as Ambito }))}
+                >
+                  <option value="TOTAL">Total de la empresa</option>
+                  <option value="POR_PLATAFORMA">Por plataforma</option>
+                </SelectCampo>
+              )}
+            </Campo>
+
+            <Campo etiqueta="Período del umbral">
+              {(p) => (
+                <SelectCampo
+                  {...p}
+                  value={parametros.umbralPeriodo}
+                  onChange={(e) => setParametros((f) => ({ ...f, umbralPeriodo: e.target.value as Periodo }))}
+                >
+                  <option value="DIA">Por día</option>
+                  <option value="MES">Por mes</option>
+                </SelectCampo>
+              )}
+            </Campo>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Campo etiqueta="Desde">
+                {(p) => <EntradaCampo {...p} type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />}
+              </Campo>
+              <Campo etiqueta="Hasta">
+                {(p) => <EntradaCampo {...p} type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />}
+              </Campo>
+            </div>
+
+            {mesesIncompletos ? (
+              <Aviso variante="aviso" className="sm:col-span-2 lg:col-span-3">
+                El rango no cubre meses completos: las pantallas absorbidas del mes en el borde pueden salir
+                subestimadas o sobreestimadas.
+              </Aviso>
+            ) : null}
           </div>
-
-          {mesesIncompletos ? (
-            <Aviso variante="aviso" className="sm:col-span-2 lg:col-span-3">
-              El rango no cubre meses completos: las pantallas absorbidas del mes en el borde pueden salir
-              subestimadas o sobreestimadas.
-            </Aviso>
-          ) : null}
         </div>
 
-        <div className="mt-6 space-y-4">
+        <div className="mt-6 border-t border-borde pt-4">
+          <h4 className="cuerpo font-semibold text-ink">Reglas por plataforma</h4>
+          <p className="mb-3 text-xs text-ink-muted">
+            Déjalas en blanco para heredar el valor por defecto. Un campo en gris muestra el valor heredado — no es
+            cero, es "sin regla propia".
+          </p>
+
+          {hayConflictoUmbralTotal ? (
+            <Aviso variante="aviso" className="mb-3">
+              El ámbito del umbral por defecto es "Total de la empresa", que no admite un umbral propio por
+              plataforma. Cambia el ámbito a "Por plataforma" arriba, o quita el umbral de las filas marcadas abajo.
+            </Aviso>
+          ) : null}
+
+          {plataformas.length === 0 ? (
+            <p className="cuerpo text-ink-muted">No hay plataformas activas.</p>
+          ) : (
+            <Tabla>
+              <TablaCabecera>
+                <TablaFila>
+                  <TablaCeldaCabecera>Servicio</TablaCeldaCabecera>
+                  <TablaCeldaCabecera>¿Comisiona?</TablaCeldaCabecera>
+                  <TablaCeldaCabecera>Modo</TablaCeldaCabecera>
+                  <TablaCeldaCabecera>Valor</TablaCeldaCabecera>
+                  <TablaCeldaCabecera>Umbral</TablaCeldaCabecera>
+                </TablaFila>
+              </TablaCabecera>
+              <TablaCuerpo>
+                {plataformas.map((p) => {
+                  const e = ediciones[p.plataformaId] ?? filaHereda();
+                  const error = erroresPorPlataforma[p.plataformaId];
+                  const repetida = nombresDuplicados.has(normalizarNombre(p.nombre));
+                  return (
+                    <TablaFila key={p.plataformaId} className={cn(!e.comisiona && "opacity-60")}>
+                      <TablaCelda>
+                        <div className="flex items-center gap-2">
+                          <span>{p.nombre}</span>
+                          {repetida ? (
+                            <Pastilla tono="aviso" icono={AlertTriangle}>
+                              Nombre repetido
+                            </Pastilla>
+                          ) : null}
+                        </div>
+                      </TablaCelda>
+                      <TablaCelda>
+                        <Interruptor
+                          checked={e.comisiona}
+                          onCheckedChange={(checked) => actualizarEdicion(p.plataformaId, { comisiona: checked })}
+                          aria-label={`¿${p.nombre} comisiona?`}
+                        />
+                      </TablaCelda>
+                      <TablaCelda>
+                        <SelectCampo
+                          value={e.modo}
+                          disabled={!e.comisiona}
+                          onChange={(ev) =>
+                            actualizarEdicion(p.plataformaId, { modo: ev.target.value as Modo | "" })
+                          }
+                        >
+                          <option value="">Hereda ({etiquetaModo(parametros.modo)})</option>
+                          <option value="FIJO_POR_PANTALLA">Monto fijo por pantalla</option>
+                          <option value="PORCENTAJE_VENTA">Porcentaje de la venta</option>
+                        </SelectCampo>
+                      </TablaCelda>
+                      <TablaCelda>
+                        <EntradaCampo
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          disabled={!e.comisiona}
+                          placeholder={etiquetaValor(p.modo, p.valor)}
+                          value={e.valor}
+                          aria-invalid={Boolean(error)}
+                          onChange={(ev) => actualizarEdicion(p.plataformaId, { valor: ev.target.value })}
+                        />
+                      </TablaCelda>
+                      <TablaCelda>
+                        <EntradaCampo
+                          type="number"
+                          min={0}
+                          step="1"
+                          disabled={!e.comisiona}
+                          placeholder={String(p.umbralCantidad)}
+                          value={e.umbralCantidad}
+                          aria-invalid={Boolean(error)}
+                          onChange={(ev) => actualizarEdicion(p.plataformaId, { umbralCantidad: ev.target.value })}
+                        />
+                        {error ? <p className="mt-1 text-xs font-medium text-critico">{error}</p> : null}
+                      </TablaCelda>
+                    </TablaFila>
+                  );
+                })}
+              </TablaCuerpo>
+            </Tabla>
+          )}
+        </div>
+
+        <div className="mt-6 space-y-4 border-t border-borde pt-4">
+          <h4 className="cuerpo font-semibold text-ink">Simulación en vivo</h4>
           {errorSimulacion ? <Aviso variante="critico">{errorSimulacion}</Aviso> : null}
 
           {!valorEsValido(parametros) ? (
             <p className="cuerpo text-ink-muted">Ingresa un valor válido para ver la simulación.</p>
+          ) : hayErroresExcepciones ? (
+            <p className="cuerpo text-ink-muted">Corrige las filas marcadas en rojo para ver la simulación.</p>
           ) : cargandoSimulacion && !simulacion ? (
             <Esqueleto className="h-20 w-full" />
           ) : simulacion ? (
@@ -567,6 +856,35 @@ export default function ComisionesCliente() {
                   {simulacion.pantallasAbsorbidas} absorbidas por el umbral
                 </p>
               </div>
+
+              {simulacion.porPlataforma.length === 0 ? null : (
+                <Tabla>
+                  <TablaCabecera>
+                    <TablaFila>
+                      <TablaCeldaCabecera>Plataforma</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Vendidas</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Absorbidas</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Excluidas</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Comisionadas</TablaCeldaCabecera>
+                      <TablaCeldaCabecera className="text-right">Pozo</TablaCeldaCabecera>
+                    </TablaFila>
+                  </TablaCabecera>
+                  <TablaCuerpo>
+                    {simulacion.porPlataforma.map((fila) => (
+                      <TablaFila key={fila.plataformaId}>
+                        <TablaCelda>
+                          {plataformas.find((p) => p.plataformaId === fila.plataformaId)?.nombre ?? fila.plataformaId}
+                        </TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{fila.pantallasVendidas}</TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{fila.pantallasAbsorbidas}</TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{fila.pantallasExcluidas}</TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{fila.pantallasComisionadas}</TablaCelda>
+                        <TablaCelda className="text-right tabular-nums">{formatearPesos(fila.pozo)}</TablaCelda>
+                      </TablaFila>
+                    ))}
+                  </TablaCuerpo>
+                </Tabla>
+              )}
 
               {simulacion.porPeriodo.length === 0 ? (
                 <EstadoVacio icono={PiggyBank} titulo="Sin ventas en el rango elegido" />
@@ -602,14 +920,23 @@ export default function ComisionesCliente() {
 
         <div className="mt-6 space-y-3 border-t border-borde pt-4">
           {errorGuardado ? <Aviso variante="critico">{errorGuardado}</Aviso> : null}
-          {guardadoOk ? (
-            <Aviso variante="info">Política guardada como nueva versión vigente. No se liquidó ninguna comisión.</Aviso>
+          {plataformasHeredando ? (
+            <Aviso variante="info">
+              Política guardada como nueva versión vigente. No se liquidó ninguna comisión.{" "}
+              {plataformasHeredando.length > 0
+                ? `${plataformasHeredando.length} plataforma(s) activa(s) sin regla propia, heredando el valor por defecto: ${plataformasHeredando.map((p) => p.nombre).join(", ")}.`
+                : "Todas las plataformas activas tienen su propia regla."}
+            </Aviso>
           ) : null}
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-ink-muted">
               Guardar crea una versión nueva — nunca sobrescribe la anterior, que queda en el historial.
             </p>
-            <Boton variante="principal" onClick={guardar} disabled={guardando || !valorEsValido(parametros)}>
+            <Boton
+              variante="principal"
+              onClick={guardar}
+              disabled={guardando || !valorEsValido(parametros) || hayErroresExcepciones}
+            >
               {guardando ? "Guardando…" : "Guardar política"}
             </Boton>
           </div>

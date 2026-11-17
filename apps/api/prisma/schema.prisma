@@ -69,34 +69,35 @@ model Empresa {
 
   creadaPor Usuario? @relation("EmpresasCreadas", fields: [creadaPorUsuarioId], references: [id])
 
-  usuarios                   Usuario[]                   @relation("UsuariosDeEmpresa")
-  plataformas                Plataforma[]
-  duraciones                 Duracion[]
-  tiposCliente               TipoCliente[]
-  cargos                     Cargo[]
-  paquetes                   Paquete[]
-  paquetePlataformas         PaquetePlataforma[]
-  paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
-  precios                    Precio[]
-  costosPlataforma           CostoPlataforma[]
-  cuentas                    Cuenta[]
-  pantallas                  Pantalla[]
-  pantallasPlantilla         PlataformaPantalla[]
-  ventas                     Venta[]
-  ventaDetalles              VentaDetalle[]
-  plantillasMensaje          PlantillaMensaje[]
-  movimientoSaldos           MovimientoSaldo[]
-  garantias                  Garantia[]
-  reiniciosCuenta            ReinicioCuenta[]
-  turnos                     Turno[]
-  festivos                   Festivo[]
-  horasAdicionales           HoraAdicional[]
-  reportesSemanales          ReporteSemanal[]
-  configuracionesComision    ConfiguracionComision[]
-  instrucciones              Instruccion[]
-  instruccionArchivos        InstruccionArchivo[]
-  instruccionCumplimientos   InstruccionCumplimiento[]
-  instruccionVisualizaciones InstruccionVisualizacion[]
+  usuarios                      Usuario[]                         @relation("UsuariosDeEmpresa")
+  plataformas                   Plataforma[]
+  duraciones                    Duracion[]
+  tiposCliente                  TipoCliente[]
+  cargos                        Cargo[]
+  paquetes                      Paquete[]
+  paquetePlataformas            PaquetePlataforma[]
+  paqueteDuracionPlataformas    PaqueteDuracionPlataforma[]
+  precios                       Precio[]
+  costosPlataforma              CostoPlataforma[]
+  cuentas                       Cuenta[]
+  pantallas                     Pantalla[]
+  pantallasPlantilla            PlataformaPantalla[]
+  ventas                        Venta[]
+  ventaDetalles                 VentaDetalle[]
+  plantillasMensaje             PlantillaMensaje[]
+  movimientoSaldos              MovimientoSaldo[]
+  garantias                     Garantia[]
+  reiniciosCuenta               ReinicioCuenta[]
+  turnos                        Turno[]
+  festivos                      Festivo[]
+  horasAdicionales              HoraAdicional[]
+  reportesSemanales             ReporteSemanal[]
+  configuracionesComision       ConfiguracionComision[]
+  excepcionesComisionPlataforma ConfiguracionComisionPlataforma[]
+  instrucciones                 Instruccion[]
+  instruccionArchivos           InstruccionArchivo[]
+  instruccionCumplimientos      InstruccionCumplimiento[]
+  instruccionVisualizaciones    InstruccionVisualizacion[]
 
   @@unique([prefijoCodigo])
 }
@@ -139,19 +140,19 @@ model Usuario {
 
   empresasCreadas Empresa[] @relation("EmpresasCreadas")
 
-  ventasComoVendedor             Venta[]                   @relation("VentaVendedor")
-  ventasAnuladas                 Venta[]                   @relation("VentaAnuladaPor")
-  movimientosSaldo               MovimientoSaldo[]         @relation("MovimientoSaldoUsuario")
-  movimientosSaldoCreados        MovimientoSaldo[]         @relation("MovimientoSaldoCreadoPor")
-  garantiasCreadas               Garantia[]                @relation("GarantiaCreadaPor")
-  reiniciosCuenta                ReinicioCuenta[]          @relation("ReinicioCuentaUsuario")
+  ventasComoVendedor             Venta[]                    @relation("VentaVendedor")
+  ventasAnuladas                 Venta[]                    @relation("VentaAnuladaPor")
+  movimientosSaldo               MovimientoSaldo[]          @relation("MovimientoSaldoUsuario")
+  movimientosSaldoCreados        MovimientoSaldo[]          @relation("MovimientoSaldoCreadoPor")
+  garantiasCreadas               Garantia[]                 @relation("GarantiaCreadaPor")
+  reiniciosCuenta                ReinicioCuenta[]           @relation("ReinicioCuentaUsuario")
   turnos                         Turno[]
-  horasAdicionalesRegistradas    HoraAdicional[]           @relation("HoraAdicionalUsuario")
-  horasAdicionalesRevisadas      HoraAdicional[]           @relation("HoraAdicionalRevisor")
+  horasAdicionalesRegistradas    HoraAdicional[]            @relation("HoraAdicionalUsuario")
+  horasAdicionalesRevisadas      HoraAdicional[]            @relation("HoraAdicionalRevisor")
   reportesSemanales              ReporteSemanal[]
   configuracionesComisionCreadas ConfiguracionComision[]
-  instruccionesCreadas           Instruccion[]             @relation("InstruccionCreadaPor")
-  instruccionArchivosSubidos     InstruccionArchivo[]      @relation("InstruccionArchivoSubidoPor")
+  instruccionesCreadas           Instruccion[]              @relation("InstruccionCreadaPor")
+  instruccionArchivosSubidos     InstruccionArchivo[]       @relation("InstruccionArchivoSubidoPor")
   instruccionCumplimientos       InstruccionCumplimiento[]
   instruccionVisualizaciones     InstruccionVisualizacion[]
 
@@ -200,6 +201,7 @@ model Plataforma {
   ventaDetalles              VentaDetalle[]
   pantallasPlantilla         PlataformaPantalla[]
   garantiasExternas          Garantia[]
+  excepcionesComision        ConfiguracionComisionPlataforma[]
 
   @@index([empresaId])
 }
@@ -862,7 +864,43 @@ model ConfiguracionComision {
   empresa   Empresa @relation(fields: [empresaId], references: [id])
   creadaPor Usuario @relation(fields: [creadaPorId], references: [id])
 
+  excepciones ConfiguracionComisionPlataforma[]
+
   @@index([empresaId, vigenteDesde])
+}
+
+/// Excepciones por plataforma de una versión de ConfiguracionComision
+/// (F6.10). Cuelgan de la VERSIÓN (configuracionId), nunca de la
+/// plataforma: ConfiguracionComision se guarda por versiones y no se edita,
+/// precisamente para poder reconstruir qué regla estaba vigente cuando se
+/// vendió. Si las excepciones colgaran de la plataforma, cambiar la tarifa
+/// de un servicio reescribiría en silencio lo que ya se pagó con la versión
+/// anterior.
+///
+/// `modo`, `valor` y `umbralCantidad` en null heredan el valor por defecto
+/// de la ConfiguracionComision a la que pertenecen — ConfiguracionComision
+/// deja de ser "la regla" y pasa a ser el valor por defecto, incluso para
+/// plataformas que se creen después (ver resolverReglaPlataforma en
+/// lib/comisiones.ts). No confundir null (hereda) con 0 (es cero).
+///
+/// `comisiona: false` queda explícito: sus pantallas no entran al pozo y no
+/// consumen contador de umbral (ver aportesPantallasComisionables).
+model ConfiguracionComisionPlataforma {
+  id              String        @id @default(cuid())
+  empresaId       String
+  configuracionId String
+  plataformaId    String
+  comisiona       Boolean       @default(true)
+  modo            ModoComision?
+  valor           Decimal?      @db.Decimal(14, 2)
+  umbralCantidad  Int?
+
+  empresa       Empresa               @relation(fields: [empresaId], references: [id])
+  configuracion ConfiguracionComision @relation(fields: [configuracionId], references: [id])
+  plataforma    Plataforma            @relation(fields: [plataformaId], references: [id])
+
+  @@unique([empresaId, configuracionId, plataformaId])
+  @@index([empresaId, configuracionId])
 }
 
 // ---------------------------------------------------------------------------
@@ -916,9 +954,9 @@ model Instruccion {
 /// guarda ninguna URL: las de lectura se firman al pedirlas y vencen en
 /// minutos (ver lib/s3.ts).
 model InstruccionArchivo {
-  id            String                 @id @default(cuid())
-  empresaId     String
-  instruccionId String
+  id               String                 @id @default(cuid())
+  empresaId        String
+  instruccionId    String
   tipo             TipoArchivoInstruccion
   clave            String
   nombre           String

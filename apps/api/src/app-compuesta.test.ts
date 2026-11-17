@@ -852,9 +852,15 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     expect((await get("/comisiones/configuracion")).status).toBe(200);
     expect((await get("/comisiones/configuracion/historial")).status).toBe(200);
 
-    const simulacion = await get(
-      "/comisiones/simulacion?desde=2026-01-01&hasta=2026-01-31&modo=FIJO_POR_PANTALLA&valor=1000&umbralCantidad=10&umbralAmbito=TOTAL&umbralPeriodo=DIA",
-    );
+    const simulacion = await post("/comisiones/simulacion", {
+      desde: "2026-01-01",
+      hasta: "2026-01-31",
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 10,
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    });
     expect(simulacion.status).toBe(200);
 
     expect((await get("/comisiones/mias?desde=2026-01-01&hasta=2026-01-31")).status).toBe(200);
@@ -883,8 +889,17 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       ).toBe(403);
       expect(
         (
-          await get(
-            "/comisiones/simulacion?desde=2026-01-01&hasta=2026-01-31&modo=FIJO_POR_PANTALLA&valor=1000&umbralCantidad=10&umbralAmbito=TOTAL&umbralPeriodo=DIA",
+          await post(
+            "/comisiones/simulacion",
+            {
+              desde: "2026-01-01",
+              hasta: "2026-01-31",
+              modo: "FIJO_POR_PANTALLA",
+              valor: "1000",
+              umbralCantidad: 10,
+              umbralAmbito: "TOTAL",
+              umbralPeriodo: "DIA",
+            },
             cookie,
           )
         ).status,

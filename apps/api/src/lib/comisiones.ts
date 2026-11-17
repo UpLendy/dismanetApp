@@ -13,6 +13,15 @@ import { repartirPorDiaBogota } from "./turnos.ts";
 // liquidación que congele el período con la configuración vigente de ese
 // momento (por eso ConfiguracionComision ya guarda versiones, no sobrescribe
 // — ver routes/comisiones.ts).
+//
+// F6.10 — Comisión configurable por plataforma. ConfiguracionComision deja
+// de ser "la regla" y pasa a ser el VALOR POR DEFECTO: lo que aplica a toda
+// plataforma sin excepción propia, incluidas las que se creen después. Las
+// excepciones (ConfiguracionComisionPlataforma) cuelgan de la VERSIÓN, nunca
+// de la plataforma — ver el comentario del modelo en schema.prisma. El
+// reparto por horas de turno, el redondeo al peso, pozoSinRepartir y la
+// vista del empleado (comisionPropia) no se tocan: consumen `monto` y
+// `fechaVenta` de cada pantalla y no se enteran de dónde salió el monto.
 // ---------------------------------------------------------------------------
 
 // Prisma.TransactionClient (no PrismaClient completo): ver el comentario
@@ -20,12 +29,23 @@ import { repartirPorDiaBogota } from "./turnos.ts";
 // prismaParaEmpresa(empresaId) como un tx dentro de una transacción.
 type ClienteEmpresa = Prisma.TransactionClient;
 
+/** Excepción de UNA plataforma dentro de una versión de ConfiguracionComision. `null` en modo/valor/umbralCantidad = hereda el valor por defecto. */
+export interface ExcepcionPlataforma {
+  plataformaId: string;
+  comisiona: boolean;
+  modo: ModoComision | null;
+  valor: Prisma.Decimal | null;
+  umbralCantidad: number | null;
+}
+
 export interface ParametrosComision {
   modo: ModoComision;
   valor: Prisma.Decimal;
   umbralCantidad: number;
   umbralAmbito: AmbitoUmbral;
   umbralPeriodo: PeriodoUmbral;
+  /** Excepciones por plataforma de la versión en uso (F6.10). Ausente o vacío = ninguna plataforma tiene regla propia, todas heredan el valor por defecto. */
+  excepciones?: ExcepcionPlataforma[];
 }
 
 export interface ErrorValidacionComision {
@@ -33,25 +53,33 @@ export interface ErrorValidacionComision {
   mensaje: string;
 }
 
-/**
- * Validación al guardar (PROMPT-F6.5, Parte 1) y también al simular — la
- * simulación recibe estos mismos parámetros por query, así que debe
- * rechazar los mismos valores inválidos que rechazaría guardar.
- */
-export function validarParametrosComision(parametros: ParametrosComision): ErrorValidacionComision | null {
-  if (parametros.modo === ModoComision.PORCENTAJE_VENTA) {
-    if (!(parametros.valor.greaterThan(0) && parametros.valor.lessThanOrEqualTo(100))) {
+/** Reglas de rango de F6.5, compartidas por el valor por defecto y por cada excepción: porcentaje (0,100], monto fijo > 0. */
+function validarValorModo(modo: ModoComision, valor: Prisma.Decimal): ErrorValidacionComision | null {
+  if (modo === ModoComision.PORCENTAJE_VENTA) {
+    if (!(valor.greaterThan(0) && valor.lessThanOrEqualTo(100))) {
       return {
         codigo: "VALOR_INVALIDO",
         mensaje: "El porcentaje debe ser mayor a 0 y menor o igual a 100.",
       };
     }
-  } else if (!parametros.valor.greaterThan(0)) {
+  } else if (!valor.greaterThan(0)) {
     return {
       codigo: "VALOR_INVALIDO",
       mensaje: "El monto fijo por pantalla debe ser mayor a 0.",
     };
   }
+  return null;
+}
+
+/**
+ * Validación al guardar el valor por defecto (PROMPT-F6.5, Parte 1) y
+ * también al simular — la simulación recibe estos mismos parámetros por
+ * body, así que debe rechazar los mismos valores inválidos que rechazaría
+ * guardar.
+ */
+export function validarParametrosComision(parametros: ParametrosComision): ErrorValidacionComision | null {
+  const errorValor = validarValorModo(parametros.modo, parametros.valor);
+  if (errorValor) return errorValor;
 
   if (parametros.umbralCantidad < 0) {
     return {
@@ -63,8 +91,115 @@ export function validarParametrosComision(parametros: ParametrosComision): Error
   return null;
 }
 
+/** Lo que llega por body para UNA excepción, antes de normalizar (F6.10, Parte 1). */
+export interface EntradaExcepcionComision {
+  plataformaId: string;
+  comisiona: boolean;
+  modo?: ModoComision | null;
+  valor?: Prisma.Decimal | null;
+  umbralCantidad?: number | null;
+}
+
+/**
+ * Valida UNA fila de excepción antes de guardarla (PROMPT-F6.10, Parte 1).
+ * No valida existencia/actividad de la plataforma — eso necesita la base de
+ * datos y vive en routes/comisiones.ts.
+ *
+ * - `comisiona: false` no valida nada más: modo/valor/umbralCantidad se
+ *   normalizan a null al guardar (ver routes/comisiones.ts), así que lo que
+ *   traiga el body ahí no importa.
+ * - Si llega `modo`, tiene que llegar `valor` — un modo sin valor no se
+ *   puede resolver.
+ * - Si llega `valor`, se valida contra el modo EFECTIVO: el propio si lo
+ *   manda, si no el del valor por defecto — mismas reglas de rango que
+ *   validarParametrosComision.
+ * - Si llega `umbralCantidad`, no puede ser negativo.
+ * - `umbralAmbito: TOTAL` junto con un `umbralCantidad` propio es
+ *   contradictorio: un contador compartido no tiene dueño de quién es el
+ *   umbral. Se rechaza aquí, antes de guardar nada.
+ */
+export function validarExcepcionComision(
+  defecto: Pick<ParametrosComision, "modo">,
+  umbralAmbito: AmbitoUmbral,
+  excepcion: EntradaExcepcionComision,
+): ErrorValidacionComision | null {
+  if (!excepcion.comisiona) return null;
+
+  const tieneModoPropio = excepcion.modo !== null && excepcion.modo !== undefined;
+  const tieneValorPropio = excepcion.valor !== null && excepcion.valor !== undefined;
+  const tieneUmbralPropio = excepcion.umbralCantidad !== null && excepcion.umbralCantidad !== undefined;
+
+  if (tieneModoPropio && !tieneValorPropio) {
+    return {
+      codigo: "MODO_SIN_VALOR",
+      mensaje: "Si defines un modo propio para esta plataforma, también debes definir su valor.",
+    };
+  }
+
+  if (tieneValorPropio) {
+    const modoEfectivo = excepcion.modo ?? defecto.modo;
+    const errorValor = validarValorModo(modoEfectivo, excepcion.valor as Prisma.Decimal);
+    if (errorValor) return errorValor;
+  }
+
+  if (tieneUmbralPropio) {
+    if ((excepcion.umbralCantidad as number) < 0) {
+      return {
+        codigo: "UMBRAL_INVALIDO",
+        mensaje: "La cantidad del umbral no puede ser negativa.",
+      };
+    }
+    if (umbralAmbito === AmbitoUmbral.TOTAL) {
+      return {
+        codigo: "UMBRAL_INCOMPATIBLE_CON_AMBITO_TOTAL",
+        mensaje:
+          "El ámbito del umbral es TOTAL (un solo contador compartido entre todas las plataformas): esta plataforma no puede traer su propio umbralCantidad porque no hay dueño del contador. Usa ámbito POR_PLATAFORMA si quieres umbrales distintos por servicio.",
+      };
+    }
+  }
+
+  return null;
+}
+
 function inicioDePeriodoBogota(periodo: PeriodoUmbral, fecha: Date): Date {
   return periodo === PeriodoUmbral.DIA ? inicioDiaBogota(fecha) : inicioMesBogota(fecha);
+}
+
+export interface ReglaResuelta {
+  comisiona: boolean;
+  modo: ModoComision;
+  valor: Prisma.Decimal;
+  umbralCantidad: number;
+}
+
+/**
+ * Resuelve la regla real de UNA plataforma: su excepción (si tiene), con los
+ * campos en `null` rellenados desde el valor por defecto (PROMPT-F6.10,
+ * Parte 2). Nombrada y exportada aparte porque la usan tres sitios que no
+ * deben reimplementarla — el cálculo real y el simulador (los dos a través
+ * de aportesPantallasComisionables, más abajo) y GET
+ * /comisiones/configuracion, para mostrar qué hereda cada fila sin campos
+ * vacíos.
+ */
+export function resolverReglaPlataforma(
+  defecto: Pick<ParametrosComision, "modo" | "valor" | "umbralCantidad">,
+  excepcion: ExcepcionPlataforma | undefined,
+): ReglaResuelta {
+  if (!excepcion) {
+    return { comisiona: true, modo: defecto.modo, valor: defecto.valor, umbralCantidad: defecto.umbralCantidad };
+  }
+  if (!excepcion.comisiona) {
+    // modo/valor/umbralCantidad no importan cuando no comisiona (nunca se
+    // leen), pero se devuelven resueltos de todas formas para que el tipo
+    // sea uniforme y la pantalla de configuración pueda mostrarlos atenuados.
+    return { comisiona: false, modo: defecto.modo, valor: defecto.valor, umbralCantidad: defecto.umbralCantidad };
+  }
+  return {
+    comisiona: true,
+    modo: excepcion.modo ?? defecto.modo,
+    valor: excepcion.valor ?? defecto.valor,
+    umbralCantidad: excepcion.umbralCantidad ?? defecto.umbralCantidad,
+  };
 }
 
 export interface AportePantalla {
@@ -75,18 +210,21 @@ export interface AportePantalla {
   fechaVenta: Date;
   /** `true` si el umbral se la comió: no aporta nada al pozo. */
   absorbida: boolean;
-  /** Lo que esta pantalla aporta al pozo. `0` si `absorbida`. */
+  /** `true` si la plataforma de esta pantalla no comisiona (F6.10): no entra al pozo y NO CONSUMIÓ contador de umbral. Distinto de `absorbida`. */
+  excluida: boolean;
+  /** Lo que esta pantalla aporta al pozo. `0` si `absorbida` o `excluida`. */
   monto: Prisma.Decimal;
 }
 
 /**
- * LA regla del dinero, en un solo lugar (PROMPT-F6.6, Parte 2): decide,
- * pantalla por pantalla y en el mismo orden determinista que usa el umbral,
- * si esa pantalla comisiona y cuánto aporta. El simulador (parámetros por
- * query) y el cálculo real (parámetros de la ConfiguracionComision vigente,
- * ver calcularComisiones más abajo) llaman a esta misma función — ninguno
- * la reimplementa. Una segunda copia de esta regla es exactamente cómo se
- * desincroniza; ya pasó tres veces en este proyecto (ver R5 y F4.12).
+ * LA regla del dinero, en un solo lugar (PROMPT-F6.6, Parte 2; PROMPT-F6.10,
+ * Parte 0 y 2): decide, pantalla por pantalla y en el mismo orden
+ * determinista que usa el umbral, si esa pantalla comisiona y cuánto aporta.
+ * El simulador (parámetros por body) y el cálculo real (parámetros de la
+ * ConfiguracionComision vigente, ver calcularComisiones más abajo) llaman a
+ * esta misma función — ninguno la reimplementa. Una segunda copia de esta
+ * regla es exactamente cómo se desincroniza; ya pasó tres veces en este
+ * proyecto (ver R5 y F4.12).
  *
  * Una sola consulta (findMany, select mínimo, sin include anidados, sin una
  * consulta por plataforma) y todo el conteo/prorrateo se hace en memoria.
@@ -98,7 +236,7 @@ export async function aportesPantallasComisionables(
   cliente: ClienteEmpresa,
   parametros: ParametrosComision & { desde: Date; hasta: Date },
 ): Promise<AportePantalla[]> {
-  const { desde, hasta, modo, valor, umbralCantidad, umbralAmbito, umbralPeriodo } = parametros;
+  const { desde, hasta, modo, valor, umbralCantidad, umbralAmbito, umbralPeriodo, excepciones } = parametros;
 
   // Orden determinista (CLAUDE.md / PROMPT-F6.5 Parte 2): fechaVenta
   // ascendente y, a igualdad, VentaDetalle.id. No es cosmético — con
@@ -131,12 +269,38 @@ export async function aportesPantallasComisionables(
     renglonesPorVenta.set(renglon.ventaId, (renglonesPorVenta.get(renglon.ventaId) ?? 0) + 1);
   }
 
+  // Mapa de excepciones por plataforma, armado antes del bucle (PROMPT-F6.10,
+  // Parte 2): dentro del bucle ya se tiene renglon.plataformaId en la mano,
+  // justo donde se decide si la pantalla absorbe umbral y cuánto aporta.
+  const excepcionesPorPlataforma = new Map(
+    (excepciones ?? []).map((excepcion) => [excepcion.plataformaId, excepcion]),
+  );
+
   const CERO = new Prisma.Decimal(0);
   const contadorUmbral = new Map<string, number>();
   const resultado: AportePantalla[] = [];
 
   for (const renglon of renglones) {
     const fechaVenta = renglon.venta.fechaVenta;
+    const regla = resolverReglaPlataforma({ modo, valor, umbralCantidad }, excepcionesPorPlataforma.get(renglon.plataformaId));
+
+    if (!regla.comisiona) {
+      // No toca contadorUmbral (Parte 2, punto 2): si lo consumiera, una
+      // plataforma que no comisiona le estaría comiendo el umbral
+      // compartido a las que sí (ámbito TOTAL), y el dueño vería menos
+      // comisión de la que configuró sin entender por qué.
+      resultado.push({
+        ventaDetalleId: renglon.id,
+        ventaId: renglon.ventaId,
+        plataformaId: renglon.plataformaId,
+        fechaVenta,
+        absorbida: false,
+        excluida: true,
+        monto: CERO,
+      });
+      continue;
+    }
+
     const inicioContador = inicioDePeriodoBogota(umbralPeriodo, fechaVenta);
     const claveContador =
       umbralAmbito === AmbitoUmbral.TOTAL
@@ -145,14 +309,14 @@ export async function aportesPantallasComisionables(
 
     const vistos = contadorUmbral.get(claveContador) ?? 0;
     contadorUmbral.set(claveContador, vistos + 1);
-    const absorbida = vistos < umbralCantidad;
+    const absorbida = vistos < regla.umbralCantidad;
 
     const numeroRenglones = renglonesPorVenta.get(renglon.ventaId) ?? 1;
-    const monto = absorbida
+    const montoAporte = absorbida
       ? CERO
-      : modo === ModoComision.FIJO_POR_PANTALLA
-        ? valor
-        : renglon.venta.precioVenta.dividedBy(numeroRenglones).times(valor).dividedBy(100);
+      : regla.modo === ModoComision.FIJO_POR_PANTALLA
+        ? regla.valor
+        : renglon.venta.precioVenta.dividedBy(numeroRenglones).times(regla.valor).dividedBy(100);
 
     resultado.push({
       ventaDetalleId: renglon.id,
@@ -160,7 +324,8 @@ export async function aportesPantallasComisionables(
       plataformaId: renglon.plataformaId,
       fechaVenta,
       absorbida,
-      monto,
+      excluida: false,
+      monto: montoAporte,
     });
   }
 
@@ -177,6 +342,16 @@ export interface FilaPeriodoSimulacion {
   pozoTotal: string;
 }
 
+/** Desglose por plataforma (PROMPT-F6.10, Parte 3): lo que permite comparar servicios, que es para lo que se pidió esto. */
+export interface FilaPlataformaSimulacion {
+  plataformaId: string;
+  pantallasVendidas: number;
+  pantallasAbsorbidas: number;
+  pantallasExcluidas: number;
+  pantallasComisionadas: number;
+  pozo: string;
+}
+
 export interface ResultadoSimulacionComision {
   pantallasVendidas: number;
   pantallasAbsorbidas: number;
@@ -184,12 +359,21 @@ export interface ResultadoSimulacionComision {
   porcentajeComisionado: number;
   pozoTotal: string;
   porPeriodo: FilaPeriodoSimulacion[];
+  porPlataforma: FilaPlataformaSimulacion[];
 }
 
 interface AcumuladorPeriodo {
   inicio: Date;
   vendidas: number;
   absorbidas: number;
+  comisionadas: number;
+  pozo: Prisma.Decimal;
+}
+
+interface AcumuladorPlataforma {
+  vendidas: number;
+  absorbidas: number;
+  excluidas: number;
   comisionadas: number;
   pozo: Prisma.Decimal;
 }
@@ -211,6 +395,7 @@ export async function simularComisiones(
 
   const CERO = new Prisma.Decimal(0);
   const periodos = new Map<string, AcumuladorPeriodo>();
+  const plataformas = new Map<string, AcumuladorPlataforma>();
 
   let pantallasVendidas = 0;
   let pantallasAbsorbidas = 0;
@@ -222,21 +407,31 @@ export async function simularComisiones(
     const clavePeriodo = String(inicioPeriodo.getTime());
     const acumulado =
       periodos.get(clavePeriodo) ?? { inicio: inicioPeriodo, vendidas: 0, absorbidas: 0, comisionadas: 0, pozo: CERO };
+    const accPlataforma =
+      plataformas.get(aporte.plataformaId) ??
+      { vendidas: 0, absorbidas: 0, excluidas: 0, comisionadas: 0, pozo: CERO };
 
     acumulado.vendidas += 1;
+    accPlataforma.vendidas += 1;
     pantallasVendidas += 1;
 
-    if (aporte.absorbida) {
+    if (aporte.excluida) {
+      accPlataforma.excluidas += 1;
+    } else if (aporte.absorbida) {
       acumulado.absorbidas += 1;
+      accPlataforma.absorbidas += 1;
       pantallasAbsorbidas += 1;
     } else {
       acumulado.comisionadas += 1;
       acumulado.pozo = acumulado.pozo.plus(aporte.monto);
+      accPlataforma.comisionadas += 1;
+      accPlataforma.pozo = accPlataforma.pozo.plus(aporte.monto);
       pantallasComisionadas += 1;
       pozoTotal = pozoTotal.plus(aporte.monto);
     }
 
     periodos.set(clavePeriodo, acumulado);
+    plataformas.set(aporte.plataformaId, accPlataforma);
   }
 
   const porPeriodo: FilaPeriodoSimulacion[] = Array.from(periodos.values())
@@ -250,6 +445,17 @@ export async function simularComisiones(
       pozoTotal: acumulado.pozo.toString(),
     }));
 
+  const porPlataforma: FilaPlataformaSimulacion[] = Array.from(plataformas.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([plataformaId, acc]) => ({
+      plataformaId,
+      pantallasVendidas: acc.vendidas,
+      pantallasAbsorbidas: acc.absorbidas,
+      pantallasExcluidas: acc.excluidas,
+      pantallasComisionadas: acc.comisionadas,
+      pozo: acc.pozo.toString(),
+    }));
+
   return {
     pantallasVendidas,
     pantallasAbsorbidas,
@@ -257,6 +463,7 @@ export async function simularComisiones(
     porcentajeComisionado: pantallasVendidas > 0 ? (pantallasComisionadas / pantallasVendidas) * 100 : 0,
     pozoTotal: pozoTotal.toString(),
     porPeriodo,
+    porPlataforma,
   };
 }
 
@@ -346,7 +553,7 @@ export async function calcularComisiones(
   let pantallasComisionadas = 0;
 
   for (const aporte of aportes) {
-    if (aporte.absorbida) continue;
+    if (aporte.absorbida || aporte.excluida) continue;
     pantallasComisionadas += 1;
     const clave = inicioDiaBogota(aporte.fechaVenta).getTime();
     pozosPorDia.set(clave, (pozosPorDia.get(clave) ?? CERO).plus(aporte.monto));
@@ -426,13 +633,27 @@ export type ConfiguracionVigente = ParametrosComision;
  * Venta.fechaVencimientoMax ni similar, es su propio campo de versión.
  * Extraída de routes/comisiones.ts (F6.9, PROMPT Parte 0): tanto /mias y
  * /resumen como GET /panel-empleado necesitan la misma configuración
- * vigente, y ninguna la recibe por query a diferencia de /simulacion.
+ * vigente, y ninguna la recibe por body a diferencia de /simulacion.
+ *
+ * Incluye las excepciones por plataforma de esa versión (F6.10): al venir
+ * ya en el `ConfiguracionVigente` que se spreadea como
+ * `{ desde, hasta, ...configuracion }` en /mias, /resumen y
+ * GET /panel-empleado, esos tres sitios siguen pasando por
+ * aportesPantallasComisionables con las excepciones correctas sin tocar una
+ * sola línea de esos archivos.
  */
 export async function configuracionVigente(cliente: ClienteEmpresa): Promise<ConfiguracionVigente | null> {
   return cliente.configuracionComision.findFirst({
     where: { vigenteDesde: { lte: new Date() } },
     orderBy: { vigenteDesde: "desc" },
-    select: { modo: true, valor: true, umbralCantidad: true, umbralAmbito: true, umbralPeriodo: true },
+    select: {
+      modo: true,
+      valor: true,
+      umbralCantidad: true,
+      umbralAmbito: true,
+      umbralPeriodo: true,
+      excepciones: { select: { plataformaId: true, comisiona: true, modo: true, valor: true, umbralCantidad: true } },
+    },
   });
 }
 

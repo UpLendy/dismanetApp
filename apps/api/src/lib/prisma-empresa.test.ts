@@ -45,6 +45,7 @@ interface FixtureEmpresa {
   horaAdicionalId: string;
   reporteSemanalId: string;
   configuracionComisionId: string;
+  configuracionComisionPlataformaId: string;
   instruccionId: string;
   instruccionArchivoId: string;
   instruccionCumplimientoId: string;
@@ -305,6 +306,15 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  const configuracionComisionPlataforma = await prismaRaw.configuracionComisionPlataforma.create({
+    data: {
+      empresaId: empresa.id,
+      configuracionId: configuracionComision.id,
+      plataformaId: plataforma.id,
+      comisiona: true,
+    },
+  });
+
   const instruccion = await prismaRaw.instruccion.create({
     data: {
       empresaId: empresa.id,
@@ -375,6 +385,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     horaAdicionalId: horaAdicional.id,
     reporteSemanalId: reporteSemanal.id,
     configuracionComisionId: configuracionComision.id,
+    configuracionComisionPlataformaId: configuracionComisionPlataforma.id,
     instruccionId: instruccion.id,
     instruccionArchivoId: instruccionArchivo.id,
     instruccionCumplimientoId: instruccionCumplimiento.id,
@@ -412,6 +423,8 @@ async function borrarEmpresaCompleta(empresaId: string) {
   await prismaRaw.instruccion.deleteMany({ where: { empresaId } });
   await prismaRaw.cargo.deleteMany({ where: { empresaId } });
   await prismaRaw.duracion.deleteMany({ where: { empresaId } });
+  // ConfiguracionComisionPlataforma referencia Plataforma: antes de esa.
+  await prismaRaw.configuracionComisionPlataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.plataformaPantalla.deleteMany({ where: { empresaId } });
   await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
   // Turno y HoraAdicional referencian Usuario (requerido, sin onDelete): antes del usuario.
@@ -438,8 +451,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 28 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(28);
+  it("cubre los 29 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(29);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -478,6 +491,9 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         // F6.5 — cubierto automáticamente por el escaneo del esquema (tiene
         // empresaId), sin cambiar prisma-empresa.ts.
         "ConfiguracionComision",
+        // F6.10 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "ConfiguracionComisionPlataforma",
         // F6.7 — cubierto automáticamente por el escaneo del esquema (tiene
         // empresaId), sin cambiar prisma-empresa.ts.
         "Instruccion",
