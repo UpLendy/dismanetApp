@@ -18,6 +18,8 @@ const PATRON_DINERO_CON_SIGNO = /^-?\d+(\.\d{1,2})?$/;
 const dineroPositivo = t.String({ pattern: PATRON_DINERO_POSITIVO.source });
 const dineroConSigno = t.String({ pattern: PATRON_DINERO_CON_SIGNO.source });
 
+const esquemaCargoAsignado = t.Union([t.Object({ id: t.String(), nombre: t.String() }), t.Null()]);
+
 const esquemaUsuario = t.Object({
   id: t.String(),
   nombre: t.String(),
@@ -26,19 +28,29 @@ const esquemaUsuario = t.Object({
   activo: t.Boolean(),
   usaSaldo: t.Boolean(),
   saldo: t.String(),
+  cargo: esquemaCargoAsignado,
+  // F6.2: derivado (existe un turno suyo con inicio <= ahora < fin), nunca
+  // una columna de la base — ver lib/turnos.ts. Opcional porque solo
+  // GET /usuarios lo calcula; las demás rutas que devuelven esquemaUsuario
+  // operan sobre un solo registro y no necesitan el estado "ahora mismo".
+  enTurno: t.Optional(t.Boolean()),
 });
 
 // usaSaldo en la respuesta se deriva del rol, nunca de la columna Usuario.usaSaldo
 // (que ya no se lee en código): el saldo es exclusivo de VENDEDOR desde que
 // EMPLEADO existe como rol separado.
-const respuestaUsuario = (usuario: {
-  id: string;
-  nombre: string;
-  email: string;
-  rol: Rol;
-  activo: boolean;
-  saldo: Prisma.Decimal;
-}) => ({
+const respuestaUsuario = (
+  usuario: {
+    id: string;
+    nombre: string;
+    email: string;
+    rol: Rol;
+    activo: boolean;
+    saldo: Prisma.Decimal;
+    cargo: { id: string; nombre: string } | null;
+  },
+  enTurno?: boolean,
+) => ({
   id: usuario.id,
   nombre: usuario.nombre,
   email: usuario.email,
@@ -46,7 +58,24 @@ const respuestaUsuario = (usuario: {
   activo: usuario.activo,
   usaSaldo: usuario.rol === Rol.VENDEDOR,
   saldo: usuario.saldo.toString(),
+  cargo: usuario.cargo,
+  ...(enTurno !== undefined ? { enTurno } : {}),
 });
+
+const SELECT_CARGO = { cargo: { select: { id: true, nombre: true } } } as const;
+
+// El cargo es el oficio, no el Rol — no concede ningún permiso (CLAUDE.md,
+// F6.1). "Válido" significa: existe, de la misma empresa (prismaParaEmpresa
+// ya lo garantiza al filtrar por empresaId) y activo al momento de
+// asignarlo. Un cargo desactivado solo deja de ofrecerse para asignaciones
+// NUEVAS; el que ya lo tiene no se ve afectado por esta función.
+async function cargoEsValido(
+  cliente: ReturnType<typeof prismaParaEmpresa<typeof prismaRaw>>,
+  cargoId: string,
+): Promise<boolean> {
+  const cargo = await cliente.cargo.findFirst({ where: { id: cargoId, activo: true }, select: { id: true } });
+  return cargo !== null;
+}
 
 const esquemaMovimientoSaldo = t.Object({
   id: t.String(),
@@ -112,8 +141,19 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
     "/",
     async ({ contexto }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-      const filas = await cliente.usuario.findMany({ orderBy: { createdAt: "asc" } });
-      return { usuarios: filas.map(respuestaUsuario) };
+      const filas = await cliente.usuario.findMany({ orderBy: { createdAt: "asc" }, include: SELECT_CARGO });
+
+      // F6.2, Parte 3: "está de turno ahora" no se guarda, se deriva — un
+      // turno suyo con inicio <= ahora < fin. Una sola consulta para todos
+      // los usuarios de la página, no una por fila.
+      const ahora = new Date();
+      const turnosActivos = await cliente.turno.findMany({
+        where: { usuarioId: { in: filas.map((f) => f.id) }, inicio: { lte: ahora }, fin: { gt: ahora } },
+        select: { usuarioId: true },
+      });
+      const idsEnTurno = new Set(turnosActivos.map((t) => t.usuarioId));
+
+      return { usuarios: filas.map((f) => respuestaUsuario(f, idsEnTurno.has(f.id))) };
     },
     { response: { 200: t.Object({ usuarios: t.Array(esquemaUsuario) }) } },
   )
@@ -127,12 +167,24 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
         };
       }
 
+      if (body.cargoId && !(await cargoEsValido(prismaParaEmpresa(contexto.empresaId), body.cargoId))) {
+        set.status = 404;
+        return { error: { codigo: "CARGO_INVALIDO", mensaje: "El cargo no existe, no es de esta empresa o está desactivado." } };
+      }
+
       const passwordHash = await argon2.hash(body.password, { type: argon2.argon2id });
       const cliente = prismaParaEmpresa(contexto.empresaId);
 
       try {
         const usuario = await cliente.usuario.create({
-          data: { email: body.email, passwordHash, nombre: body.nombre, rol: body.rol },
+          data: {
+            email: body.email,
+            passwordHash,
+            nombre: body.nombre,
+            rol: body.rol,
+            cargoId: body.cargoId ?? null,
+          },
+          include: SELECT_CARGO,
         });
         set.status = 201;
         return { usuario: respuestaUsuario(usuario) };
@@ -155,10 +207,12 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
         email: t.String({ format: "email" }),
         password: t.String({ minLength: 8 }),
         rol: t.Enum(Rol),
+        cargoId: t.Optional(t.Union([t.String(), t.Null()])),
       }),
       response: {
         201: t.Object({ usuario: esquemaUsuario }),
         403: esquemaError,
+        404: esquemaError,
         409: esquemaError,
       },
     },
@@ -188,7 +242,11 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
         };
       }
 
-      const actualizado = await cliente.usuario.update({ where: { id: params.id }, data: { activo: false } });
+      const actualizado = await cliente.usuario.update({
+        where: { id: params.id },
+        data: { activo: false },
+        include: SELECT_CARGO,
+      });
       return { usuario: respuestaUsuario(actualizado) };
     },
     {
@@ -206,7 +264,11 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
     async ({ params, contexto, set }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
       try {
-        const actualizado = await cliente.usuario.update({ where: { id: params.id }, data: { activo: true } });
+        const actualizado = await cliente.usuario.update({
+          where: { id: params.id },
+          data: { activo: true },
+          include: SELECT_CARGO,
+        });
         return { usuario: respuestaUsuario(actualizado) };
       } catch (error) {
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
@@ -254,7 +316,11 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
         };
       }
 
-      const actualizado = await cliente.usuario.update({ where: { id: params.id }, data: { rol: body.rol } });
+      const actualizado = await cliente.usuario.update({
+        where: { id: params.id },
+        data: { rol: body.rol },
+        include: SELECT_CARGO,
+      });
       return { usuario: respuestaUsuario(actualizado) };
     },
     {
@@ -265,6 +331,42 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
         403: esquemaError,
         404: esquemaError,
         409: esquemaError,
+      },
+    },
+  )
+  // Asignación de cargo (F6.1): no es una guarda de permisos, es el oficio.
+  // cargoId: null limpia la asignación. Mismo patrón que /:id/rol.
+  .patch(
+    "/:id/cargo",
+    async ({ params, body, contexto, set }) => {
+      const cliente = prismaParaEmpresa(contexto.empresaId);
+
+      if (body.cargoId && !(await cargoEsValido(cliente, body.cargoId))) {
+        set.status = 404;
+        return { error: { codigo: "CARGO_INVALIDO", mensaje: "El cargo no existe, no es de esta empresa o está desactivado." } };
+      }
+
+      try {
+        const actualizado = await cliente.usuario.update({
+          where: { id: params.id },
+          data: { cargoId: body.cargoId },
+          include: SELECT_CARGO,
+        });
+        return { usuario: respuestaUsuario(actualizado) };
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+          set.status = 404;
+          return { error: { codigo: "USUARIO_NO_ENCONTRADO", mensaje: "El usuario no existe." } };
+        }
+        throw error;
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({ cargoId: t.Union([t.String(), t.Null()]) }),
+      response: {
+        200: t.Object({ usuario: esquemaUsuario }),
+        404: esquemaError,
       },
     },
   )
@@ -298,7 +400,11 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
             creadoPorId: contexto.usuarioId!,
           }),
         });
-        const actualizado = await tx.usuario.update({ where: { id: params.id }, data: { saldo: saldoResultante } });
+        const actualizado = await tx.usuario.update({
+          where: { id: params.id },
+          data: { saldo: saldoResultante },
+          include: SELECT_CARGO,
+        });
         return { tipo: "ok" as const, usuario: actualizado };
       });
 
@@ -353,7 +459,11 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
             creadoPorId: contexto.usuarioId!,
           }),
         });
-        const actualizado = await tx.usuario.update({ where: { id: params.id }, data: { saldo: saldoResultante } });
+        const actualizado = await tx.usuario.update({
+          where: { id: params.id },
+          data: { saldo: saldoResultante },
+          include: SELECT_CARGO,
+        });
         return { tipo: "ok" as const, usuario: actualizado };
       });
 
@@ -382,7 +492,7 @@ export const usuarios = new Elysia({ prefix: "/usuarios" })
     "/:id/saldo/movimientos",
     async ({ params, contexto, set }) => {
       const cliente = prismaParaEmpresa(contexto.empresaId);
-      const usuario = await cliente.usuario.findUnique({ where: { id: params.id } });
+      const usuario = await cliente.usuario.findUnique({ where: { id: params.id }, include: SELECT_CARGO });
       if (!usuario) {
         set.status = 404;
         return { error: { codigo: "USUARIO_NO_ENCONTRADO", mensaje: "El usuario no existe." } };

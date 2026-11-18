@@ -64,6 +64,7 @@ describe("b) Aislamiento tras crear una empresa (decisión D2)", () => {
     await prismaRaw.usuario.deleteMany({ where: { email: { in: emailsUsuarios } } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
     await prismaRaw.tipoCliente.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
+    await prismaRaw.cargo.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
     await prismaRaw.empresa.deleteMany({ where: { id: { in: idsEmpresas } } });
   });
 
@@ -205,6 +206,7 @@ describe("f) GET /empresas/:id/diagnostico — exclusivo de SUPER_ADMIN (R4)", (
     await prismaRaw.usuario.deleteMany({ where: { email: { in: emailsUsuarios } } });
     await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
     await prismaRaw.tipoCliente.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
+    await prismaRaw.cargo.deleteMany({ where: { empresaId: { in: idsEmpresas } } });
     await prismaRaw.empresa.deleteMany({ where: { id: { in: idsEmpresas } } });
   });
 

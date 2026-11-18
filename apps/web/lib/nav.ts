@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw } from "lucide-react";
+import { ShoppingCart, Receipt, MonitorCheck, MonitorPlay, Tv, CalendarClock, CalendarDays, Clock3, Users2, Package, CircleDollarSign, UserCog, Building2, MessageSquareText, BarChart3, RotateCcw, Briefcase, FileText, Percent, ClipboardList, LayoutDashboard } from "lucide-react";
 import type { Rol } from "@/lib/rol";
 
 export interface ItemNav {
@@ -17,11 +17,17 @@ export interface GrupoNav {
 
 const RANGO: Record<Rol, number> = { VENDEDOR: 0, EMPLEADO: 1, ADMIN: 2, SUPER_ADMIN: 3 };
 
-// Agrupación exacta de DISENO.md §3. El primer grupo no tiene encabezado y
-// es lo único que un VENDEDOR ve — los demás grupos se filtran por completo,
-// nunca se muestran deshabilitados. Un EMPLEADO ve además "Cuentas" (solo
-// el botón de crear dentro de esa pantalla, ver cuentas/page.tsx), porque
-// crear cuentas es parte de su trabajo diario.
+// Agrupación exacta de DISENO.md §3. El primer grupo no tiene encabezado;
+// los demás grupos se filtran por completo, nunca se muestran deshabilitados.
+// Un EMPLEADO ve además "Cuentas" (solo el botón de crear dentro de esa
+// pantalla, ver cuentas/page.tsx), porque crear cuentas es parte de su
+// trabajo diario.
+// F6.3: "Calendario" tenía rolMinimo VENDEDOR desde F6.2 — error del
+// documento original. Un VENDEDOR es un revendedor externo con saldo
+// prepago, no tiene turno laboral; corregido a EMPLEADO junto con la guarda
+// del backend (routes/turnos.ts) y movido a /panel/calendario para que el
+// layout de (admin) bloquee a VENDEDOR en el servidor, no solo en el menú.
+// "Horas adicionales" nace ya en EMPLEADO (F6.3): mismo motivo.
 const GRUPOS: GrupoNav[] = [
   {
     titulo: null,
@@ -34,6 +40,16 @@ const GRUPOS: GrupoNav[] = [
   {
     titulo: "OPERACIÓN",
     items: [
+      // F6.9: junta comisión, ventas, metas y pendientes del propio
+      // empleado (o de cualquiera de su empresa, para un ADMIN) en una
+      // sola pantalla — cierra el bloque de empleados.
+      { etiqueta: "Mi panel", href: "/panel/mi-panel", icono: LayoutDashboard, rolMinimo: "EMPLEADO" },
+      { etiqueta: "Calendario", href: "/panel/calendario", icono: CalendarDays, rolMinimo: "EMPLEADO" },
+      { etiqueta: "Horas adicionales", href: "/panel/horas-adicionales", icono: Clock3, rolMinimo: "EMPLEADO" },
+      { etiqueta: "Reportes semanales", href: "/panel/reportes", icono: FileText, rolMinimo: "EMPLEADO" },
+      // F6.7: imágenes y video, un VENDEDOR no recibe instrucciones de
+      // operación (mismo criterio que Calendario y Horas adicionales).
+      { etiqueta: "Instrucciones", href: "/panel/instrucciones", icono: ClipboardList, rolMinimo: "EMPLEADO" },
       { etiqueta: "Cuentas", href: "/panel/cuentas", icono: MonitorPlay, rolMinimo: "EMPLEADO" },
       // rolMinimo en ADMIN a propósito: GET /cuentas/por-reiniciar exige
       // ADMIN (routes/cuentas.ts:342). Si ese endpoint se abre a EMPLEADO,
@@ -47,9 +63,15 @@ const GRUPOS: GrupoNav[] = [
       { etiqueta: "Plataformas", href: "/panel/catalogo/plataformas", icono: Tv, rolMinimo: "ADMIN" },
       { etiqueta: "Duraciones", href: "/panel/catalogo/duraciones", icono: CalendarClock, rolMinimo: "ADMIN" },
       { etiqueta: "Tipos de cliente", href: "/panel/catalogo/tipos-cliente", icono: Users2, rolMinimo: "ADMIN" },
+      { etiqueta: "Cargos", href: "/panel/catalogo/cargos", icono: Briefcase, rolMinimo: "ADMIN" },
       { etiqueta: "Paquetes", href: "/panel/catalogo/paquetes", icono: Package, rolMinimo: "ADMIN" },
       { etiqueta: "Precios", href: "/panel/precios", icono: CircleDollarSign, rolMinimo: "ADMIN" },
       { etiqueta: "Plantillas", href: "/panel/mensajes", icono: MessageSquareText, rolMinimo: "ADMIN" },
+      // F6.6: calcula y muestra (no congela ni paga). rolMinimo en EMPLEADO
+      // porque la pantalla se bifurca por rol (page.tsx): un EMPLEADO ve su
+      // propia tajada (/mias, sin pozo ni precio de venta); ADMIN+ ve la
+      // política, el simulador y el resumen por persona.
+      { etiqueta: "Comisiones", href: "/panel/comisiones", icono: Percent, rolMinimo: "EMPLEADO" },
     ],
   },
   {

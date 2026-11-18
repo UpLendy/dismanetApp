@@ -129,6 +129,8 @@ Cualquier cambio a esta fórmula se aplica a los tres sitios de la lista en la m
 - **Idioma:** nombres de entidades, campos, rutas y textos de interfaz en español. Comentarios en español.
 - **Dinero:** `Decimal` en Prisma, nunca `Float`. En TypeScript se maneja como string o entero de centavos, nunca como `number` flotante.
 - **Fechas:** todo en UTC en la base de datos. La conversión a hora local (`America/Bogota`) se hace en el frontend.
+  - Al formatear una fecha **construida** con `Date.UTC(...)`, pasar siempre `timeZone: "UTC"` a `toLocaleDateString`/`toLocaleString`. Sin eso se formatea en la zona del navegador y, en UTC-5, el día 1 retrocede al mes anterior: cinco pantallas mostraban "oct" en noviembre. Formatear un **instante real** (`new Date(iso)`) sin `timeZone` sí es correcto — no lo cambies.
+  - Toda prueba de etiquetas de fecha debe forzar `process.env.TZ = "America/Bogota"`. Con `TZ=UTC` el error no se reproduce y la prueba no vale nada.
 - **Aritmética de duraciones:** usar `date-fns`. `unidad = DIAS` → `addDays`. `unidad = MESES` → `addMonths`, que recorta al último día del mes destino (31 de enero + 1 mes = 28 de febrero). No implementar la suma de meses a mano.
 - **Errores:** el API responde con `{ error: { codigo, mensaje } }`. El mensaje es apto para mostrar al usuario final.
 - **Restricciones únicas violadas (P2002):** con `@prisma/adapter-pg`, que es el driver de este proyecto, el nombre de la restricción **no** viaja en `error.meta.target` — esa es la forma del motor binario. Viaja en `error.meta.driverAdapterError.cause.constraint.index`. Usar siempre el helper `restriccionViolada()` de la capa de errores, que revisa ambas formas. **Nunca leer `meta.target` directamente.** Cualquier código que dependa de detectar una colisión falla en silencio si lee la forma equivocada: devuelve 500 en vez del error de negocio, y los reintentos por colisión nunca se disparan.
@@ -148,6 +150,10 @@ Cualquier cambio a esta fórmula se aplica a los tres sitios de la lista en la m
 - **Validar antes no reemplaza manejar P2002.** Comprobar que un nombre no existe y luego insertarlo es una condición de carrera: dos peticiones simultáneas pasan ambas la validación y una revienta contra la restricción. Toda ruta que inserte sobre una restricción única debe manejar además el P2002 con `restriccionViolada()`.
 
 - **`mock.module` en Bun es global al proceso, no al archivo.** Dos archivos de prueba que mockean el mismo módulo comparten el mock: el último en cargarse gana, y un archivo que solo mockea `useRouter` deja a otro sin `useSearchParams` con un `SyntaxError` que no apunta a la causa. Todo mock de un módulo compartido debe exponer **la superficie completa** que cualquier prueba del repo use de ese módulo, no solo lo que usa el archivo que lo escribe.
+
+- **Enteros de la misma magnitud comparados contra un umbral: el redondeo decide si la comparación es alcanzable.** Cuando dos enteros salen de la misma cantidad real y se comparan entre sí, redondear cada uno por su lado puede volver la comparación imposible de satisfacer. `duracionSegundos` redondeado hacia arriba y `segundosVistos` truncado hacia abajo hacían que un video de 5,6 s registrara duración 6 con cobertura máxima 5 — 83%, por debajo del 95% exigido, para siempre. Redondear hacia el lado que mantiene la comparación satisfacible, y probar el caso corto (donde el margen de redondeo pesa), no solo el típico.
+
+- **No ejecutar `docker build` en la máquina del desarrollador.** Las imágenes las construyen los servicios remotos (Railway para `apps/api`, Netlify para `apps/web`) y un build local no verifica nada que su log no diga igual. Acá llenó el disco de la máquina dos veces, dejándola sin espacio para que el terminal creara archivos temporales. `docker compose up -d` para el Postgres de desarrollo sí está bien.
 
 ---
 
@@ -174,3 +180,9 @@ Una entrega está terminada cuando:
 2. La funcionalidad descrita se puede ejecutar de punta a punta desde la interfaz
 3. Las pruebas de la entrega pasan
 4. No quedan `TODO`, datos quemados ni credenciales en el código
+
+La suite en verde no prueba que funcione de punta a punta — 696 pruebas pasando convivieron con cinco bugs reales encontrados recién al probar a mano. Por eso:
+
+- El reporte de una entrega dice explícitamente **qué no se verificó** (navegador real, servicio externo real), en vez de dar a entender que todo se comprobó.
+- La lista de archivos tocados se verifica contra `git status`, y los números de pruebas salen de una corrida real, nunca de memoria ni estimados.
+- Cuando una entrega **consume** un campo que otra debe **producir**, verificar que el productor exista: F6.8 construyó el reproductor dando por hecho una duración que F6.7 nunca capturaba.

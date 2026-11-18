@@ -7,6 +7,7 @@ import { usuarios } from "./routes/usuarios.ts";
 import { plataformas } from "./routes/plataformas.ts";
 import { duraciones } from "./routes/duraciones.ts";
 import { tiposCliente } from "./routes/tipos-cliente.ts";
+import { cargos } from "./routes/cargos.ts";
 import { paquetes } from "./routes/paquetes.ts";
 import { precios } from "./routes/precios.ts";
 import { cuentas } from "./routes/cuentas.ts";
@@ -15,6 +16,13 @@ import { ventas } from "./routes/ventas.ts";
 import { garantias } from "./routes/garantias.ts";
 import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
+import { turnos } from "./routes/turnos.ts";
+import { festivos } from "./routes/festivos.ts";
+import { horasAdicionales } from "./routes/horas-adicionales.ts";
+import { reportes } from "./routes/reportes.ts";
+import { comisiones } from "./routes/comisiones.ts";
+import { instrucciones } from "./routes/instrucciones.ts";
+import { panelEmpleado } from "./routes/panel-empleado.ts";
 import { manejadorErrores } from "./plugins/errores.ts";
 import { validarOrigen } from "./plugins/origen.ts";
 
@@ -41,6 +49,7 @@ const app = new Elysia()
   .use(plataformas)
   .use(duraciones)
   .use(tiposCliente)
+  .use(cargos)
   .use(paquetes)
   .use(precios)
   .use(cuentas)
@@ -48,7 +57,14 @@ const app = new Elysia()
   .use(ventas)
   .use(garantias)
   .use(plantillas)
-  .use(perfil);
+  .use(perfil)
+  .use(turnos)
+  .use(festivos)
+  .use(horasAdicionales)
+  .use(reportes)
+  .use(comisiones)
+  .use(instrucciones)
+  .use(panelEmpleado);
 
 export type App = typeof app;
 

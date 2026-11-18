@@ -22,6 +22,11 @@ export function inicioDiaBogota(ahora: Date): Date {
   return deWallClockBogotaAUtc(ficticio);
 }
 
+/** `true` si `fecha` cae en domingo, en el calendario de Bogotá (F6.3). */
+export function esDomingoBogota(fecha: Date): boolean {
+  return comoWallClockBogota(fecha).getUTCDay() === 0;
+}
+
 /** Instante UTC real del lunes (medianoche, Bogotá) de la semana de `ahora`. */
 export function inicioSemanaBogota(ahora: Date): Date {
   const ficticio = comoWallClockBogota(ahora);

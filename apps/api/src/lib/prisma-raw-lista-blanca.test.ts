@@ -52,6 +52,12 @@ const LISTA_BLANCA = new Set<string>([
   // src/lib/migrar-costo-plataforma.ts y recibe siempre un cliente ya
   // acotado por prismaParaEmpresa.
   "prisma/migrar-costo-plataforma.ts",
+  // Backfill idempotente de F6.1 (cargos por defecto en empresas que ya
+  // existían): mismo caso — necesita listar todas las empresas para
+  // recorrerlas. La lógica de negocio vive en
+  // src/lib/migrar-cargos-default.ts y recibe siempre un cliente ya acotado
+  // por prismaParaEmpresa.
+  "prisma/migrar-cargos-default.ts",
   // Script de reparación uno-solo-vez (camino del dinero, punto 7): mismo
   // caso — necesita listar todas las empresas para recorrerlas. La
   // reparación en sí vive en src/lib/reparar-costos-historicos.ts y recibe

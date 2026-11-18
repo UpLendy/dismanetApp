@@ -18,6 +18,12 @@ type Rol = "SUPER_ADMIN" | "ADMIN" | "EMPLEADO" | "VENDEDOR";
 
 const AYUDA_ROL = "VENDEDOR revende con su propio saldo prepagado. EMPLEADO vende y crea cuentas sin saldo propio, como parte de tu equipo.";
 
+interface Cargo {
+  id: string;
+  nombre: string;
+  activo: boolean;
+}
+
 interface Usuario {
   id: string;
   nombre: string;
@@ -26,6 +32,7 @@ interface Usuario {
   activo: boolean;
   usaSaldo: boolean;
   saldo: string;
+  cargo: { id: string; nombre: string } | null;
 }
 
 function mensajeDeError(errorRespuesta: unknown): string {
@@ -46,11 +53,14 @@ export default function PaginaUsuarios() {
   const [errorLista, setErrorLista] = useState<string | null>(null);
   const [errorFila, setErrorFila] = useState<string | null>(null);
 
+  const [cargos, setCargos] = useState<Cargo[]>([]);
+
   const [panelAbierto, setPanelAbierto] = useState(false);
   const [nombre, setNombre] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rol, setRol] = useState<Rol>("VENDEDOR");
+  const [cargoId, setCargoId] = useState<string>("");
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,8 +91,14 @@ export default function PaginaUsuarios() {
     setUsuarios(data.usuarios);
   }
 
+  async function cargarCargos() {
+    const { data } = await api.cargos.get();
+    if (data) setCargos(data.cargos);
+  }
+
   useEffect(() => {
     cargarUsuarios();
+    cargarCargos();
   }, []);
 
   function abrirCrear() {
@@ -90,6 +106,7 @@ export default function PaginaUsuarios() {
     setEmail("");
     setPassword("");
     setRol("VENDEDOR");
+    setCargoId("");
     setError(null);
     setPanelAbierto(true);
   }
@@ -98,7 +115,13 @@ export default function PaginaUsuarios() {
     evento.preventDefault();
     setGuardando(true);
     setError(null);
-    const { data, error: errorRespuesta } = await api.usuarios.post({ nombre, email, password, rol });
+    const { data, error: errorRespuesta } = await api.usuarios.post({
+      nombre,
+      email,
+      password,
+      rol,
+      cargoId: cargoId || null,
+    });
     setGuardando(false);
 
     if (errorRespuesta || !data || !("usuario" in data) || !data.usuario) {
@@ -141,6 +164,25 @@ export default function PaginaUsuarios() {
       setErrorFila(mensajeDeError(errorRespuesta));
     }
     cargarUsuarios();
+  }
+
+  async function cambiarCargo(id: string, nuevoCargoId: string) {
+    setErrorFila(null);
+    const { error: errorRespuesta } = await api.usuarios({ id }).cargo.patch({ cargoId: nuevoCargoId || null });
+    if (errorRespuesta) {
+      setErrorFila(mensajeDeError(errorRespuesta));
+    }
+    cargarUsuarios();
+  }
+
+  // Siempre ofrece los cargos activos; si el usuario ya tiene asignado uno
+  // que fue desactivado mientras tanto, se conserva en la lista para que no
+  // desaparezca de su propia fila (desactivar un cargo no desasigna, F6.1).
+  function opcionesCargoPara(usuario: Usuario): Cargo[] {
+    if (usuario.cargo && !cargos.some((c) => c.id === usuario.cargo!.id)) {
+      return [...cargos, { id: usuario.cargo.id, nombre: usuario.cargo.nombre, activo: false }];
+    }
+    return cargos;
   }
 
   function abrirCargarSaldo(usuario: Usuario) {
@@ -204,7 +246,7 @@ export default function PaginaUsuarios() {
           {errorLista}
         </Aviso>
       ) : cargandoLista ? (
-        <CargandoTabla filas={5} columnas={6} />
+        <CargandoTabla filas={5} columnas={7} />
       ) : usuarios.length === 0 ? (
         <EstadoVacio
           icono={UserRound}
@@ -224,6 +266,7 @@ export default function PaginaUsuarios() {
               <TablaCeldaCabecera className="sm:sticky sm:left-0 sm:z-20 sm:bg-superficie">Nombre</TablaCeldaCabecera>
               <TablaCeldaCabecera>Correo</TablaCeldaCabecera>
               <TablaCeldaCabecera>Rol</TablaCeldaCabecera>
+              <TablaCeldaCabecera>Cargo</TablaCeldaCabecera>
               <TablaCeldaCabecera>Estado</TablaCeldaCabecera>
               <TablaCeldaCabecera>Saldo</TablaCeldaCabecera>
               <TablaCeldaCabecera></TablaCeldaCabecera>
@@ -250,6 +293,20 @@ export default function PaginaUsuarios() {
                       <option value="ADMIN">ADMIN</option>
                     </SelectCampo>
                   )}
+                </TablaCelda>
+                <TablaCelda>
+                  <SelectCampo
+                    value={usuario.cargo?.id ?? ""}
+                    onChange={(e) => cambiarCargo(usuario.id, e.target.value)}
+                    className="h-8 w-auto text-xs"
+                  >
+                    <option value="">Sin cargo</option>
+                    {opcionesCargoPara(usuario).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nombre}
+                      </option>
+                    ))}
+                  </SelectCampo>
                 </TablaCelda>
                 <TablaCelda>
                   <PastillaEstado estado={usuario.activo ? "activo" : "inactivo"} />
@@ -322,6 +379,21 @@ export default function PaginaUsuarios() {
                 <option value="VENDEDOR">VENDEDOR</option>
                 <option value="EMPLEADO">EMPLEADO</option>
                 <option value="ADMIN">ADMIN</option>
+              </SelectCampo>
+            )}
+          </Campo>
+
+          <Campo etiqueta="Cargo">
+            {(props) => (
+              <SelectCampo {...props} value={cargoId} onChange={(e) => setCargoId(e.target.value)}>
+                <option value="">Sin cargo</option>
+                {cargos
+                  .filter((c) => c.activo)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre}
+                    </option>
+                  ))}
               </SelectCampo>
             )}
           </Campo>

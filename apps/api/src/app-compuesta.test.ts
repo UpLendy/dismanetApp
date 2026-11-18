@@ -11,6 +11,7 @@ import { usuarios } from "./routes/usuarios.ts";
 import { plataformas } from "./routes/plataformas.ts";
 import { duraciones } from "./routes/duraciones.ts";
 import { tiposCliente } from "./routes/tipos-cliente.ts";
+import { cargos } from "./routes/cargos.ts";
 import { paquetes } from "./routes/paquetes.ts";
 import { precios } from "./routes/precios.ts";
 import { cuentas } from "./routes/cuentas.ts";
@@ -19,6 +20,13 @@ import { ventas } from "./routes/ventas.ts";
 import { garantias } from "./routes/garantias.ts";
 import { plantillas } from "./routes/plantillas.ts";
 import { perfil } from "./routes/perfil.ts";
+import { turnos } from "./routes/turnos.ts";
+import { festivos } from "./routes/festivos.ts";
+import { horasAdicionales } from "./routes/horas-adicionales.ts";
+import { reportes } from "./routes/reportes.ts";
+import { comisiones } from "./routes/comisiones.ts";
+import { instrucciones } from "./routes/instrucciones.ts";
+import { panelEmpleado } from "./routes/panel-empleado.ts";
 
 /** Forma de error del API: `{ error: { codigo, mensaje } }` (CLAUDE.md). */
 type RespuestaError = { error: { codigo: string; mensaje: string } };
@@ -40,6 +48,7 @@ const app = new Elysia()
   .use(plataformas)
   .use(duraciones)
   .use(tiposCliente)
+  .use(cargos)
   .use(paquetes)
   .use(precios)
   .use(cuentas)
@@ -47,7 +56,14 @@ const app = new Elysia()
   .use(ventas)
   .use(garantias)
   .use(plantillas)
-  .use(perfil);
+  .use(perfil)
+  .use(turnos)
+  .use(festivos)
+  .use(horasAdicionales)
+  .use(reportes)
+  .use(comisiones)
+  .use(instrucciones)
+  .use(panelEmpleado);
 
 const CONTRASENA = "Clave#Segura123";
 
@@ -148,6 +164,7 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
   });
 
   afterAll(async () => {
+    await prismaRaw.configuracionComision.deleteMany({ where: { empresaId } });
     await prismaRaw.movimientoSaldo.deleteMany({ where: { empresaId } });
     await prismaRaw.ventaDetalle.deleteMany({ where: { empresaId } });
     await prismaRaw.venta.deleteMany({ where: { empresaId } });
@@ -191,10 +208,34 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     );
   }
 
-  it("un ADMIN puede usar /usuarios, /plataformas, /duraciones, /tipos-cliente y /paquetes aunque /empresas también esté montado", async () => {
-    for (const ruta of ["/usuarios", "/plataformas", "/duraciones", "/tipos-cliente", "/paquetes"]) {
+  async function put(ruta: string, body: unknown, cookie: string = cookieAdmin) {
+    return app.handle(
+      new Request(`http://local${ruta}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  async function del(ruta: string, cookie: string = cookieAdmin) {
+    return app.handle(new Request(`http://local${ruta}`, { method: "DELETE", headers: { cookie } }));
+  }
+
+  it("un ADMIN puede usar /usuarios, /plataformas, /duraciones, /tipos-cliente, /cargos y /paquetes aunque /empresas también esté montado", async () => {
+    for (const ruta of ["/usuarios", "/plataformas", "/duraciones", "/tipos-cliente", "/cargos", "/paquetes"]) {
       const respuesta = await get(ruta);
       expect(respuesta.status).toBe(200);
+    }
+  });
+
+  // F6.1: /cargos es ADMIN-only, igual que el resto del catálogo — esta
+  // guarda tiene que llegar hasta aquí sin filtrarse a otros routers
+  // montados después (ver CLAUDE.md, "scope de las guardas de Elysia").
+  it("EMPLEADO y VENDEDOR reciben 403 en todas las rutas de /cargos", async () => {
+    for (const cookie of [cookieEmpleado, cookieVendedor]) {
+      expect((await get("/cargos", cookie)).status).toBe(403);
+      expect((await post("/cargos", { nombre: "Cargo de prueba" }, cookie)).status).toBe(403);
     }
   });
 
@@ -564,6 +605,9 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
       "/garantias/catalogo-externa",
       "/garantias/costo-externo?plataformaId=cualquier-id&duracionId=cualquier-id",
       "/plataformas/cualquier-id/pantallas",
+      // F6.2 — mismo escalón base que /cuentas y /disponibilidad.
+      "/turnos?desde=2026-01-01&hasta=2026-01-07",
+      "/festivos?anio=2026",
     ]) {
       const respuesta = await sinCookie(ruta);
       expect(respuesta.status).toBe(403);
@@ -637,5 +681,342 @@ describe("App compuesta — las guardas de un router no se filtran a otros (regr
     // Misma cookie de antes: si el rol viniera del JWT, esto seguiría en 403.
     const despues = await get("/garantias/pantallas-vendidas", cookie);
     expect(despues.status).toBe(200);
+  });
+
+  // F6.2 — /turnos y /festivos son routers nuevos, montados al final de la
+  // cadena: esta prueba confirma que su guarda base llega hasta aquí sin
+  // que nada de lo montado antes la contamine, y que escala a ADMIN
+  // exactamente donde el router lo hace (misma mecánica que /cuentas y
+  // /disponibilidad arriba). /festivos sigue en VENDEDOR en adelante;
+  // /turnos subió a EMPLEADO en F6.3 (ver bloque de abajo).
+  it("un ADMIN puede usar /turnos y /festivos aunque el resto de la app compuesta también esté montado", async () => {
+    const respuestaTurnos = await get("/turnos?desde=2026-01-01&hasta=2026-01-07");
+    expect(respuestaTurnos.status).toBe(200);
+    const respuestaFestivos = await get("/festivos?anio=2026");
+    expect(respuestaFestivos.status).toBe(200);
+  });
+
+  it("un EMPLEADO puede listar /turnos y /festivos (forzado a sus propios turnos), pero recibe 403 en las rutas de administración de ambos", async () => {
+    const listadoTurnos = await get("/turnos?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado);
+    expect(listadoTurnos.status).toBe(200);
+    const listadoFestivos = await get("/festivos?anio=2026", cookieEmpleado);
+    expect(listadoFestivos.status).toBe(200);
+
+    expect(
+      (
+        await post(
+          "/turnos",
+          { usuarioId: vendedorId, inicio: "2026-01-05T08:00:00.000Z", fin: "2026-01-05T12:00:00.000Z" },
+          cookieEmpleado,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get("/turnos/horas?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado)).status).toBe(403);
+    expect((await post("/festivos/generar", { anio: 2026 }, cookieEmpleado)).status).toBe(403);
+    expect((await post("/festivos", { fecha: "2026-01-02", nombre: "Festivo de prueba" }, cookieEmpleado)).status).toBe(
+      403,
+    );
+  });
+
+  // F6.3, parte 0.2: un VENDEDOR es un revendedor externo con saldo
+  // prepago, no tiene turno laboral — corrige el error de F6.2 que dejaba
+  // /turnos visible desde VENDEDOR. /festivos no cambió: sigue siendo una
+  // tabla de referencia de lectura abierta a VENDEDOR en adelante.
+  it("un VENDEDOR recibe 403 en todas las rutas de /turnos (F6.3: planta, no revendedores), pero sigue pudiendo listar /festivos", async () => {
+    expect((await get("/turnos?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(403);
+    expect(
+      (
+        await post(
+          "/turnos",
+          { usuarioId: vendedorId, inicio: "2026-01-05T08:00:00.000Z", fin: "2026-01-05T12:00:00.000Z" },
+          cookieVendedor,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get("/turnos/horas?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(403);
+
+    const listadoFestivos = await get("/festivos?anio=2026", cookieVendedor);
+    expect(listadoFestivos.status).toBe(200);
+  });
+
+  // F6.3 — /horas-adicionales es un router nuevo, montado al final de la
+  // cadena: misma prueba de scope que /turnos y /festivos arriba. EMPLEADO
+  // entra a la base (lista/crea las suyas) pero no a aprobar/rechazar ni al
+  // resumen (ADMIN en adelante); VENDEDOR no entra a nada del router.
+  it("un ADMIN puede usar /horas-adicionales y su resumen aunque el resto de la app compuesta también esté montado", async () => {
+    const respuestaLista = await get("/horas-adicionales?desde=2026-01-01&hasta=2026-01-07");
+    expect(respuestaLista.status).toBe(200);
+    const respuestaResumen = await get("/horas-adicionales/resumen?desde=2026-01-01&hasta=2026-01-07");
+    expect(respuestaResumen.status).toBe(200);
+  });
+
+  it("un EMPLEADO puede listar y crear sus propias /horas-adicionales, pero recibe 403 en aprobar/rechazar y en el resumen", async () => {
+    const listado = await get("/horas-adicionales?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado);
+    expect(listado.status).toBe(200);
+
+    const creada = await post(
+      "/horas-adicionales",
+      { inicio: "2026-01-05T20:00:00.000Z", fin: "2026-01-05T22:00:00.000Z" },
+      cookieEmpleado,
+    );
+    expect(creada.status).toBe(201);
+    const { horaAdicional } = (await creada.json()) as { horaAdicional: { id: string } };
+
+    expect((await patch(`/horas-adicionales/${horaAdicional.id}/aprobar`, cookieEmpleado)).status).toBe(403);
+    expect((await patch(`/horas-adicionales/${horaAdicional.id}/rechazar`, cookieEmpleado)).status).toBe(403);
+    expect((await get("/horas-adicionales/resumen?desde=2026-01-01&hasta=2026-01-07", cookieEmpleado)).status).toBe(
+      403,
+    );
+
+    await prismaRaw.horaAdicional.delete({ where: { id: horaAdicional.id } });
+  });
+
+  it("un VENDEDOR recibe 403 en todas las rutas de /horas-adicionales (F6.3: planta, no revendedores)", async () => {
+    expect((await get("/horas-adicionales?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(403);
+    expect(
+      (await post("/horas-adicionales", { inicio: "2026-01-05T20:00:00.000Z", fin: "2026-01-05T22:00:00.000Z" }, cookieVendedor))
+        .status,
+    ).toBe(403);
+    expect((await get("/horas-adicionales/resumen?desde=2026-01-01&hasta=2026-01-07", cookieVendedor)).status).toBe(
+      403,
+    );
+  });
+
+  // F6.4 — /reportes es un router nuevo, montado al final de la cadena:
+  // misma prueba de scope que los anteriores. EMPLEADO entra a /mio (lo
+  // suyo) pero no a la lista ni a /faltantes (ADMIN en adelante); VENDEDOR
+  // no entra a nada del router (mismo criterio que F6.3: no reporta).
+  // La semana usada es la actual real (Bogotá), porque PUT /mio solo acepta
+  // la semana actual o la anterior.
+  const semanaActualISO = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+
+  it("un ADMIN puede usar /reportes/mio, /reportes y /reportes/faltantes aunque el resto de la app compuesta también esté montado", async () => {
+    const guardado = await put(
+      "/reportes/mio",
+      { semana: semanaActualISO, pendientes: "Nada", fallas: "", oportunidades: "" },
+      cookieAdmin,
+    );
+    expect(guardado.status).toBe(200);
+    const { reporte } = (await guardado.json()) as { reporte: { id: string } };
+
+    expect((await get(`/reportes/mio?semana=${semanaActualISO}`)).status).toBe(200);
+    expect((await get(`/reportes?semana=${semanaActualISO}`)).status).toBe(200);
+    expect((await get(`/reportes/faltantes?semana=${semanaActualISO}`)).status).toBe(200);
+
+    await prismaRaw.reporteSemanal.delete({ where: { id: reporte.id } });
+  });
+
+  it("un EMPLEADO puede leer y escribir su propio /reportes/mio, pero recibe 403 en /reportes y /reportes/faltantes", async () => {
+    const guardado = await put(
+      "/reportes/mio",
+      { semana: semanaActualISO, pendientes: "", fallas: "Ninguna", oportunidades: "" },
+      cookieEmpleado,
+    );
+    expect(guardado.status).toBe(200);
+    const { reporte } = (await guardado.json()) as { reporte: { id: string } };
+
+    expect((await get(`/reportes/mio?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(200);
+    expect((await get(`/reportes?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(403);
+    expect((await get(`/reportes/faltantes?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(403);
+
+    await prismaRaw.reporteSemanal.delete({ where: { id: reporte.id } });
+  });
+
+  it("un VENDEDOR recibe 403 en todas las rutas de /reportes (F6.4: planta, no revendedores)", async () => {
+    expect((await get(`/reportes/mio?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+    expect(
+      (
+        await put(
+          "/reportes/mio",
+          { semana: semanaActualISO, pendientes: "x", fallas: "", oportunidades: "" },
+          cookieVendedor,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get(`/reportes?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+    expect((await get(`/reportes/faltantes?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+  });
+
+  // F6.5 — /comisiones es un router nuevo, montado al final de la cadena:
+  // misma prueba de scope que los anteriores. F6.6 le agregó /mias (EMPLEADO
+  // en adelante) y /resumen (ADMIN) — configuracion/historial/simulacion
+  // siguen ADMIN-only (política + cifras financieras, R4).
+  it("un ADMIN puede usar las rutas de /comisiones aunque el resto de la app compuesta también esté montado", async () => {
+    const guardado = await put(
+      "/comisiones/configuracion",
+      { modo: "FIJO_POR_PANTALLA", valor: "1000", umbralCantidad: 10, umbralAmbito: "TOTAL", umbralPeriodo: "DIA" },
+      cookieAdmin,
+    );
+    expect(guardado.status).toBe(201);
+
+    expect((await get("/comisiones/configuracion")).status).toBe(200);
+    expect((await get("/comisiones/configuracion/historial")).status).toBe(200);
+
+    const simulacion = await post("/comisiones/simulacion", {
+      desde: "2026-01-01",
+      hasta: "2026-01-31",
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 10,
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+    });
+    expect(simulacion.status).toBe(200);
+
+    expect((await get("/comisiones/mias?desde=2026-01-01&hasta=2026-01-31")).status).toBe(200);
+    expect((await get("/comisiones/resumen?desde=2026-01-01&hasta=2026-01-31")).status).toBe(200);
+  });
+
+  it("un EMPLEADO puede usar /comisiones/mias pero recibe 403 en el resto; un VENDEDOR recibe 403 en todas (F6.6)", async () => {
+    expect((await get("/comisiones/mias?desde=2026-01-01&hasta=2026-01-31", cookieEmpleado)).status).toBe(200);
+    expect((await get("/comisiones/resumen?desde=2026-01-01&hasta=2026-01-31", cookieEmpleado)).status).toBe(403);
+    expect((await get("/comisiones/configuracion", cookieEmpleado)).status).toBe(403);
+    expect((await get("/comisiones/configuracion/historial", cookieEmpleado)).status).toBe(403);
+
+    expect((await get("/comisiones/mias?desde=2026-01-01&hasta=2026-01-31", cookieVendedor)).status).toBe(403);
+
+    for (const cookie of [cookieEmpleado, cookieVendedor]) {
+      expect((await get("/comisiones/configuracion", cookie)).status).toBe(403);
+      expect((await get("/comisiones/configuracion/historial", cookie)).status).toBe(403);
+      expect(
+        (
+          await put(
+            "/comisiones/configuracion",
+            { modo: "FIJO_POR_PANTALLA", valor: "1000", umbralCantidad: 10, umbralAmbito: "TOTAL", umbralPeriodo: "DIA" },
+            cookie,
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await post(
+            "/comisiones/simulacion",
+            {
+              desde: "2026-01-01",
+              hasta: "2026-01-31",
+              modo: "FIJO_POR_PANTALLA",
+              valor: "1000",
+              umbralCantidad: 10,
+              umbralAmbito: "TOTAL",
+              umbralPeriodo: "DIA",
+            },
+            cookie,
+          )
+        ).status,
+      ).toBe(403);
+      expect((await get("/comisiones/resumen?desde=2026-01-01&hasta=2026-01-31", cookie)).status).toBe(403);
+    }
+  });
+
+  // F6.7 — /instrucciones es un router nuevo, montado al final de la
+  // cadena (después de /comisiones). Mezcla dos niveles de guarda en la
+  // misma instancia, igual que /reportes y /turnos: EMPLEADO en adelante
+  // para leer y marcar cumplida, ADMIN en adelante para administrar. Un
+  // VENDEDOR no entra a nada (mismo criterio que F6.3/F6.4: no recibe
+  // instrucciones de operación).
+  it("un ADMIN puede crear, publicar, listar, consultar cumplimiento y borrar en /instrucciones aunque el resto de la app compuesta también esté montado", async () => {
+    const creada = await post("/instrucciones", { titulo: "Instrucción de prueba", semana: semanaActualISO });
+    expect(creada.status).toBe(201);
+    const { instruccion } = (await creada.json()) as { instruccion: { id: string } };
+
+    expect((await patch(`/instrucciones/${instruccion.id}/publicar`)).status).toBe(200);
+    expect((await get(`/instrucciones?semana=${semanaActualISO}`)).status).toBe(200);
+    expect((await get(`/instrucciones/${instruccion.id}/cumplimiento`)).status).toBe(200);
+    // F6.8: sin videos, el propio progreso del ADMIN viene vacío.
+    expect((await get(`/instrucciones/${instruccion.id}/progreso`)).status).toBe(200);
+
+    // Publicada: no se borra (409) hasta despublicarla.
+    expect((await del(`/instrucciones/${instruccion.id}`)).status).toBe(409);
+    expect((await patch(`/instrucciones/${instruccion.id}/despublicar`)).status).toBe(200);
+
+    // Corrección manual de duracionSegundos (hueco F6.7/F6.8): la guarda de
+    // ADMIN deja pasar aunque "alguno" no sea un archivo real.
+    expect((await patchBody(`/instrucciones/${instruccion.id}/archivos/alguno`, { duracionSegundos: 60 })).status).toBe(404);
+
+    expect((await del(`/instrucciones/${instruccion.id}`)).status).toBe(200);
+  });
+
+  it("un EMPLEADO puede leer /instrucciones y marcar cumplida, pero recibe 403 en las rutas de administración", async () => {
+    const creada = await post("/instrucciones", { titulo: "Instrucción para empleados", semana: semanaActualISO });
+    const { instruccion } = (await creada.json()) as { instruccion: { id: string } };
+    await patch(`/instrucciones/${instruccion.id}/publicar`);
+
+    expect((await get(`/instrucciones?semana=${semanaActualISO}`, cookieEmpleado)).status).toBe(200);
+    expect((await post(`/instrucciones/${instruccion.id}/completar`, {}, cookieEmpleado)).status).toBe(200);
+
+    expect((await post("/instrucciones", { titulo: "x", semana: semanaActualISO }, cookieEmpleado)).status).toBe(403);
+    expect((await patch(`/instrucciones/${instruccion.id}/publicar`, cookieEmpleado)).status).toBe(403);
+    expect((await patch(`/instrucciones/${instruccion.id}/despublicar`, cookieEmpleado)).status).toBe(403);
+    expect((await del(`/instrucciones/${instruccion.id}`, cookieEmpleado)).status).toBe(403);
+    expect(
+      (
+        await post(
+          `/instrucciones/${instruccion.id}/archivos/url-subida`,
+          { nombre: "a.png", contentType: "image/png", bytes: 100 },
+          cookieEmpleado,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get(`/instrucciones/${instruccion.id}/cumplimiento`, cookieEmpleado)).status).toBe(403);
+    expect(
+      (await patchBody(`/instrucciones/${instruccion.id}/archivos/alguno`, { duracionSegundos: 60 }, cookieEmpleado)).status,
+    ).toBe(403);
+
+    // F6.8: EMPLEADO atraviesa la guarda (llega a la lógica de negocio, que
+    // responde 404 porque "alguno" no es un archivo real) — distinto del
+    // 403 de VENDEDOR en el mismo caso, abajo.
+    expect(
+      (await post(`/instrucciones/${instruccion.id}/archivos/alguno/progreso`, { desde: 0, hasta: 1 }, cookieEmpleado)).status,
+    ).toBe(404);
+    expect((await get(`/instrucciones/${instruccion.id}/progreso`, cookieEmpleado)).status).toBe(200);
+
+    await patch(`/instrucciones/${instruccion.id}/despublicar`);
+    await del(`/instrucciones/${instruccion.id}`);
+  });
+
+  it("un VENDEDOR recibe 403 en todas las rutas de /instrucciones (F6.7: mismo criterio que F6.3/F6.4, no recibe instrucciones)", async () => {
+    const creada = await post("/instrucciones", { titulo: "Instrucción para vendedor", semana: semanaActualISO });
+    const { instruccion } = (await creada.json()) as { instruccion: { id: string } };
+    await patch(`/instrucciones/${instruccion.id}/publicar`);
+
+    expect((await get(`/instrucciones?semana=${semanaActualISO}`, cookieVendedor)).status).toBe(403);
+    expect((await post(`/instrucciones/${instruccion.id}/completar`, {}, cookieVendedor)).status).toBe(403);
+    expect(
+      (await get(`/instrucciones/${instruccion.id}/archivos/alguno/url`, cookieVendedor)).status,
+    ).toBe(403);
+    expect((await post("/instrucciones", { titulo: "x", semana: semanaActualISO }, cookieVendedor)).status).toBe(403);
+    expect(
+      (await patchBody(`/instrucciones/${instruccion.id}/archivos/alguno`, { duracionSegundos: 60 }, cookieVendedor)).status,
+    ).toBe(403);
+    // F6.8: la guarda de rol bloquea antes de llegar a buscar el archivo.
+    expect(
+      (await post(`/instrucciones/${instruccion.id}/archivos/alguno/progreso`, { desde: 0, hasta: 1 }, cookieVendedor)).status,
+    ).toBe(403);
+    expect((await get(`/instrucciones/${instruccion.id}/progreso`, cookieVendedor)).status).toBe(403);
+
+    await patch(`/instrucciones/${instruccion.id}/despublicar`);
+    await del(`/instrucciones/${instruccion.id}`);
+  });
+
+  // F6.9 — /panel-empleado es un router nuevo, montado al final de la
+  // cadena (después de /instrucciones). Mezcla dos niveles de guarda en la
+  // misma instancia: EMPLEADO en adelante para el propio panel, ADMIN en
+  // adelante para el de cualquier empleado. Un VENDEDOR no entra a nada
+  // (R1/R4 y las 8 pruebas completas viven en panel-empleado.test.ts; aquí
+  // solo se verifica que la guarda de rol sobrevive montada junto al resto
+  // de la app).
+  it("un ADMIN puede ver su propio panel y el de cualquier empleado aunque el resto de la app compuesta también esté montado", async () => {
+    expect((await get("/panel-empleado")).status).toBe(200);
+    expect((await get(`/panel-empleado/${empleadoId}`)).status).toBe(200);
+  });
+
+  it("un EMPLEADO puede ver su propio panel, pero recibe 403 al pedir el de otro usuario", async () => {
+    expect((await get("/panel-empleado", cookieEmpleado)).status).toBe(200);
+    expect((await get(`/panel-empleado/${empleadoId}`, cookieEmpleado)).status).toBe(403);
+  });
+
+  it("un VENDEDOR recibe 403 en las dos rutas de /panel-empleado (F6.9: mismo criterio que F6.3/F6.4/F6.7)", async () => {
+    expect((await get("/panel-empleado", cookieVendedor)).status).toBe(403);
+    expect((await get(`/panel-empleado/${empleadoId}`, cookieVendedor)).status).toBe(403);
   });
 });

@@ -43,6 +43,17 @@ enum TipoMovimientoSaldo {
   AJUSTE
 }
 
+enum EstadoHoraAdicional {
+  PENDIENTE
+  APROBADA
+  RECHAZADA
+}
+
+enum TipoArchivoInstruccion {
+  IMAGEN
+  VIDEO
+}
+
 // ---------------------------------------------------------------------------
 // Empresa y Usuario
 // ---------------------------------------------------------------------------
@@ -58,24 +69,35 @@ model Empresa {
 
   creadaPor Usuario? @relation("EmpresasCreadas", fields: [creadaPorUsuarioId], references: [id])
 
-  usuarios                   Usuario[]                   @relation("UsuariosDeEmpresa")
-  plataformas                Plataforma[]
-  duraciones                 Duracion[]
-  tiposCliente               TipoCliente[]
-  paquetes                   Paquete[]
-  paquetePlataformas         PaquetePlataforma[]
-  paqueteDuracionPlataformas PaqueteDuracionPlataforma[]
-  precios                    Precio[]
-  costosPlataforma           CostoPlataforma[]
-  cuentas                    Cuenta[]
-  pantallas                  Pantalla[]
-  pantallasPlantilla         PlataformaPantalla[]
-  ventas                     Venta[]
-  ventaDetalles              VentaDetalle[]
-  plantillasMensaje          PlantillaMensaje[]
-  movimientoSaldos           MovimientoSaldo[]
-  garantias                  Garantia[]
-  reiniciosCuenta            ReinicioCuenta[]
+  usuarios                      Usuario[]                         @relation("UsuariosDeEmpresa")
+  plataformas                   Plataforma[]
+  duraciones                    Duracion[]
+  tiposCliente                  TipoCliente[]
+  cargos                        Cargo[]
+  paquetes                      Paquete[]
+  paquetePlataformas            PaquetePlataforma[]
+  paqueteDuracionPlataformas    PaqueteDuracionPlataforma[]
+  precios                       Precio[]
+  costosPlataforma              CostoPlataforma[]
+  cuentas                       Cuenta[]
+  pantallas                     Pantalla[]
+  pantallasPlantilla            PlataformaPantalla[]
+  ventas                        Venta[]
+  ventaDetalles                 VentaDetalle[]
+  plantillasMensaje             PlantillaMensaje[]
+  movimientoSaldos              MovimientoSaldo[]
+  garantias                     Garantia[]
+  reiniciosCuenta               ReinicioCuenta[]
+  turnos                        Turno[]
+  festivos                      Festivo[]
+  horasAdicionales              HoraAdicional[]
+  reportesSemanales             ReporteSemanal[]
+  configuracionesComision       ConfiguracionComision[]
+  excepcionesComisionPlataforma ConfiguracionComisionPlataforma[]
+  instrucciones                 Instruccion[]
+  instruccionArchivos           InstruccionArchivo[]
+  instruccionCumplimientos      InstruccionCumplimiento[]
+  instruccionVisualizaciones    InstruccionVisualizacion[]
 
   @@unique([prefijoCodigo])
 }
@@ -109,16 +131,30 @@ model Usuario {
   /// poder auditar sin recalcular (ver MovimientoSaldo.saldoResultante).
   saldo    Decimal @default(0) @db.Decimal(14, 2)
 
+  /// El oficio, no el permiso (ver Cargo). Nullable: los usuarios ya
+  /// existentes no tienen uno y eso es válido.
+  cargoId String?
+
   empresa Empresa? @relation("UsuariosDeEmpresa", fields: [empresaId], references: [id])
+  cargo   Cargo?   @relation(fields: [cargoId], references: [id])
 
   empresasCreadas Empresa[] @relation("EmpresasCreadas")
 
-  ventasComoVendedor      Venta[]           @relation("VentaVendedor")
-  ventasAnuladas          Venta[]           @relation("VentaAnuladaPor")
-  movimientosSaldo        MovimientoSaldo[] @relation("MovimientoSaldoUsuario")
-  movimientosSaldoCreados MovimientoSaldo[] @relation("MovimientoSaldoCreadoPor")
-  garantiasCreadas        Garantia[]        @relation("GarantiaCreadaPor")
-  reiniciosCuenta         ReinicioCuenta[]  @relation("ReinicioCuentaUsuario")
+  ventasComoVendedor             Venta[]                    @relation("VentaVendedor")
+  ventasAnuladas                 Venta[]                    @relation("VentaAnuladaPor")
+  movimientosSaldo               MovimientoSaldo[]          @relation("MovimientoSaldoUsuario")
+  movimientosSaldoCreados        MovimientoSaldo[]          @relation("MovimientoSaldoCreadoPor")
+  garantiasCreadas               Garantia[]                 @relation("GarantiaCreadaPor")
+  reiniciosCuenta                ReinicioCuenta[]           @relation("ReinicioCuentaUsuario")
+  turnos                         Turno[]
+  horasAdicionalesRegistradas    HoraAdicional[]            @relation("HoraAdicionalUsuario")
+  horasAdicionalesRevisadas      HoraAdicional[]            @relation("HoraAdicionalRevisor")
+  reportesSemanales              ReporteSemanal[]
+  configuracionesComisionCreadas ConfiguracionComision[]
+  instruccionesCreadas           Instruccion[]              @relation("InstruccionCreadaPor")
+  instruccionArchivosSubidos     InstruccionArchivo[]       @relation("InstruccionArchivoSubidoPor")
+  instruccionCumplimientos       InstruccionCumplimiento[]
+  instruccionVisualizaciones     InstruccionVisualizacion[]
 
   @@index([empresaId])
 }
@@ -165,6 +201,7 @@ model Plataforma {
   ventaDetalles              VentaDetalle[]
   pantallasPlantilla         PlataformaPantalla[]
   garantiasExternas          Garantia[]
+  excepcionesComision        ConfiguracionComisionPlataforma[]
 
   @@index([empresaId])
 }
@@ -221,6 +258,24 @@ model TipoCliente {
 
   precios Precio[]
   ventas  Venta[]
+
+  @@index([empresaId])
+}
+
+/// El oficio (Gerencia, Coordinación, Soporte técnico...), no la escala de
+/// permisos: eso es Rol (ver CLAUDE.md, "la decisión que define esta
+/// entrega"). Un Cargo no ordena nada ni concede nada por sí mismo.
+model Cargo {
+  id        String   @id @default(cuid())
+  empresaId String
+  nombre    String
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  usuarios      Usuario[]
+  instrucciones Instruccion[]
 
   @@index([empresaId])
 }
@@ -647,4 +702,350 @@ model MovimientoSaldo {
   @@unique([empresaId, ventaId, tipo])
   @@index([empresaId])
   @@index([usuarioId])
+}
+
+// ---------------------------------------------------------------------------
+// Calendario laboral (F6.2)
+// ---------------------------------------------------------------------------
+
+/// `inicio`/`fin` son instantes absolutos (no fecha + hora): un turno de
+/// 22:00 a 06:00 cruza la medianoche y su duración es una resta simple, sin
+/// caso especial nocturno. El día al que pertenece el turno es la fecha en
+/// Bogotá de `inicio` (ver lib/periodos.ts, nunca aritmética de zona horaria
+/// nueva). Sin solapamiento para el mismo usuario (lib/turnos.ts): esas horas
+/// son el denominador del reparto de comisiones, y contarlas dos veces es un
+/// error de plata. DELETE sí borra de verdad (routes/turnos.ts): un turno mal
+/// digitado es error de captura, no historia del negocio — revisar esta
+/// decisión el día que existan comisiones liquidadas sobre un turno.
+model Turno {
+  id        String   @id @default(cuid())
+  empresaId String
+  usuarioId String
+  inicio    DateTime
+  fin       DateTime
+  notas     String?
+  createdAt DateTime @default(now())
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@index([empresaId, usuarioId])
+  @@index([empresaId, inicio])
+}
+
+/// Festivos colombianos, por empresa (R1) aunque sean nacionales: son ~18
+/// filas por año, y así cada empresa corrige los suyos sin tocar a las
+/// otras. `fecha` es medianoche Bogotá del día festivo (mismo instante que
+/// devuelve inicioDiaBogota para ese día). `generado: false` marca una fila
+/// creada o corregida a mano por un ADMIN — POST /festivos/generar nunca la
+/// sobrescribe (ver lib/festivos.ts).
+model Festivo {
+  id        String   @id @default(cuid())
+  empresaId String
+  fecha     DateTime
+  nombre    String
+  generado  Boolean  @default(true)
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+
+  @@unique([empresaId, fecha])
+  @@index([empresaId])
+}
+
+/// Registro de horas adicionales/festivas de planta (F6.3) — NO una nómina.
+/// No calcula recargo legal ni clasifica jornada nocturna (CLAUDE.md,
+/// PROMPT-F6.3): solo cuántas horas y si el día es festivo o domingo, eso
+/// lo decide quien liquida. `inicio`/`fin` son instantes absolutos, igual
+/// que Turno y por la misma razón: un bloque puede cruzar la medianoche de
+/// un día ordinario a uno festivo.
+///
+/// IMPORTANTE: estas horas NO entran en el denominador del pozo de
+/// comisiones. Ese reparto es por horas de Turno del calendario, como lo
+/// pidió el cliente — si HoraAdicional se sumara ahí, cualquiera podría
+/// agrandar su propia tajada registrándose horas a sí mismo. No las sumes
+/// al calcular comisiones.
+///
+/// Flujo de aprobación (PENDIENTE/APROBADA/RECHAZADA) agregado por
+/// decisión propia, no pedido por el cliente (ver PROMPT-F6.3 parte 0).
+/// Solo editable/borrable mientras esté PENDIENTE.
+model HoraAdicional {
+  id            String              @id @default(cuid())
+  empresaId     String
+  usuarioId     String
+  inicio        DateTime
+  fin           DateTime
+  motivo        String?
+  estado        EstadoHoraAdicional @default(PENDIENTE)
+  revisadaPorId String?
+  revisadaEn    DateTime?
+  createdAt     DateTime            @default(now())
+
+  empresa     Empresa  @relation(fields: [empresaId], references: [id])
+  usuario     Usuario  @relation("HoraAdicionalUsuario", fields: [usuarioId], references: [id])
+  revisadaPor Usuario? @relation("HoraAdicionalRevisor", fields: [revisadaPorId], references: [id])
+
+  @@index([empresaId, usuarioId])
+  @@index([empresaId, inicio])
+  @@index([empresaId, estado])
+}
+
+/// Testimonio semanal de cada EMPLEADO+ (F6.4, punto 5 del cliente): tres
+/// campos de texto separados —pendientes, fallas, oportunidades— porque son
+/// las tres cosas que el cliente nombró, y por separado se comparan semana
+/// a semana. Cada quien escribe el suyo; ni un ADMIN escribe por otro (ver
+/// routes/reportes.ts) — un reporte es el testimonio de quien lo firma.
+///
+/// `cargoId` es una COPIA al momento de escribir, no una relación viva
+/// (mismo principio que Venta.nombreItem, R3 de CLAUDE.md): si a alguien le
+/// cambian el cargo después, su reporte ya escrito sigue diciendo el cargo
+/// que tenía entonces. Por eso no lleva `@relation` a Cargo.
+///
+/// `semanaInicio` es el lunes 00:00 Bogotá de la semana que reporta — sale
+/// de `inicioSemanaBogota` (lib/periodos.ts), nunca aritmética de semanas
+/// nueva. El `@@unique` garantiza un reporte por persona por semana: un
+/// segundo PUT de la misma persona y semana actualiza, no crea otro (no se
+/// usa `upsert` de Prisma porque la extensión multi-tenant lo bloquea —
+/// routes/reportes.ts busca y crea/actualiza a mano).
+model ReporteSemanal {
+  id            String   @id @default(cuid())
+  empresaId     String
+  usuarioId     String
+  cargoId       String?
+  semanaInicio  DateTime
+  pendientes    String
+  fallas        String
+  oportunidades String
+  createdAt     DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  empresa Empresa @relation(fields: [empresaId], references: [id])
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@unique([empresaId, usuarioId, semanaInicio])
+  @@index([empresaId, semanaInicio])
+  @@index([empresaId, cargoId, semanaInicio])
+}
+
+enum ModoComision {
+  PORCENTAJE_VENTA
+  FIJO_POR_PANTALLA
+}
+
+enum AmbitoUmbral {
+  TOTAL
+  POR_PLATAFORMA
+}
+
+enum PeriodoUmbral {
+  DIA
+  MES
+}
+
+/// Política de comisiones, F6.5. Registro POR VERSIÓN, no una fila que se
+/// edita: guardar una política nueva crea otra fila, nunca actualiza la
+/// anterior. La vigente es la de vigenteDesde más reciente que ya empezó.
+/// Esto paga gente: si el porcentaje cambia a mitad de mes y después se
+/// liquida, hay que poder saber qué regla regía cuando se vendió — una fila
+/// mutable borra esa respuesta para siempre. No existe comisión por
+/// porcentaje de utilidad (descartada por el cliente: R4 existe justamente
+/// para que un empleado no pueda despejar la utilidad desde su comisión).
+model ConfiguracionComision {
+  id             String        @id @default(cuid())
+  empresaId      String
+  modo           ModoComision
+  valor          Decimal       @db.Decimal(14, 2)
+  umbralCantidad Int
+  umbralAmbito   AmbitoUmbral
+  umbralPeriodo  PeriodoUmbral
+  vigenteDesde   DateTime
+  creadaPorId    String
+  createdAt      DateTime      @default(now())
+
+  empresa   Empresa @relation(fields: [empresaId], references: [id])
+  creadaPor Usuario @relation(fields: [creadaPorId], references: [id])
+
+  excepciones ConfiguracionComisionPlataforma[]
+
+  @@index([empresaId, vigenteDesde])
+}
+
+/// Excepciones por plataforma de una versión de ConfiguracionComision
+/// (F6.10). Cuelgan de la VERSIÓN (configuracionId), nunca de la
+/// plataforma: ConfiguracionComision se guarda por versiones y no se edita,
+/// precisamente para poder reconstruir qué regla estaba vigente cuando se
+/// vendió. Si las excepciones colgaran de la plataforma, cambiar la tarifa
+/// de un servicio reescribiría en silencio lo que ya se pagó con la versión
+/// anterior.
+///
+/// `modo`, `valor` y `umbralCantidad` en null heredan el valor por defecto
+/// de la ConfiguracionComision a la que pertenecen — ConfiguracionComision
+/// deja de ser "la regla" y pasa a ser el valor por defecto, incluso para
+/// plataformas que se creen después (ver resolverReglaPlataforma en
+/// lib/comisiones.ts). No confundir null (hereda) con 0 (es cero).
+///
+/// `comisiona: false` queda explícito: sus pantallas no entran al pozo y no
+/// consumen contador de umbral (ver aportesPantallasComisionables).
+model ConfiguracionComisionPlataforma {
+  id              String        @id @default(cuid())
+  empresaId       String
+  configuracionId String
+  plataformaId    String
+  comisiona       Boolean       @default(true)
+  modo            ModoComision?
+  valor           Decimal?      @db.Decimal(14, 2)
+  umbralCantidad  Int?
+
+  empresa       Empresa               @relation(fields: [empresaId], references: [id])
+  configuracion ConfiguracionComision @relation(fields: [configuracionId], references: [id])
+  plataforma    Plataforma            @relation(fields: [plataformaId], references: [id])
+
+  @@unique([empresaId, configuracionId, plataformaId])
+  @@index([empresaId, configuracionId])
+}
+
+// ---------------------------------------------------------------------------
+// Instrucciones semanales (F6.7)
+// ---------------------------------------------------------------------------
+
+/// Imágenes y video con tareas que los empleados deben realizar esa semana
+/// (primera mitad del punto 7 del cliente). Los archivos NUNCA pasan por el
+/// API: van del navegador a S3 con URLs prefirmadas (ver lib/s3.ts,
+/// routes/instrucciones.ts) — el API solo valida permisos/tipo/tamaño,
+/// genera la clave y firma.
+///
+/// `semanaInicio` sale de inicioSemanaBogota (lib/periodos.ts), igual que
+/// ReporteSemanal (F6.4) — nunca aritmética de semanas nueva.
+///
+/// `publicada` existe para que el ADMIN prepare la semana antes del lunes
+/// sin que nadie la vea a medias: una instrucción no publicada no sale en
+/// ninguna consulta de empleado, ni pidiendo su id directo, ni entrega URL
+/// de lectura de sus archivos.
+///
+/// `cargoId` nulo significa "para todos los empleados". No hay tabla de
+/// asignación múltiple: el cliente pidió instrucciones semanales para el
+/// equipo, no una matriz de asignaciones por persona.
+model Instruccion {
+  id            String   @id @default(cuid())
+  empresaId     String
+  titulo        String
+  descripcion   String?
+  semanaInicio  DateTime
+  cargoId       String?
+  publicada     Boolean  @default(false)
+  creadaPorId   String
+  createdAt     DateTime @default(now())
+  actualizadaEn DateTime @updatedAt
+
+  empresa   Empresa @relation(fields: [empresaId], references: [id])
+  cargo     Cargo?  @relation(fields: [cargoId], references: [id])
+  creadaPor Usuario @relation("InstruccionCreadaPor", fields: [creadaPorId], references: [id])
+
+  archivos      InstruccionArchivo[]
+  cumplimientos InstruccionCumplimiento[]
+
+  @@index([empresaId, semanaInicio])
+  @@index([empresaId, cargoId])
+}
+
+/// Un archivo (imagen o video) de una instrucción, ya subido a S3. `clave`
+/// es la ruta en el bucket — la genera el servidor, nunca el cliente (regla
+/// de seguridad no negociable de PROMPT-F6.7) — con el formato
+/// empresas/{empresaId}/instrucciones/{instruccionId}/{uuid}.{ext}. No se
+/// guarda ninguna URL: las de lectura se firman al pedirlas y vencen en
+/// minutos (ver lib/s3.ts).
+model InstruccionArchivo {
+  id               String                 @id @default(cuid())
+  empresaId        String
+  instruccionId    String
+  tipo             TipoArchivoInstruccion
+  clave            String
+  nombre           String
+  contentType      String
+  bytes            Int
+  // solo VIDEO. La manda el navegador del ADMIN al registrar el archivo
+  // (metadatos del propio video), no el empleado que lo ve — por eso se
+  // confía aunque venga del cliente: quien la manda no tiene incentivo para
+  // falsearla baja (PROMPT-F6.8, Parte 1.4). Si llega nula o en 0, ese video
+  // no puede gatillar cumplimiento automático (lib/visualizacion.ts).
+  duracionSegundos Int?
+  orden            Int
+  subidoPorId      String
+  createdAt        DateTime               @default(now())
+
+  empresa     Empresa     @relation(fields: [empresaId], references: [id])
+  instruccion Instruccion @relation(fields: [instruccionId], references: [id])
+  subidoPor   Usuario     @relation("InstruccionArchivoSubidoPor", fields: [subidoPorId], references: [id])
+
+  visualizaciones InstruccionVisualizacion[]
+
+  @@index([empresaId, instruccionId])
+}
+
+/// Quién marcó una instrucción como cumplida. Para una instrucción SIN
+/// videos, la fila nace de `POST /:id/completar` (autodeclarado). Para una
+/// instrucción CON al menos un video (F6.8), esa ruta responde 409: la fila
+/// la crea el servidor solo, cuando `InstruccionVisualizacion.completadoEn`
+/// queda lleno para todos los videos de la instrucción de ese usuario — ver
+/// lib/visualizacion.ts. `@@unique` evita duplicar la fila tanto si alguien
+/// marca "completar" dos veces como si dos reportes de progreso casi
+/// simultáneos intentan crearla a la vez.
+model InstruccionCumplimiento {
+  id            String   @id @default(cuid())
+  empresaId     String
+  instruccionId String
+  usuarioId     String
+  completadoEn  DateTime @default(now())
+
+  empresa     Empresa     @relation(fields: [empresaId], references: [id])
+  instruccion Instruccion @relation(fields: [instruccionId], references: [id])
+  usuario     Usuario     @relation(fields: [usuarioId], references: [id])
+
+  @@unique([instruccionId, usuarioId])
+  @@index([empresaId, instruccionId])
+}
+
+/// Registro de visualización de un video (F6.8). NO ES UNA PRUEBA de que
+/// alguien vio el video: todo lo que reporta el navegador se puede
+/// falsificar desde las herramientas de desarrollador, y no hay forma de
+/// verificarlo del lado del servidor. Lo que hace esta tabla, junto con
+/// `lib/visualizacion.ts`, es subir el costo de hacer trampa de "cero
+/// esfuerzo" (arrastrar la barra al final) a "manipulación deliberada". Que
+/// nadie lea este modelo dentro de un año creyendo que es evidencia.
+///
+/// `tramos` guarda qué PARTES del video se vieron, no la posición máxima
+/// alcanzada — si solo guardara "llegó al segundo 600", arrastrar la barra
+/// al final completaría el video de inmediato. Fusionados y sin solapar,
+/// como máximo 50 (lib/visualizacion.ts: MAXIMO_TRAMOS); un cliente
+/// manipulado que mande cientos de fragmentos sueltos se rechaza en vez de
+/// crecer sin límite.
+///
+/// `segundosVistos` es la suma de `tramos`, desnormalizada para consultar sin
+/// deserializar el JSON en cada lectura — nunca la fuente de verdad, se
+/// recalcula de `tramos` en cada reporte.
+///
+/// `ultimoReporte` es el reloj del servidor en el reporte anterior: el único
+/// control que de verdad sirve (Parte 1.2 de PROMPT-F6.8) compara contra él,
+/// nunca contra algo que mande el navegador.
+model InstruccionVisualizacion {
+  id             String    @id @default(cuid())
+  empresaId      String
+  archivoId      String
+  usuarioId      String
+  tramos         Json
+  segundosVistos Int       @default(0)
+  /// Reloj del servidor en el PRIMER reporte — nunca se reescribe después.
+  /// La condición "tiempo real acumulado ≥ 90% de la duración" (Parte 1.3)
+  /// se mide contra este campo, no contra `ultimoReporte` (que sí avanza en
+  /// cada reporte): es lo que impide completar con reportes frecuentes y
+  /// coherentes con el reloj, pero empezados hace apenas un instante.
+  primerReporte  DateTime
+  ultimoReporte  DateTime
+  completadoEn   DateTime?
+
+  empresa Empresa            @relation(fields: [empresaId], references: [id])
+  archivo InstruccionArchivo @relation(fields: [archivoId], references: [id])
+  usuario Usuario            @relation(fields: [usuarioId], references: [id])
+
+  @@unique([archivoId, usuarioId])
+  @@index([empresaId, archivoId])
 }

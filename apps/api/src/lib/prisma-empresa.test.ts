@@ -10,6 +10,7 @@ import {
   OPERACIONES_BLOQUEADAS,
   PROPIEDADES_NO_OPERACION,
 } from "./prisma-empresa.ts";
+import { inicioSemanaBogota } from "./periodos.ts";
 
 // prismaRaw en este archivo: excepción explícita, igual que seed y login.
 // Verificar el aislamiento (R1) exige poder crear y leer filas de AMBAS
@@ -25,6 +26,7 @@ interface FixtureEmpresa {
   duracionId: string;
   duracionRealId: string;
   tipoClienteId: string;
+  cargoId: string;
   paqueteId: string;
   paquetePlataformaId: string;
   paqueteDuracionPlataformaId: string;
@@ -38,6 +40,16 @@ interface FixtureEmpresa {
   movimientoSaldoId: string;
   garantiaId: string;
   reinicioCuentaId: string;
+  turnoId: string;
+  festivoId: string;
+  horaAdicionalId: string;
+  reporteSemanalId: string;
+  configuracionComisionId: string;
+  configuracionComisionPlataformaId: string;
+  instruccionId: string;
+  instruccionArchivoId: string;
+  instruccionCumplimientoId: string;
+  instruccionVisualizacionId: string;
 }
 
 // Nombre de la propiedad del cliente de Prisma para un modelo del esquema:
@@ -85,6 +97,10 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
 
   const tipoCliente = await prismaRaw.tipoCliente.create({
     data: { empresaId: empresa.id, nombre: `Tipo cliente ${nombre}` },
+  });
+
+  const cargo = await prismaRaw.cargo.create({
+    data: { empresaId: empresa.id, nombre: `Cargo ${nombre}` },
   });
 
   const paquete = await prismaRaw.paquete.create({
@@ -237,6 +253,111 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     },
   });
 
+  const turno = await prismaRaw.turno.create({
+    data: {
+      empresaId: empresa.id,
+      usuarioId: usuario.id,
+      inicio: new Date(Date.now() - 60 * 60 * 1000),
+      fin: new Date(Date.now() + 60 * 60 * 1000),
+    },
+  });
+
+  // Fecha única por empresa (prefijo) para no chocar con @@unique([empresaId, fecha]).
+  const festivo = await prismaRaw.festivo.create({
+    data: {
+      empresaId: empresa.id,
+      fecha: new Date(`2099-01-01T05:00:00.000Z`),
+      nombre: `Festivo de prueba ${prefijo}`,
+    },
+  });
+
+  const horaAdicional = await prismaRaw.horaAdicional.create({
+    data: {
+      empresaId: empresa.id,
+      usuarioId: usuario.id,
+      inicio: new Date(Date.now() - 4 * 60 * 60 * 1000),
+      fin: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      motivo: "Fixture de prueba",
+    },
+  });
+
+  const reporteSemanal = await prismaRaw.reporteSemanal.create({
+    data: {
+      empresaId: empresa.id,
+      usuarioId: usuario.id,
+      cargoId: cargo.id,
+      semanaInicio: inicioSemanaBogota(new Date()),
+      pendientes: "Pendiente de prueba",
+      fallas: "",
+      oportunidades: "",
+    },
+  });
+
+  const configuracionComision = await prismaRaw.configuracionComision.create({
+    data: {
+      empresaId: empresa.id,
+      modo: "FIJO_POR_PANTALLA",
+      valor: "1000",
+      umbralCantidad: 10,
+      umbralAmbito: "TOTAL",
+      umbralPeriodo: "DIA",
+      vigenteDesde: new Date(),
+      creadaPorId: usuario.id,
+    },
+  });
+
+  const configuracionComisionPlataforma = await prismaRaw.configuracionComisionPlataforma.create({
+    data: {
+      empresaId: empresa.id,
+      configuracionId: configuracionComision.id,
+      plataformaId: plataforma.id,
+      comisiona: true,
+    },
+  });
+
+  const instruccion = await prismaRaw.instruccion.create({
+    data: {
+      empresaId: empresa.id,
+      titulo: `Instrucción de prueba ${nombre}`,
+      semanaInicio: inicioSemanaBogota(new Date()),
+      cargoId: cargo.id,
+      creadaPorId: usuario.id,
+    },
+  });
+
+  const instruccionArchivo = await prismaRaw.instruccionArchivo.create({
+    data: {
+      empresaId: empresa.id,
+      instruccionId: instruccion.id,
+      tipo: "IMAGEN",
+      clave: `empresas/${empresa.id}/instrucciones/${instruccion.id}/fixture.png`,
+      nombre: "fixture.png",
+      contentType: "image/png",
+      bytes: 1024,
+      orden: 1,
+      subidoPorId: usuario.id,
+    },
+  });
+
+  const instruccionCumplimiento = await prismaRaw.instruccionCumplimiento.create({
+    data: {
+      empresaId: empresa.id,
+      instruccionId: instruccion.id,
+      usuarioId: usuario.id,
+    },
+  });
+
+  const instruccionVisualizacion = await prismaRaw.instruccionVisualizacion.create({
+    data: {
+      empresaId: empresa.id,
+      archivoId: instruccionArchivo.id,
+      usuarioId: usuario.id,
+      tramos: [[0, 1]],
+      primerReporte: new Date(),
+      ultimoReporte: new Date(),
+    },
+  });
+
   return {
     empresaId: empresa.id,
     usuarioId: usuario.id,
@@ -245,6 +366,7 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     duracionId: duracionVendida.id,
     duracionRealId: duracionReal.id,
     tipoClienteId: tipoCliente.id,
+    cargoId: cargo.id,
     paqueteId: paquete.id,
     paquetePlataformaId: paquetePlataforma.id,
     paqueteDuracionPlataformaId: paqueteDuracionPlataforma.id,
@@ -258,6 +380,16 @@ async function crearEmpresaCompleta(nombre: string, prefijo: string): Promise<Fi
     movimientoSaldoId: movimientoSaldo.id,
     garantiaId: garantia.id,
     reinicioCuentaId: reinicioCuenta.id,
+    turnoId: turno.id,
+    festivoId: festivo.id,
+    horaAdicionalId: horaAdicional.id,
+    reporteSemanalId: reporteSemanal.id,
+    configuracionComisionId: configuracionComision.id,
+    configuracionComisionPlataformaId: configuracionComisionPlataforma.id,
+    instruccionId: instruccion.id,
+    instruccionArchivoId: instruccionArchivo.id,
+    instruccionCumplimientoId: instruccionCumplimiento.id,
+    instruccionVisualizacionId: instruccionVisualizacion.id,
   };
 }
 
@@ -281,10 +413,27 @@ async function borrarEmpresaCompleta(empresaId: string) {
   await prismaRaw.plantillaMensaje.deleteMany({ where: { empresaId } });
   await prismaRaw.paquete.deleteMany({ where: { empresaId } });
   await prismaRaw.tipoCliente.deleteMany({ where: { empresaId } });
+  // InstruccionCumplimiento, InstruccionVisualizacion e InstruccionArchivo
+  // referencian Instruccion y Usuario (InstruccionVisualizacion además
+  // referencia InstruccionArchivo: antes que ese); Instruccion referencia
+  // Cargo: las tres antes que Cargo y Usuario.
+  await prismaRaw.instruccionCumplimiento.deleteMany({ where: { empresaId } });
+  await prismaRaw.instruccionVisualizacion.deleteMany({ where: { empresaId } });
+  await prismaRaw.instruccionArchivo.deleteMany({ where: { empresaId } });
+  await prismaRaw.instruccion.deleteMany({ where: { empresaId } });
+  await prismaRaw.cargo.deleteMany({ where: { empresaId } });
   await prismaRaw.duracion.deleteMany({ where: { empresaId } });
+  // ConfiguracionComisionPlataforma referencia Plataforma: antes de esa.
+  await prismaRaw.configuracionComisionPlataforma.deleteMany({ where: { empresaId } });
   await prismaRaw.plataformaPantalla.deleteMany({ where: { empresaId } });
   await prismaRaw.plataforma.deleteMany({ where: { empresaId } });
+  // Turno y HoraAdicional referencian Usuario (requerido, sin onDelete): antes del usuario.
+  await prismaRaw.turno.deleteMany({ where: { empresaId } });
+  await prismaRaw.horaAdicional.deleteMany({ where: { empresaId } });
+  await prismaRaw.reporteSemanal.deleteMany({ where: { empresaId } });
+  await prismaRaw.configuracionComision.deleteMany({ where: { empresaId } });
   await prismaRaw.usuario.deleteMany({ where: { empresaId } });
+  await prismaRaw.festivo.deleteMany({ where: { empresaId } });
   await prismaRaw.empresa.delete({ where: { id: empresaId } });
 }
 
@@ -302,8 +451,8 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
     await borrarEmpresaCompleta(fixtureB.empresaId);
   });
 
-  it("cubre los 18 modelos con empresaId derivados del esquema", () => {
-    expect(MODELOS_CON_EMPRESA_ID.size).toBe(18);
+  it("cubre los 29 modelos con empresaId derivados del esquema", () => {
+    expect(MODELOS_CON_EMPRESA_ID.size).toBe(29);
     expect([...MODELOS_CON_EMPRESA_ID].sort()).toEqual(
       [
         "Usuario",
@@ -311,6 +460,9 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         "PlataformaPantalla",
         "Duracion",
         "TipoCliente",
+        // F6.1 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "Cargo",
         "Paquete",
         "PaquetePlataforma",
         "PaqueteDuracionPlataforma",
@@ -326,6 +478,28 @@ describe("R1 — aislamiento entre empresas (prismaParaEmpresa)", () => {
         // F4.11 — cubierto automáticamente por el escaneo del esquema (tiene
         // empresaId), sin cambiar prisma-empresa.ts.
         "ReinicioCuenta",
+        // F6.2 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "Turno",
+        "Festivo",
+        // F6.3 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "HoraAdicional",
+        // F6.4 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "ReporteSemanal",
+        // F6.5 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "ConfiguracionComision",
+        // F6.10 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "ConfiguracionComisionPlataforma",
+        // F6.7 — cubierto automáticamente por el escaneo del esquema (tiene
+        // empresaId), sin cambiar prisma-empresa.ts.
+        "Instruccion",
+        "InstruccionArchivo",
+        "InstruccionCumplimiento",
+        "InstruccionVisualizacion",
       ].sort(),
     );
   });
